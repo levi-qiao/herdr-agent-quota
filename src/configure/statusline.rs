@@ -1,3 +1,4 @@
+use crate::process::{run_shell_with_deadline, CommandOutput, STATUSLINE_COMMAND_BUDGET};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::fs;
@@ -136,6 +137,13 @@ impl Adapter {
                 .map(str::to_string),
             _ => None,
         })
+    }
+
+    pub(crate) fn run_previous(&self, state: &Path, input: &[u8]) -> Result<Option<CommandOutput>> {
+        let Some(command) = self.previous_command(state)? else {
+            return Ok(None);
+        };
+        run_shell_with_deadline(&command, input, STATUSLINE_COMMAND_BUDGET).map(Some)
     }
 
     fn is_installed(&self, status_line: Option<&Value>) -> bool {

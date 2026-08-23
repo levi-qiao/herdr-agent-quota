@@ -3,8 +3,9 @@ use crate::herdr::{
     current_agent_provider, list_agent_panes, list_agent_state, publish_tokens, refresh_pane_topic,
     AgentPane,
 };
-use crate::model::Provider;
+use crate::model::{Provider, ProviderSnapshot};
 use crate::presentation::MetadataTokens;
+use crate::providers::statusline::enrich_cache_session;
 use crate::providers::{codex, grok};
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -34,11 +35,13 @@ pub fn run(providers: &[Provider], force: bool, json: bool) -> Result<()> {
 /// Refresh selected providers until their agents leave the working state.
 ///
 /// This command is normally launched detached by `event` and is deliberately
-/// quota-only: it never reads a pane. Claude/Agy statusLine hooks keep writing
-/// snapshots to the same cache, while Codex/Grok use their normal providers'
-/// fetchers. One global watcher reads Herdr's agent inventory once per poll
-/// and refreshes every selected provider that is working. The existing
-/// provider-level debounce remains the lower bound for network requests.
+/// quota-only: it never reads a pane. Claude/Agy statusLine hooks publish
+/// observations to the local mailbox, while Codex/Grok use their normal
+/// providers' fetchers. One global watcher reads Herdr's agent inventory once
+/// per poll and refreshes every selected provider that is working. Each
+/// provider has its own non-blocking refresh lease, so slow I/O never stalls a
+/// statusLine hook or another provider. The existing provider-level debounce
+/// remains the lower bound for network requests.
 pub fn watch(providers: &[Provider], interval_seconds: Option<u64>) -> Result<()> {
     let cache = CacheStore::from_env()?;
     let interval_seconds = interval_seconds
@@ -103,7 +106,7 @@ fn refresh_and_publish(
     force: bool,
     panes: &[AgentPane],
 ) -> Result<()> {
-    cache.with_lock(|| refresh_locked(cache, providers, force))?;
+    refresh_selected(cache, providers, force)?;
     publish(cache, providers, None, Some(panes))
 }
 
@@ -114,7 +117,7 @@ fn run_internal(
     topic_pane: Option<&str>,
 ) -> Result<()> {
     let cache = CacheStore::from_env()?;
-    let outcomes = cache.with_lock(|| refresh_locked(&cache, providers, force))?;
+    let outcomes = refresh_selected(&cache, providers, force)?;
     publish(&cache, providers, topic_pane, None)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&outcomes)?);
@@ -153,61 +156,120 @@ pub fn focus() -> Result<()> {
     run(&[provider], false, false)
 }
 
-fn refresh_locked(
+#[derive(Debug)]
+struct FetchedSnapshot {
+    snapshot: ProviderSnapshot,
+    preserve_context: bool,
+    session_id: Option<String>,
+}
+
+impl FetchedSnapshot {
+    fn direct(snapshot: ProviderSnapshot) -> Self {
+        Self {
+            snapshot,
+            preserve_context: false,
+            session_id: None,
+        }
+    }
+}
+
+fn refresh_selected(
     cache: &CacheStore,
     providers: &[Provider],
     force: bool,
 ) -> Result<Vec<ProviderOutcome>> {
+    providers
+        .iter()
+        .copied()
+        .map(|provider| refresh_provider(cache, provider, force))
+        .collect()
+}
+
+fn refresh_provider(
+    cache: &CacheStore,
+    provider: Provider,
+    force: bool,
+) -> Result<ProviderOutcome> {
     let now = CacheStore::now_unix();
-    let mut outcomes = Vec::new();
-    for provider in providers {
-        if !force && cache.should_debounce(*provider, now, 60)? {
-            outcomes.push(ProviderOutcome {
-                provider: *provider,
-                available: cache.load(*provider)?.is_some(),
-                from_cache: true,
-                error: None,
-            });
-            continue;
-        }
-        let fetched = match provider {
-            Provider::Codex => codex::fetch(),
-            Provider::Grok => grok::fetch(),
-            Provider::Claude => match cache.load(Provider::Claude)? {
-                Some(snapshot) => Ok(snapshot),
-                None => Err(anyhow::anyhow!(
-                    "Claude usage is collected by the Claude statusLine hook"
-                )),
-            },
-            Provider::Agy => match cache.load(Provider::Agy)? {
-                Some(snapshot) => Ok(snapshot),
-                None => Err(anyhow::anyhow!(
-                    "Agy usage is collected by the Agy statusLine hook"
-                )),
-            },
-        };
-        cache.mark_refresh(*provider, now)?;
-        match fetched {
-            Ok(snapshot) => {
-                if !matches!(provider, Provider::Claude | Provider::Agy) {
-                    cache.save(&snapshot)?;
-                }
-                outcomes.push(ProviderOutcome {
-                    provider: *provider,
-                    available: true,
-                    from_cache: false,
-                    error: None,
-                });
-            }
-            Err(error) => outcomes.push(ProviderOutcome {
-                provider: *provider,
-                available: cache.load(*provider)?.is_some(),
-                from_cache: true,
-                error: Some(error.to_string()),
-            }),
-        }
+    if !force && cache.should_debounce(provider, now, 60)? {
+        return Ok(ProviderOutcome {
+            provider,
+            available: cache.load(provider)?.is_some(),
+            from_cache: true,
+            error: None,
+        });
     }
-    Ok(outcomes)
+    let Some(_lease) = cache.try_lock_provider_refresh(provider)? else {
+        return Ok(ProviderOutcome {
+            provider,
+            available: cache.load(provider)?.is_some(),
+            from_cache: true,
+            error: Some("refresh already in progress".to_string()),
+        });
+    };
+
+    let fetched = match provider {
+        Provider::Codex => codex::fetch().map(FetchedSnapshot::direct),
+        Provider::Grok => grok::fetch().map(FetchedSnapshot::direct),
+        Provider::Claude | Provider::Agy => load_statusline_snapshot(cache, provider),
+    };
+    cache.mark_refresh(provider, now)?;
+    match fetched {
+        Ok(fetched) => {
+            let FetchedSnapshot {
+                snapshot,
+                preserve_context,
+                session_id,
+            } = fetched;
+            if preserve_context {
+                cache.save_preserving_context_for_session(snapshot, session_id.as_deref())?;
+            } else {
+                cache.save(&snapshot)?;
+            }
+            Ok(ProviderOutcome {
+                provider,
+                available: true,
+                from_cache: false,
+                error: None,
+            })
+        }
+        Err(error) => Ok(ProviderOutcome {
+            provider,
+            available: cache.load(provider)?.is_some(),
+            from_cache: true,
+            error: Some(error.to_string()),
+        }),
+    }
+}
+
+fn load_statusline_snapshot(cache: &CacheStore, provider: Provider) -> Result<FetchedSnapshot> {
+    let observation = cache
+        .load_statusline_observation(provider)?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} usage is collected by the statusLine hook",
+                provider.source()
+            )
+        })?;
+    let mut snapshot = observation.snapshot;
+    let value = observation.payload;
+    let previous_cache = cache
+        .load(provider)
+        .ok()
+        .flatten()
+        .and_then(|snapshot| snapshot.context)
+        .and_then(|context| context.cache);
+    enrich_cache_session(&mut snapshot, &value, previous_cache.as_ref());
+    let session_id = value
+        .get("session_id")
+        .or_else(|| value.get("sessionId"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    Ok(FetchedSnapshot {
+        snapshot,
+        preserve_context: true,
+        session_id,
+    })
 }
 
 fn publish(

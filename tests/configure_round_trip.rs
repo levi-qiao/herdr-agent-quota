@@ -4,6 +4,8 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 fn install_herdr_stub(state: &Path, agent_list: &str) -> (PathBuf, PathBuf) {
@@ -36,6 +38,55 @@ fn run_claude_collector(state: &Path, herdr: &Path, input: &[u8]) {
         .unwrap();
     child.stdin.take().unwrap().write_all(input).unwrap();
     assert!(child.wait_with_output().unwrap().status.success());
+}
+
+fn run_claude_collector_with_timeout(state: &Path, input: &[u8], timeout: Duration) -> bool {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_herdr-agent-quota"))
+        .arg("claude-statusline")
+        .env("HERDR_PLUGIN_STATE_DIR", state)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status.success();
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn hold_refresh_lock_in_child(state: &Path) -> std::process::Child {
+    let lock_path = state.join("refresh.lock");
+    let ready_path = state.join("refresh.lock.ready");
+    let locker = Command::new("perl")
+        .args([
+            "-e",
+            r#"use Fcntl qw(:flock); open my $f, '+>', $ARGV[0] or die $!; flock($f, LOCK_EX) or die $!; open my $r, '>', $ARGV[1] or die $!; print $r 'locked'; close $r; sleep 20"#,
+            lock_path.to_str().unwrap(),
+            ready_path.to_str().unwrap(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !ready_path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "refresh lock helper did not start"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    locker
 }
 
 fn run_claude_refresh(state: &Path, herdr: &Path) {
@@ -158,6 +209,42 @@ fn claude_collector_is_silent_without_a_previous_statusline() {
 }
 
 #[test]
+fn claude_collector_does_not_wait_for_a_refresh_lock() {
+    let state = tempdir().unwrap();
+    let mut locker = hold_refresh_lock_in_child(state.path());
+
+    assert!(run_claude_collector_with_timeout(
+        state.path(),
+        include_bytes!("fixtures/claude/statusline-both.json"),
+        Duration::from_secs(2),
+    ));
+    assert!(state
+        .path()
+        .join("claude-statusline.observation.json")
+        .exists());
+    let _ = locker.kill();
+    let _ = locker.wait();
+}
+
+#[test]
+fn claude_collector_bounds_a_hanging_previous_statusline() {
+    let state = tempdir().unwrap();
+    fs::write(
+        state.path().join("claude-statusline.original.json"),
+        r#"{"type":"command","command":"sleep 20"}"#,
+    )
+    .unwrap();
+
+    let started = Instant::now();
+    assert!(run_claude_collector_with_timeout(
+        state.path(),
+        include_bytes!("fixtures/claude/statusline-both.json"),
+        Duration::from_secs(4),
+    ));
+    assert!(started.elapsed() < Duration::from_secs(4));
+}
+
+#[test]
 fn agy_collector_is_silent_without_a_previous_statusline() {
     let state = tempdir().unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_herdr-agent-quota"))
@@ -216,6 +303,7 @@ fn claude_statusline_without_rate_limits_clears_stale_quota_windows() {
         &herdr_stub,
         br#"{"context_window":{"used_percentage":43.0}}"#,
     );
+    run_claude_refresh(state.path(), &herdr_stub);
 
     let snapshot: serde_json::Value =
         serde_json::from_slice(&fs::read(state.path().join("claude-statusline.json")).unwrap())

@@ -2,12 +2,10 @@ use super::statusline::{settings_path, Adapter};
 use crate::cache::CacheStore;
 use crate::model::Provider;
 use crate::providers::agy::parse_statusline;
-use crate::providers::statusline::enrich_cache_session;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
 
 const CONFIG: Adapter = Adapter {
     label: "Agy",
@@ -54,44 +52,23 @@ pub fn run_statusline_hook() -> Result<()> {
     let mut input = Vec::new();
     std::io::stdin().read_to_end(&mut input)?;
     if let Ok(value) = serde_json::from_slice::<Value>(&input) {
-        if let Ok(mut snapshot) = parse_statusline(&value, CacheStore::now_unix()) {
+        if let Ok(snapshot) = parse_statusline(&value, CacheStore::now_unix()) {
             if let Ok(cache) = CacheStore::from_env() {
-                let _ = cache.with_lock(|| {
-                    let previous_cache = cache
-                        .load(Provider::Agy)
-                        .ok()
-                        .flatten()
-                        .and_then(|snapshot| snapshot.context)
-                        .and_then(|context| context.cache);
-                    enrich_cache_session(&mut snapshot, &value, previous_cache.as_ref());
-                    let session_id = value
-                        .get("session_id")
-                        .or_else(|| value.get("sessionId"))
-                        .and_then(Value::as_str);
-                    cache.save_preserving_context_for_session(snapshot, session_id)
-                });
+                let _ = cache.save_statusline_observation(Provider::Agy, snapshot, &value);
             }
         }
     }
     let cache = CacheStore::from_env()?;
-    let Some(command) = CONFIG.previous_command(cache.root())? else {
+    let Some(output) = CONFIG.run_previous(cache.root(), &input)? else {
         return Ok(());
     };
-    let mut child = Command::new("sh")
-        .args(["-c", &command])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .context("run previous Agy statusLine")?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(&input)?;
+    if output.timed_out {
+        return Ok(());
     }
-    let output = child.wait_with_output()?;
     std::io::stdout().write_all(&output.stdout)?;
     std::io::stdout().flush()?;
-    if !output.status.success() {
-        std::process::exit(output.status.code().unwrap_or(1));
+    if output.exit_code != Some(0) {
+        std::process::exit(output.exit_code.unwrap_or(1));
     }
     Ok(())
 }

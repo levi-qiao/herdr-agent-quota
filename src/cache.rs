@@ -1,6 +1,8 @@
-use crate::model::{Provider, ProviderSnapshot};
+use crate::model::{ContextUsage, Provider, ProviderSnapshot};
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,6 +16,12 @@ const WATCH_INTERVAL_FILE: &str = "watch-interval-seconds";
 #[derive(Debug, Clone)]
 pub struct CacheStore {
     root: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatuslineObservation {
+    pub snapshot: ProviderSnapshot,
+    pub payload: Value,
 }
 
 impl CacheStore {
@@ -61,20 +69,64 @@ impl CacheStore {
             std::process::id()
         ));
         let bytes = serde_json::to_vec_pretty(snapshot).context("serialize quota snapshot")?;
-        fs::write(&temporary, bytes).with_context(|| format!("write {}", temporary.display()))?;
-        if let Err(error) = fs::rename(&temporary, &destination) {
-            // Otherwise a failed rename leaves the scratch file behind, and
-            // every later refresh adds another one.
-            let _ = fs::remove_file(&temporary);
-            return Err(error).with_context(|| {
-                format!(
-                    "atomically replace {} with {}",
-                    destination.display(),
-                    temporary.display()
-                )
-            });
+        Self::atomic_replace(&destination, &temporary, bytes)
+    }
+
+    /// Store the latest statusLine observation without coordinating with a
+    /// refresh. The statusLine hook is a latency-sensitive producer; its only
+    /// shared-state operation is an atomic last-observation replacement.
+    pub fn save_statusline_observation(
+        &self,
+        provider: Provider,
+        mut snapshot: ProviderSnapshot,
+        observation: &Value,
+    ) -> Result<()> {
+        self.ensure()?;
+        let session_id = observation
+            .get("session_id")
+            .or_else(|| observation.get("sessionId"))
+            .and_then(Value::as_str);
+        if let Some(session_id) = session_id {
+            if let Some(cache) = snapshot
+                .context
+                .as_mut()
+                .and_then(|context| context.cache.as_mut())
+            {
+                cache.session_id = Some(session_id.to_string());
+            }
         }
-        Ok(())
+        let previous = self
+            .load_statusline_observation(provider)
+            .ok()
+            .flatten()
+            .and_then(|observation| observation.snapshot.context);
+        merge_preserved_context(&mut snapshot, previous, session_id);
+        let saved = StatuslineObservation {
+            snapshot,
+            payload: observation.clone(),
+        };
+        let destination = self.statusline_observation_path(provider);
+        let temporary = self.root.join(format!(
+            ".{}.observation.{}.tmp",
+            provider.source(),
+            std::process::id()
+        ));
+        let bytes = serde_json::to_vec(&saved).context("serialize statusLine observation")?;
+        Self::atomic_replace(&destination, &temporary, bytes)
+    }
+
+    pub fn load_statusline_observation(
+        &self,
+        provider: Provider,
+    ) -> Result<Option<StatuslineObservation>> {
+        let path = self.statusline_observation_path(provider);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+        let observation = serde_json::from_slice(&bytes)
+            .with_context(|| format!("parse {} observation", provider.source()))?;
+        Ok(Some(observation))
     }
 
     /// StatusLine payloads may temporarily omit context (before the first
@@ -103,101 +155,13 @@ impl CacheStore {
         }
         // A malformed/temporarily unreadable old snapshot must not prevent a
         // fresh statusLine value from replacing it.
-        if let Some(previous) = self
+        let previous = self
             .load(snapshot.provider)
             .ok()
             .flatten()
-            .and_then(|snapshot| snapshot.context)
-        {
-            match (&mut snapshot.context, previous) {
-                (None, mut previous) => {
-                    let same_session = session_id.is_some_and(|session_id| {
-                        previous
-                            .cache
-                            .as_ref()
-                            .and_then(|cache| cache.session_id.as_deref())
-                            == Some(session_id)
-                    });
-                    if !same_session {
-                        if let Some(cache) = previous.cache.as_mut() {
-                            let clear_ttl = cache.session_id.is_some() || session_id.is_some();
-                            strip_session_cache_state(cache, clear_ttl);
-                        }
-                    }
-                    snapshot.context = Some(previous);
-                }
-                (Some(current), previous) => {
-                    if current.cache.is_none() {
-                        let same_session = session_id.is_some_and(|session_id| {
-                            previous
-                                .cache
-                                .as_ref()
-                                .and_then(|cache| cache.session_id.as_deref())
-                                == Some(session_id)
-                        });
-                        let mut previous_cache = previous.cache;
-                        if !same_session {
-                            if let Some(cache) = previous_cache.as_mut() {
-                                strip_session_cache_state(
-                                    cache,
-                                    cache.session_id.is_some() || session_id.is_some(),
-                                );
-                            }
-                        }
-                        current.cache = previous_cache;
-                    } else if let (Some(cache), Some(previous_cache)) =
-                        (&mut current.cache, previous.cache)
-                    {
-                        let same_session = cache.session_id.is_some()
-                            && cache.session_id == previous_cache.session_id
-                            && session_id.is_none_or(|session_id| {
-                                cache.session_id.as_deref() == Some(session_id)
-                            });
-                        if same_session {
-                            if cache.session_totals.is_none() {
-                                cache.session_totals = previous_cache.session_totals;
-                            }
-                            if cache.transcript_offset == 0 {
-                                cache.transcript_offset = previous_cache.transcript_offset;
-                            }
-                        }
-                        let can_preserve_ttl = same_session
-                            || (session_id.is_none()
-                                && cache.session_id.is_none()
-                                && previous_cache.session_id.is_none());
-                        if can_preserve_ttl {
-                            if cache.ttl_seconds.is_none() {
-                                cache.ttl_seconds = previous_cache.ttl_seconds;
-                            }
-                            if cache.last_activity_unix.is_none() {
-                                cache.last_activity_unix = previous_cache.last_activity_unix;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+            .and_then(|snapshot| snapshot.context);
+        merge_preserved_context(&mut snapshot, previous, session_id);
         self.save(&snapshot)
-    }
-
-    pub fn with_lock<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
-        self.ensure()?;
-        let path = self.root.join("refresh.lock");
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(&path)
-            .with_context(|| format!("open {}", path.display()))?;
-        file.lock().context("lock refresh state")?;
-        let result = operation();
-        let unlock_result = file.unlock().context("unlock refresh state");
-        match (result, unlock_result) {
-            (Ok(value), Ok(())) => Ok(value),
-            (Err(error), _) => Err(error),
-            (Ok(_), Err(error)) => Err(error),
-        }
     }
 
     /// Try to claim a named long-running coordination lock.
@@ -221,6 +185,12 @@ impl CacheStore {
             Err(TryLockError::WouldBlock) => Ok(None),
             Err(error) => Err(error).with_context(|| format!("lock {}", path.display())),
         }
+    }
+
+    /// Claim a provider refresh lease without making a statusLine or event
+    /// caller wait behind another provider's slow I/O.
+    pub fn try_lock_provider_refresh(&self, provider: Provider) -> Result<Option<File>> {
+        self.try_lock_named(&format!("{}.refresh.lock", provider.source()))
     }
 
     pub fn stop_turn_watchers(&self) -> Result<()> {
@@ -337,6 +307,28 @@ impl CacheStore {
         self.root.join(format!("{}.json", provider.source()))
     }
 
+    fn statusline_observation_path(&self, provider: Provider) -> PathBuf {
+        self.root
+            .join(format!("{}.observation.json", provider.source()))
+    }
+
+    fn atomic_replace(destination: &Path, temporary: &Path, bytes: Vec<u8>) -> Result<()> {
+        fs::write(temporary, bytes).with_context(|| format!("write {}", temporary.display()))?;
+        if let Err(error) = fs::rename(temporary, destination) {
+            // Otherwise a failed rename leaves the scratch file behind, and
+            // every later refresh adds another one.
+            let _ = fs::remove_file(temporary);
+            return Err(error).with_context(|| {
+                format!(
+                    "atomically replace {} with {}",
+                    destination.display(),
+                    temporary.display()
+                )
+            });
+        }
+        Ok(())
+    }
+
     fn refresh_marker_path(&self, provider: Provider) -> PathBuf {
         self.root.join(format!("{}.refresh", provider.source()))
     }
@@ -362,10 +354,77 @@ fn strip_session_cache_state(cache: &mut crate::model::CacheUsage, clear_ttl: bo
     }
 }
 
+fn merge_preserved_context(
+    snapshot: &mut ProviderSnapshot,
+    previous: Option<ContextUsage>,
+    session_id: Option<&str>,
+) {
+    let Some(previous_context) = previous else {
+        return;
+    };
+    match (&mut snapshot.context, previous_context) {
+        (None, mut previous_context) => {
+            if let Some(cache) = previous_context.cache.as_mut() {
+                let same_session = session_id
+                    .is_some_and(|session_id| cache.session_id.as_deref() == Some(session_id));
+                if !same_session {
+                    let clear_ttl = cache.session_id.is_some() || session_id.is_some();
+                    strip_session_cache_state(cache, clear_ttl);
+                }
+            }
+            snapshot.context = Some(previous_context);
+        }
+        (Some(current), previous_context) if current.cache.is_none() => {
+            let mut previous_cache = previous_context.cache.clone();
+            let same_session = session_id.is_some_and(|session_id| {
+                previous_cache
+                    .as_ref()
+                    .and_then(|cache| cache.session_id.as_deref())
+                    == Some(session_id)
+            });
+            if !same_session {
+                if let Some(cache) = previous_cache.as_mut() {
+                    let clear_ttl = cache.session_id.is_some() || session_id.is_some();
+                    strip_session_cache_state(cache, clear_ttl);
+                }
+            }
+            current.cache = previous_cache;
+        }
+        (Some(current), previous_context) => {
+            let Some(current_cache) = current.cache.as_mut() else {
+                return;
+            };
+            let Some(previous_cache) = previous_context.cache.as_ref() else {
+                return;
+            };
+            let same_session = current_cache.session_id.is_some()
+                && current_cache.session_id == previous_cache.session_id
+                && session_id.is_none_or(|session_id| {
+                    current_cache.session_id.as_deref() == Some(session_id)
+                });
+            if same_session {
+                if current_cache.session_totals.is_none() {
+                    current_cache.session_totals = previous_cache.session_totals.clone();
+                }
+                if current_cache.transcript_offset == 0 {
+                    current_cache.transcript_offset = previous_cache.transcript_offset;
+                }
+                if current_cache.ttl_seconds.is_none() {
+                    current_cache.ttl_seconds = previous_cache.ttl_seconds;
+                }
+                if current_cache.last_activity_unix.is_none() {
+                    current_cache.last_activity_unix = previous_cache.last_activity_unix;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::{CacheUsage, ContextUsage, Provider, UsageWindow, WindowKind};
+    use serde_json::json;
     use tempfile::tempdir;
 
     fn snapshot() -> ProviderSnapshot {
@@ -382,6 +441,41 @@ mod tests {
         let cache = CacheStore::new(directory.path());
         cache.save(&snapshot()).unwrap();
         assert_eq!(cache.load(Provider::Grok).unwrap(), Some(snapshot()));
+    }
+
+    #[test]
+    fn statusline_observation_preserves_context_when_the_next_payload_omits_it() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        let previous = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![UsageWindow::new(WindowKind::Weekly, 27.0, None).unwrap()],
+            1,
+        )
+        .with_context(Some(ContextUsage::new(23.5).unwrap()));
+        cache
+            .save_statusline_observation(
+                Provider::Claude,
+                previous,
+                &json!({"session_id": "session-1"}),
+            )
+            .unwrap();
+
+        let latest = ProviderSnapshot::new(Provider::Claude, vec![], 2);
+        cache
+            .save_statusline_observation(
+                Provider::Claude,
+                latest,
+                &json!({"session_id": "session-1"}),
+            )
+            .unwrap();
+
+        let saved = cache
+            .load_statusline_observation(Provider::Claude)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.snapshot.windows.len(), 0);
+        assert_eq!(saved.snapshot.context.as_ref().unwrap().used_percent, 23.5);
     }
 
     #[test]
@@ -495,6 +589,22 @@ mod tests {
         assert!(second.is_none());
         drop(first);
         assert!(cache.try_lock_named("codex.turn.lock").unwrap().is_some());
+    }
+
+    #[test]
+    fn provider_refresh_lease_is_non_blocking_and_scoped_to_one_provider() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        let first = cache.try_lock_provider_refresh(Provider::Claude).unwrap();
+        assert!(first.is_some());
+        assert!(cache
+            .try_lock_provider_refresh(Provider::Claude)
+            .unwrap()
+            .is_none());
+        assert!(cache
+            .try_lock_provider_refresh(Provider::Agy)
+            .unwrap()
+            .is_some());
     }
 
     #[test]

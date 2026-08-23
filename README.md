@@ -137,9 +137,11 @@ HERDR_AGENT_QUOTA_WATCH_INTERVAL_SECONDS=300 \
   herdr plugin action invoke herdr-agent-quota.configure
 ```
 
-Each poll uses one global coordination lock and one `herdr agent list` call.
-Provider network fetches are independently capped at one per 60 seconds by the
-existing refresh markers, even if a shorter custom poll interval is requested.
+Each poll uses one non-blocking watcher lease and one `herdr agent list` call.
+Provider refreshes use independent non-blocking leases, so a slow provider
+cannot stall another provider or a statusLine collector. Network fetches are
+independently capped at one per 60 seconds by the existing refresh markers, even
+if a shorter custom poll interval is requested.
 The watcher never sends prompts, starts a new login, refreshes credentials, or
 consumes model/chat tokens; a manual `--force` refresh is the explicit exception.
 

@@ -32,6 +32,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Claude/Agy statusLine collectors now publish atomic observations without
+  waiting on refresh work. Provider refreshes use independent non-blocking
+  leases, and chained user statusLine commands run in a bounded process group
+  so a stalled command cannot leak processes or wedge later invocations.
 - Topic extraction now reads the pane's visible screen instead of rebuilding its
   wrapped scrollback. The old `--source recent` read took 4.45s and repainted the
   pane once per call, which is what the user saw as scrolling; `--source visible`

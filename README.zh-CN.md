@@ -116,8 +116,9 @@ HERDR_AGENT_QUOTA_WATCH_INTERVAL_SECONDS=300 \
   herdr plugin action invoke herdr-agent-quota.configure
 ```
 
-每轮只使用一个全局协调锁和一次 `herdr agent list`。各 provider 的网络查询仍由
-原有刷新标记独立限制为每 60 秒最多一次，即使用户把轮询间隔设得更短也不会突破。
+每轮只使用一个非阻塞 watcher lease 和一次 `herdr agent list`。各 provider 使用
+独立的非阻塞刷新 lease，慢 provider 不会阻塞其他 provider 或 statusLine 采集器。
+网络查询仍由原有刷新标记独立限制为每 60 秒最多一次，即使用户把轮询间隔设得更短也不会突破。
 watcher 不发送 prompt、不重新登录、不刷新凭证，也不会消耗模型/对话 token；只有用户
 明确执行手动 `--force` 刷新时才绕过这层去抖。
 
