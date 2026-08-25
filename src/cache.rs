@@ -296,6 +296,16 @@ impl CacheStore {
             .unwrap_or_default()
     }
 
+    pub fn file_mtime_unix(path: &Path) -> Option<u64> {
+        fs::metadata(path)
+            .ok()?
+            .modified()
+            .ok()?
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .map(|duration| duration.as_secs())
+    }
+
     pub fn now_millis() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

@@ -191,10 +191,10 @@ fn refresh_provider(
     force: bool,
 ) -> Result<ProviderOutcome> {
     let now = CacheStore::now_unix();
-    if !force && cache.should_debounce(provider, now, 60)? {
+    if should_skip_fetch(cache, provider, force, now)? {
         return Ok(ProviderOutcome {
             provider,
-            available: cache.load(provider)?.is_some(),
+            available: load_usable_snapshot(cache, provider)?.is_some(),
             from_cache: true,
             error: None,
         });
@@ -202,7 +202,7 @@ fn refresh_provider(
     let Some(_lease) = cache.try_lock_provider_refresh(provider)? else {
         return Ok(ProviderOutcome {
             provider,
-            available: cache.load(provider)?.is_some(),
+            available: load_usable_snapshot(cache, provider)?.is_some(),
             from_cache: true,
             error: Some("refresh already in progress".to_string()),
         });
@@ -235,10 +235,57 @@ fn refresh_provider(
         }
         Err(error) => Ok(ProviderOutcome {
             provider,
-            available: cache.load(provider)?.is_some(),
+            available: load_usable_snapshot(cache, provider)?.is_some(),
             from_cache: true,
             error: Some(error.to_string()),
         }),
+    }
+}
+
+fn should_skip_fetch(
+    cache: &CacheStore,
+    provider: Provider,
+    force: bool,
+    now_unix: u64,
+) -> Result<bool> {
+    if force || !cache.should_debounce(provider, now_unix, 60)? {
+        return Ok(false);
+    }
+    if load_usable_snapshot(cache, provider)?.is_some() {
+        return Ok(true);
+    }
+    // No snapshot at all: keep debounce so missing credentials do not hammer
+    // the provider. A snapshot for another account must not debounce — fetch
+    // the signed-in identity now.
+    Ok(cache.load(provider)?.is_none())
+}
+
+fn load_usable_snapshot(
+    cache: &CacheStore,
+    provider: Provider,
+) -> Result<Option<ProviderSnapshot>> {
+    let Some(snapshot) = cache.load(provider)? else {
+        return Ok(None);
+    };
+    let (account_id, mtime) = current_account_gate(provider);
+    Ok(snapshot
+        .usable_for_account(account_id.as_deref(), mtime)
+        .then_some(snapshot))
+}
+
+fn current_account_gate(provider: Provider) -> (Option<String>, Option<u64>) {
+    match provider {
+        Provider::Grok => {
+            let path = grok::auth_path().ok();
+            let account_id = path
+                .as_ref()
+                .and_then(|path| grok::read_credentials(path).ok())
+                .and_then(|credentials| credentials.user_id);
+            let mtime = path.as_ref().and_then(|path| grok::auth_mtime_unix(path));
+            (account_id, mtime)
+        }
+        Provider::Codex => (codex::current_account_id(), codex::auth_mtime_unix()),
+        Provider::Claude | Provider::Agy => (None, None),
     }
 }
 
@@ -293,7 +340,11 @@ fn publish(
     let now = CacheStore::now_unix();
     for provider in providers {
         let snapshot = cache.load(*provider)?;
-        if let Some(snapshot) = snapshot.as_ref() {
+        let (account_id, mtime) = current_account_gate(*provider);
+        let usable = snapshot
+            .as_ref()
+            .filter(|snapshot| snapshot.usable_for_account(account_id.as_deref(), mtime));
+        if let Some(snapshot) = usable {
             for pane in panes.iter_mut().filter(|pane| pane.provider == *provider) {
                 if let Some(session_id) = pane.session_id.as_deref() {
                     if let Some(summary) = snapshot.session_summaries.get(session_id) {
@@ -302,7 +353,8 @@ fn publish(
                 }
             }
         }
-        if let Some(values) = tokens_for_provider(snapshot.as_ref(), now) {
+        if let Some(values) = tokens_for_loaded_snapshot(*provider, snapshot.as_ref(), usable, now)
+        {
             tokens.push((*provider, values));
         }
     }
@@ -373,6 +425,22 @@ fn tokens_for_provider(
     snapshot.map(|snapshot| MetadataTokens::from_snapshot(snapshot, now_unix))
 }
 
+fn tokens_for_loaded_snapshot(
+    provider: Provider,
+    raw: Option<&ProviderSnapshot>,
+    usable: Option<&ProviderSnapshot>,
+    now_unix: u64,
+) -> Option<MetadataTokens> {
+    match (usable, raw) {
+        (Some(snapshot), _) => tokens_for_provider(Some(snapshot), now_unix),
+        (None, Some(_)) => Some(MetadataTokens::unavailable(
+            provider,
+            "signed-in account changed",
+        )),
+        (None, None) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,6 +464,40 @@ mod tests {
     fn missing_snapshot_does_not_overwrite_sidebar_with_unavailable() {
         let values = tokens_for_provider(None, 1);
         assert!(values.is_none());
+    }
+
+    #[test]
+    fn other_account_snapshot_is_not_shown_as_the_current_quota() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Grok,
+            vec![UsageWindow::new(WindowKind::Weekly, 100.0, None).unwrap()],
+            1,
+        )
+        .with_account_id(Some("old-account".to_string()));
+        let values = tokens_for_loaded_snapshot(Provider::Grok, Some(&snapshot), None, 1).unwrap();
+        assert_eq!(values.quota_summary, "unavailable");
+        assert_eq!(
+            values.quota_error.as_deref(),
+            Some("signed-in account changed")
+        );
+    }
+
+    #[test]
+    fn debounce_does_not_keep_another_accounts_grok_snapshot() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        let snapshot = ProviderSnapshot::new(
+            Provider::Grok,
+            vec![UsageWindow::new(WindowKind::Weekly, 100.0, None).unwrap()],
+            1,
+        )
+        .with_account_id(Some("old-account".to_string()));
+        cache.save(&snapshot).unwrap();
+        cache.mark_refresh(Provider::Grok, 100).unwrap();
+        assert!(
+            !should_skip_fetch(&cache, Provider::Grok, false, 120).unwrap(),
+            "a snapshot for another Grok login must be fetched even inside the debounce window"
+        );
     }
 
     // Reading a pane repaints it, which visibly scrolls the agent's terminal.

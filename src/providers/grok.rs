@@ -38,7 +38,9 @@ pub fn fetch() -> Result<ProviderSnapshot> {
     let value: Value = response
         .into_json()
         .context("decode Grok billing response")?;
-    parse_billing_response(&value, CacheStore::now_unix()).map_err(anyhow::Error::from)
+    parse_billing_response(&value, CacheStore::now_unix())
+        .map(|snapshot| snapshot.with_account_id(credentials.user_id.clone()))
+        .map_err(anyhow::Error::from)
 }
 
 pub fn auth_path() -> Result<PathBuf> {
@@ -57,29 +59,94 @@ pub fn read_credentials(path: &Path) -> std::result::Result<GrokCredentials, Pro
     let bytes = fs::read(path).map_err(|_| ProviderError::MissingCredentials)?;
     let value: Value = serde_json::from_slice(&bytes)
         .map_err(|_| ProviderError::Unavailable("Grok auth file is not valid JSON".to_string()))?;
-    find_credentials(&value).ok_or(ProviderError::MissingCredentials)
+    select_credentials(collect_credentials(&value)).ok_or(ProviderError::MissingCredentials)
 }
 
-fn find_credentials(value: &Value) -> Option<GrokCredentials> {
+pub fn auth_mtime_unix(path: &Path) -> Option<u64> {
+    CacheStore::file_mtime_unix(path)
+}
+
+fn collect_credentials(value: &Value) -> Vec<CredentialCandidate> {
+    let mut credentials = Vec::new();
+    collect_credentials_into(value, &mut credentials);
+    credentials
+}
+
+fn collect_credentials_into(value: &Value, credentials: &mut Vec<CredentialCandidate>) {
     match value {
         Value::Object(map) => {
             if let Some(key) = map.get("key").and_then(Value::as_str) {
                 if !key.trim().is_empty() {
-                    let user_id = map
-                        .get("user_id")
-                        .and_then(Value::as_str)
-                        .map(str::to_string);
-                    return Some(GrokCredentials {
-                        key: key.to_string(),
-                        user_id,
+                    credentials.push(CredentialCandidate {
+                        credentials: GrokCredentials {
+                            key: key.to_string(),
+                            user_id: map
+                                .get("user_id")
+                                .and_then(Value::as_str)
+                                .filter(|value| !value.is_empty())
+                                .map(str::to_string),
+                        },
+                        expires_at: map
+                            .get("expires_at")
+                            .and_then(Value::as_str)
+                            .and_then(ResetAt::parse_rfc3339)
+                            .map(ResetAt::unix_seconds),
+                        create_time: map
+                            .get("create_time")
+                            .and_then(Value::as_str)
+                            .and_then(ResetAt::parse_rfc3339)
+                            .map(ResetAt::unix_seconds),
                     });
+                    return;
                 }
             }
-            map.values().find_map(find_credentials)
+            for child in map.values() {
+                collect_credentials_into(child, credentials);
+            }
         }
-        Value::Array(values) => values.iter().find_map(find_credentials),
-        _ => None,
+        Value::Array(values) => {
+            for child in values {
+                collect_credentials_into(child, credentials);
+            }
+        }
+        _ => {}
     }
+}
+
+fn select_credentials(candidates: Vec<CredentialCandidate>) -> Option<GrokCredentials> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let now = CacheStore::now_unix();
+    let unexpired = candidates
+        .iter()
+        .filter(|candidate| {
+            candidate
+                .expires_at
+                .is_none_or(|expires_at| expires_at > now)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let pool = if unexpired.is_empty() {
+        candidates
+    } else {
+        unexpired
+    };
+    pool.into_iter()
+        .max_by_key(|candidate| {
+            (
+                candidate.create_time.unwrap_or(0),
+                candidate.expires_at.unwrap_or(0),
+            )
+        })
+        .map(|candidate| candidate.credentials)
+}
+
+#[derive(Debug, Clone)]
+struct CredentialCandidate {
+    credentials: GrokCredentials,
+    expires_at: Option<u64>,
+    create_time: Option<u64>,
 }
 
 pub fn parse_billing_response(
@@ -89,12 +156,16 @@ pub fn parse_billing_response(
     let config = value
         .get("config")
         .ok_or_else(|| ProviderError::UnsupportedResponse("missing config".to_string()))?;
-    let usage = config
-        .get("creditUsagePercent")
-        .and_then(Value::as_f64)
-        .ok_or_else(|| {
-            ProviderError::UnsupportedResponse("missing config.creditUsagePercent".to_string())
-        })?;
+    // proto3 JSON omits zero scalars, so a fresh SuperGrok week with 0% used
+    // arrives without `creditUsagePercent`. That is unused, not "unsupported".
+    let usage = match config.get("creditUsagePercent") {
+        None | Some(Value::Null) => 0.0,
+        Some(value) => value.as_f64().ok_or_else(|| {
+            ProviderError::UnsupportedResponse(
+                "config.creditUsagePercent is not a number".to_string(),
+            )
+        })?,
+    };
     let period = config
         .get("currentPeriod")
         .ok_or_else(|| ProviderError::UnsupportedResponse("missing currentPeriod".to_string()))?;
@@ -196,6 +267,75 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "provider credentials are unavailable"
+        );
+    }
+
+    #[test]
+    fn omitted_credit_usage_percent_is_zero_used_not_a_parse_error() {
+        let value = json!({
+            "config": {
+                "currentPeriod": {
+                    "type": "USAGE_PERIOD_TYPE_WEEKLY",
+                    "end": "2026-08-31T14:23:46Z"
+                }
+            }
+        });
+        let snapshot = parse_billing_response(&value, 1).unwrap();
+        let weekly = snapshot.window(WindowKind::Weekly).unwrap();
+        assert_eq!(weekly.used_percent, 0.0);
+        assert_eq!(weekly.remaining_percent, 100.0);
+        assert_eq!(
+            weekly.resets_at,
+            Some(ResetAt::from_unix_seconds(1_788_186_226))
+        );
+    }
+
+    #[test]
+    fn explicit_zero_credit_usage_percent_is_full_remaining() {
+        let value = json!({
+            "config": {
+                "creditUsagePercent": 0.0,
+                "currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY"}
+            }
+        });
+        assert_eq!(
+            parse_billing_response(&value, 1)
+                .unwrap()
+                .window(WindowKind::Weekly)
+                .unwrap()
+                .remaining_percent,
+            100.0
+        );
+    }
+
+    #[test]
+    fn prefers_the_newest_unexpired_login_when_auth_json_still_has_another_account() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("auth.json");
+        fs::write(
+            &path,
+            r#"{
+                "https://auth.x.ai::old": {
+                    "key": "old-token",
+                    "user_id": "u-old",
+                    "expires_at": "2099-12-01T00:00:00Z",
+                    "create_time": "2020-01-01T00:00:00Z"
+                },
+                "https://auth.x.ai::new": {
+                    "key": "new-token",
+                    "user_id": "u-new",
+                    "expires_at": "2099-06-01T00:00:00Z",
+                    "create_time": "2026-08-25T00:56:20Z"
+                }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_credentials(&path).unwrap(),
+            GrokCredentials {
+                key: "new-token".to_string(),
+                user_id: Some("u-new".to_string())
+            }
         );
     }
 }

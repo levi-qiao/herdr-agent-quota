@@ -37,6 +37,15 @@ fn grok_fixture_requires_explicit_weekly_period() {
     );
     let monthly = fixture(include_str!("fixtures/grok/credits-monthly.json"));
     assert!(grok::parse_billing_response(&monthly, 1).is_err());
+    let omitted = fixture(include_str!("fixtures/grok/credits-omitted-percent.json"));
+    assert_eq!(
+        grok::parse_billing_response(&omitted, 1)
+            .unwrap()
+            .window(WindowKind::Weekly)
+            .unwrap()
+            .remaining_percent,
+        100.0
+    );
 }
 
 #[test]

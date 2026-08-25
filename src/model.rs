@@ -334,6 +334,12 @@ pub struct ProviderSnapshot {
     pub context: Option<ContextUsage>,
     #[serde(default)]
     pub session_summaries: BTreeMap<String, String>,
+    /// Login identity the snapshot was fetched for (Grok `user_id`, Codex
+    /// `tokens.account_id`). Used to drop another account's cached quota after
+    /// `grok login` / Codex account switch. Absent on snapshots written before
+    /// this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
 }
 
 impl ProviderSnapshot {
@@ -345,12 +351,40 @@ impl ProviderSnapshot {
             windows,
             context: None,
             session_summaries: BTreeMap::new(),
+            account_id: None,
         }
     }
 
     pub fn with_context(mut self, context: Option<ContextUsage>) -> Self {
         self.context = context;
         self
+    }
+
+    pub fn with_account_id(mut self, account_id: Option<String>) -> Self {
+        self.account_id = account_id;
+        self
+    }
+
+    /// Whether this cached snapshot still belongs to the signed-in account.
+    ///
+    /// A failed refresh must keep the last good value for the *current*
+    /// account, not a previous login. After an account switch:
+    /// - snapshots stamped with another `account_id` are unusable;
+    /// - legacy snapshots (no stamp) are unusable when the credential file is
+    ///   newer than `fetched_at_unix`, which is what `grok login` does.
+    pub fn usable_for_account(
+        &self,
+        current_account_id: Option<&str>,
+        credentials_mtime_unix: Option<u64>,
+    ) -> bool {
+        match (self.account_id.as_deref(), current_account_id) {
+            (Some(saved), Some(current)) => saved == current,
+            (Some(_), None) => false,
+            (None, Some(_)) => {
+                credentials_mtime_unix.is_none_or(|mtime| mtime <= self.fetched_at_unix)
+            }
+            (None, None) => true,
+        }
     }
 
     pub fn window(&self, kind: WindowKind) -> Option<&UsageWindow> {
@@ -474,6 +508,31 @@ mod tests {
         let context: ContextUsage = serde_json::from_str(r#"{"used_percent":23.5}"#).unwrap();
         assert_eq!(context.used_percent, 23.5);
         assert!(context.cache.is_none());
+    }
+
+    #[test]
+    fn cached_snapshot_from_another_account_is_not_usable() {
+        let snapshot = ProviderSnapshot::new(Provider::Grok, vec![], 100)
+            .with_account_id(Some("account-a".to_string()));
+        assert!(!snapshot.usable_for_account(Some("account-b"), Some(50)));
+        assert!(snapshot.usable_for_account(Some("account-a"), Some(200)));
+    }
+
+    #[test]
+    fn legacy_snapshot_is_dropped_when_credentials_are_newer_than_the_fetch() {
+        let snapshot = ProviderSnapshot::new(Provider::Grok, vec![], 100);
+        assert!(!snapshot.usable_for_account(Some("account-b"), Some(150)));
+        assert!(snapshot.usable_for_account(Some("account-b"), Some(100)));
+        assert!(snapshot.usable_for_account(Some("account-b"), Some(50)));
+    }
+
+    #[test]
+    fn old_snapshots_deserialize_without_account_id() {
+        let snapshot: ProviderSnapshot = serde_json::from_str(
+            r#"{"provider":"grok","source":"grok-cli-billing","fetched_at_unix":1,"windows":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(snapshot.account_id, None);
     }
 
     #[test]

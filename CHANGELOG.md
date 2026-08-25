@@ -32,6 +32,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Grok no longer sticks at `week 0%` after `grok login` switches accounts. A
+  fresh SuperGrok week omits `creditUsagePercent` (proto3 JSON drops zeros),
+  which the parser treated as an unsupported response and then kept the previous
+  login's exhausted snapshot. Omitted/null percent is 0% used (100% remaining),
+  snapshots are stamped with the signed-in `user_id`, and a cache from another
+  account is not published. Codex has the same per-provider cache and now
+  stamps `tokens.account_id` from `~/.codex/auth.json` so a ChatGPT account
+  switch cannot keep the previous user's weekly percent. Claude and Agy read
+  the running CLI's statusLine, so they were not affected.
 - Claude/Agy statusLine collectors now publish atomic observations without
   waiting on refresh work. Provider refreshes use independent non-blocking
   leases, and chained user statusLine commands run in a bounded process group
