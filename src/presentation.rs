@@ -36,6 +36,7 @@ impl MetadataTokens {
             now_unix,
             snapshot.model_for_session(session_id),
             snapshot.context_for_session(session_id),
+            snapshot.windows_for_session(session_id),
         )
     }
 
@@ -43,6 +44,11 @@ impl MetadataTokens {
     /// when Herdr cannot identify that pane's session. A provider-level model
     /// is still useful for the identity row, but context/cache values are
     /// session data and must stay blank until their session id is known.
+    ///
+    /// Quota windows are also resolved per session rather than from the
+    /// shared top-level snapshot: StatusLine providers (Claude, Agy) can have
+    /// more than one signed-in account reporting concurrently, and the
+    /// top-level windows only ever hold whichever account reported last.
     pub fn from_snapshot_for_pane(
         snapshot: &ProviderSnapshot,
         now_unix: u64,
@@ -54,7 +60,8 @@ impl MetadataTokens {
         };
         let context =
             session_id.and_then(|session_id| snapshot.context_for_session(Some(session_id)));
-        Self::from_snapshot_parts(snapshot, now_unix, quota_model, context)
+        let windows = snapshot.windows_for_session(session_id);
+        Self::from_snapshot_parts(snapshot, now_unix, quota_model, context, windows)
     }
 
     fn from_snapshot_parts(
@@ -62,23 +69,25 @@ impl MetadataTokens {
         now_unix: u64,
         model: Option<&str>,
         context: Option<&crate::model::ContextUsage>,
+        windows: &[UsageWindow],
     ) -> Self {
         let quota_provider = snapshot.provider.display_name().to_string();
         let quota_model = model.unwrap_or_default().to_string();
-        let quota_5h = sidebar_window(snapshot, WindowKind::FiveHour, now_unix);
+        let quota_5h = sidebar_window(windows, snapshot.provider, WindowKind::FiveHour, now_unix);
+        let severity = ProviderSnapshot::severity_for_windows(snapshot.provider, windows, now_unix);
         Self {
-            quota_state: snapshot.severity(now_unix).symbol().to_string(),
+            quota_state: severity.symbol().to_string(),
             quota_icon: snapshot.provider.icon().to_string(),
             quota_provider_model: provider_model_label(&quota_provider, &quota_model),
             quota_provider,
             quota_model,
-            quota_status: snapshot.severity(now_unix).label().to_string(),
-            quota_5h_severity: window_severity(snapshot, WindowKind::FiveHour, now_unix)
+            quota_status: severity.label().to_string(),
+            quota_5h_severity: window_severity(windows, WindowKind::FiveHour, now_unix)
                 .or_else(|| missing_five_hour_severity(snapshot.provider, &quota_5h)),
             quota_5h,
-            quota_week: sidebar_window(snapshot, WindowKind::Weekly, now_unix),
-            quota_week_severity: window_severity(snapshot, WindowKind::Weekly, now_unix),
-            quota_summary: sidebar_summary(snapshot, now_unix),
+            quota_week: sidebar_window(windows, snapshot.provider, WindowKind::Weekly, now_unix),
+            quota_week_severity: window_severity(windows, WindowKind::Weekly, now_unix),
+            quota_summary: summary_from_windows(windows, now_unix, false),
             quota_context: sidebar_context(context),
             quota_cache: sidebar_cache(context),
             quota_cache_ttl: sidebar_cache_ttl(context, now_unix),
@@ -118,39 +127,42 @@ fn provider_model_label(provider: &str, model: &str) -> String {
     }
 }
 
-fn window_severity(
-    snapshot: &ProviderSnapshot,
-    kind: WindowKind,
-    now_unix: u64,
-) -> Option<Severity> {
-    snapshot
-        .window(kind)
-        .map(|window| Severity::for_window(window, now_unix))
+fn window_severity(windows: &[UsageWindow], kind: WindowKind, now_unix: u64) -> Option<Severity> {
+    find_window(windows, kind).map(|window| Severity::for_window(window, now_unix))
+}
+
+fn find_window(windows: &[UsageWindow], kind: WindowKind) -> Option<&UsageWindow> {
+    windows.iter().find(|window| window.kind == kind)
 }
 
 pub fn sidebar_summary(snapshot: &ProviderSnapshot, now_unix: u64) -> String {
-    summary(snapshot, now_unix, false)
+    summary_from_windows(&snapshot.windows, now_unix, false)
 }
 
 pub fn dashboard_summary(snapshot: &ProviderSnapshot, now_unix: u64) -> String {
-    summary(snapshot, now_unix, true)
+    summary_from_windows(&snapshot.windows, now_unix, true)
 }
 
-fn summary(snapshot: &ProviderSnapshot, now_unix: u64, include_left: bool) -> String {
+fn summary_from_windows(windows: &[UsageWindow], now_unix: u64, include_left: bool) -> String {
     [WindowKind::FiveHour, WindowKind::Weekly]
         .into_iter()
-        .filter_map(|kind| snapshot.window(kind))
+        .filter_map(|kind| find_window(windows, kind))
         .map(|window| format_window(window, now_unix, include_left))
         .collect::<Vec<_>>()
         .join(" · ")
 }
 
-fn sidebar_window(snapshot: &ProviderSnapshot, kind: WindowKind, now_unix: u64) -> String {
-    if let Some(window) = snapshot.window(kind) {
+fn sidebar_window(
+    windows: &[UsageWindow],
+    provider: Provider,
+    kind: WindowKind,
+    now_unix: u64,
+) -> String {
+    if let Some(window) = find_window(windows, kind) {
         return format_compact_window(window, now_unix);
     }
     if kind == WindowKind::FiveHour {
-        return missing_five_hour_label(snapshot.provider)
+        return missing_five_hour_label(provider)
             .unwrap_or_default()
             .to_string();
     }

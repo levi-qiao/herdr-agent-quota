@@ -181,6 +181,16 @@ impl CacheStore {
                     .entry(session_id.clone())
                     .or_insert_with(|| context.clone());
             }
+            // Preserve every other session's last known quota windows. Each
+            // statusLine tick only reports the account signed in to the pane
+            // that fired it, so a concurrent second account's windows would
+            // otherwise be dropped the moment any other pane reports in.
+            for (session_id, windows) in &previous_snapshot.session_windows {
+                snapshot
+                    .session_windows
+                    .entry(session_id.clone())
+                    .or_insert_with(|| windows.clone());
+            }
         }
         if let Some(session_id) = session_id {
             if let Some(context) = snapshot.context.clone() {
@@ -188,6 +198,9 @@ impl CacheStore {
                     .session_contexts
                     .insert(session_id.to_string(), context);
             }
+            snapshot
+                .session_windows
+                .insert(session_id.to_string(), snapshot.windows.clone());
         }
         let current_session_ids = session_id
             .map(|session_id| vec![session_id.to_string()])
@@ -546,6 +559,22 @@ fn prune_session_diagnostics(snapshot: &mut ProviderSnapshot, current_session_id
             break;
         };
         snapshot.session_contexts.remove(&session_id);
+    }
+    while snapshot.session_windows.len() > MAX_STATUSLINE_SESSIONS {
+        let Some(session_id) = snapshot
+            .session_windows
+            .keys()
+            .find(|session_id| {
+                !current_session_ids
+                    .iter()
+                    .any(|current| current == *session_id)
+            })
+            .cloned()
+            .or_else(|| snapshot.session_windows.keys().next().cloned())
+        else {
+            break;
+        };
+        snapshot.session_windows.remove(&session_id);
     }
 }
 

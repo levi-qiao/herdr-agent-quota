@@ -355,6 +355,15 @@ pub struct ProviderSnapshot {
     /// pane's local rollout usage.
     #[serde(default)]
     pub session_contexts: BTreeMap<String, ContextUsage>,
+    /// Quota windows (5h/7d) keyed by the provider's session id. StatusLine
+    /// providers (Claude, Agy) can run more than one signed-in account
+    /// concurrently on the same machine (for example a work and a personal
+    /// login in separate config directories); the top-level `windows` field
+    /// only ever holds whichever account reported most recently, so a pane
+    /// with a known session id must read its own account's windows here
+    /// instead of falling back to that shared, potentially wrong value.
+    #[serde(default)]
+    pub session_windows: BTreeMap<String, Vec<UsageWindow>>,
     /// Login identity the snapshot was fetched for (Grok `user_id`, Codex
     /// `tokens.account_id`). Used to drop another account's cached quota after
     /// `grok login` / Codex account switch. Absent on snapshots written before
@@ -375,6 +384,7 @@ impl ProviderSnapshot {
             session_summaries: BTreeMap::new(),
             session_models: BTreeMap::new(),
             session_contexts: BTreeMap::new(),
+            session_windows: BTreeMap::new(),
             account_id: None,
         }
     }
@@ -413,6 +423,23 @@ impl ProviderSnapshot {
             return Some(context);
         }
         None
+    }
+
+    /// Return the quota windows for a pane's session. A known session never
+    /// falls back to provider-level data: the top-level `windows` field is
+    /// shared across every concurrently signed-in account for this provider,
+    /// so an unrecognized session must render as unavailable rather than
+    /// borrow another account's numbers. The global value is used only when
+    /// the caller has no session id at all (Herdr could not identify the
+    /// pane).
+    pub fn windows_for_session(&self, session_id: Option<&str>) -> &[UsageWindow] {
+        let Some(session_id) = session_id else {
+            return &self.windows;
+        };
+        match self.session_windows.get(session_id) {
+            Some(windows) => windows,
+            None => &[],
+        }
     }
 
     pub fn with_account_id(mut self, account_id: Option<String>) -> Self {
@@ -482,11 +509,23 @@ impl ProviderSnapshot {
     }
 
     pub fn severity(&self, now_unix: u64) -> Severity {
-        let relevant = match self.provider {
-            Provider::Grok => self.window(WindowKind::Weekly),
-            Provider::Codex | Provider::Claude | Provider::Agy => self
-                .window(WindowKind::FiveHour)
-                .or_else(|| self.window(WindowKind::Weekly)),
+        Self::severity_for_windows(self.provider, &self.windows, now_unix)
+    }
+
+    /// Same runway-health calculation as [`Self::severity`], but over an
+    /// explicit window slice so a pane can be scored against its own
+    /// session/account windows instead of the provider-wide top-level ones.
+    pub fn severity_for_windows(
+        provider: Provider,
+        windows: &[UsageWindow],
+        now_unix: u64,
+    ) -> Severity {
+        let find = |kind: WindowKind| windows.iter().find(|window| window.kind == kind);
+        let relevant = match provider {
+            Provider::Grok => find(WindowKind::Weekly),
+            Provider::Codex | Provider::Claude | Provider::Agy => {
+                find(WindowKind::FiveHour).or_else(|| find(WindowKind::Weekly))
+            }
         };
         relevant
             .map(|window| Severity::for_window(window, now_unix))
