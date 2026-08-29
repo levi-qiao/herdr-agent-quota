@@ -1379,3 +1379,46 @@ fn a_payg_session_does_not_fetch_go_usage_even_with_a_key_on_disk() {
         "a pay-as-you-go session fetched Go usage"
     );
 }
+
+/// Reading a pane makes Herdr repaint it, which the user sees as the agent's
+/// terminal scrolling. Only the `event` path may ever pay that cost, and only
+/// for the one pane the event named. A manual or startup refresh must read
+/// nothing at all, no matter how many panes are open.
+#[test]
+fn a_manual_refresh_reads_no_pane_at_all() {
+    let state = tempdir().unwrap();
+    let xdg = state.path().join("xdg-data");
+    install_opencode_store(&xdg, "auth-go.json", "sessions.db");
+    // A mixed inventory: original-four panes plus two OpenCode panes, so every
+    // resolution branch runs in the same pass.
+    let inventory = two_opencode_inventory("ses_go", "{}");
+    let (herdr, herdr_log, codex, _codex_log) =
+        install_logged_herdr_and_codex(state.path(), &inventory, None);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_herdr-agent-quota"))
+        .args(["refresh", "--provider", "all"])
+        .env("HERDR_PLUGIN_STATE_DIR", state.path())
+        .env("HERDR_BIN_PATH", &herdr)
+        .env("CODEX_BIN_PATH", &codex)
+        .env("GROK_HOME", state.path().join("missing-grok-home"))
+        .env("XDG_DATA_HOME", &xdg)
+        .env_remove("GROK_AUTH_FILE")
+        .env_remove("OPENCODE_API_KEY")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let calls = fs::read_to_string(&herdr_log).unwrap_or_default();
+    assert!(
+        !calls.contains("pane read"),
+        "manual refresh read a pane: {calls}"
+    );
+    assert!(
+        !calls.contains("recent"),
+        "manual refresh used a repainting source: {calls}"
+    );
+}

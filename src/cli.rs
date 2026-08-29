@@ -14,31 +14,52 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Fetch each selected provider's quota and publish it to its Herdr panes.
+    ///
+    /// Never reads pane output. OpenCode Go is not selectable here: it is
+    /// fetched only for a pane that resolved to that subscription.
     Refresh {
+        /// Providers to refresh.
         #[arg(long, default_value = "all")]
         provider: ProviderSelection,
+        /// Bypass the once-per-minute debounce and fetch now.
         #[arg(long)]
         force: bool,
+        /// Print the per-provider outcome as JSON.
         #[arg(long)]
         json: bool,
     },
     /// Keep selected working providers' quotas fresh with one global poller.
     /// This is started automatically by the Herdr status event hook.
     Watch {
+        /// Providers to keep fresh while their agents are working.
         #[arg(long, default_value = "all")]
         provider: ProviderSelection,
         /// Override the configured poll interval for this run.
         #[arg(long)]
         interval_seconds: Option<u64>,
     },
+    /// Handle one Herdr agent event. Invoked by the plugin's event hooks.
     Event,
+    /// Handle a Herdr pane-focus event. Invoked by the plugin's focus hook.
     Focus,
+    /// Render the quota dashboard shown in the Herdr popup pane.
     Dashboard,
+    /// Install, inspect, or remove this plugin's sidebar rows and collectors.
+    ///
+    /// With no flag this only reports what would change. Use `--agent` to work
+    /// on some agents and leave the rest untouched.
     Configure {
+        /// Report what would change without writing anything. This is the
+        /// default when no other flag is given.
         #[arg(long, conflicts_with_all = ["apply", "uninstall"])]
         check: bool,
+        /// Write the sidebar rows and install the selected agents' collectors.
+        /// Safe to re-run; it repairs an existing installation in place.
         #[arg(long, conflicts_with_all = ["check", "uninstall"])]
         apply: bool,
+        /// Remove what this plugin installed, restoring the previous
+        /// configuration. Without `--agent` this removes everything.
         #[arg(long, conflicts_with_all = ["check", "apply"])]
         uninstall: bool,
         /// Agents to configure: all, claude, codex, grok, agy, opencode.
@@ -51,7 +72,9 @@ pub enum Command {
         #[arg(long, requires = "apply")]
         watch_interval_seconds: Option<u64>,
     },
+    /// Claude statusLine hook. Claude Code invokes this; not for manual use.
     ClaudeStatusline,
+    /// Agy statusLine hook. Antigravity invokes this; not for manual use.
     AgyStatusline,
 }
 

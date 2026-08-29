@@ -613,6 +613,9 @@ fn is_status_line(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{
+        CacheUsage, ContextUsage, ProviderSnapshot, ResetAt, UsageWindow, WindowKind,
+    };
     use serde_json::json;
 
     #[test]
@@ -658,6 +661,78 @@ mod tests {
                 },
             ]
         );
+    }
+
+    /// Herdr reports at most 16 metadata tokens per pane. A snapshot that
+    /// fills every optional slot must still fit, or the tail is silently
+    /// dropped and the sidebar loses whichever rows land last.
+    #[test]
+    fn a_fully_populated_pane_stays_within_herdrs_sixteen_token_report_cap() {
+        const HERDR_TOKEN_REPORT_CAP: usize = 16;
+        for provider in [
+            Provider::Codex,
+            Provider::Grok,
+            Provider::Claude,
+            Provider::Agy,
+            Provider::OpenCodeGo,
+        ] {
+            let snapshot = ProviderSnapshot::new(
+                provider,
+                vec![
+                    UsageWindow::new(
+                        WindowKind::FiveHour,
+                        85.0,
+                        Some(ResetAt::from_unix_seconds(9_000)),
+                    )
+                    .unwrap(),
+                    UsageWindow::new(
+                        WindowKind::Weekly,
+                        42.0,
+                        Some(ResetAt::from_unix_seconds(600_000)),
+                    )
+                    .unwrap(),
+                    UsageWindow::new(
+                        WindowKind::Monthly,
+                        10.0,
+                        Some(ResetAt::from_unix_seconds(2_000_000)),
+                    )
+                    .unwrap(),
+                ],
+                0,
+            )
+            .with_model(Some("A Very Long Model Name".to_string()))
+            .with_context(Some(ContextUsage {
+                used_percent: 61.0,
+                cache: Some(CacheUsage {
+                    fresh_input_tokens: 1_000,
+                    read_tokens: 50_000,
+                    creation_tokens: 2_000,
+                    hit_percent: 96.4,
+                    ttl_seconds: Some(3_540),
+                    last_activity_unix: None,
+                    session_totals: None,
+                    session_id: None,
+                    transcript_offset: 0,
+                }),
+            }));
+            let desired = desired_tokens(
+                &MetadataTokens::from_snapshot(&snapshot, 0),
+                "a topic that is present",
+            );
+            assert!(
+                desired.len() <= HERDR_TOKEN_REPORT_CAP,
+                "{provider:?} would report {} tokens: {:?}",
+                desired.len(),
+                desired.keys().collect::<Vec<_>>()
+            );
+            // A monthly window must not have leaked in through a weekly token.
+            for (name, value) in &desired {
+                assert!(
+                    !value.contains("30d"),
+                    "{provider:?} put a monthly value in {name}"
+                );
+            }
+        }
     }
 
     #[test]

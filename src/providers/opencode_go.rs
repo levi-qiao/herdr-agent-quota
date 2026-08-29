@@ -259,6 +259,37 @@ mod tests {
     }
 
     #[test]
+    fn every_transport_and_status_failure_maps_to_an_error_not_a_quota_value() {
+        // 429 and a timeout must read as failures so the caller keeps the last
+        // good snapshot; neither may become a 0% window.
+        let rate_limited = http_error_status(&ureq::Error::Status(
+            429,
+            ureq::Response::new(429, "Too Many Requests", "").unwrap(),
+        ));
+        assert_eq!(rate_limited, "HTTP 429");
+
+        for code in [401, 403] {
+            let status = http_error_status(&ureq::Error::Status(
+                code,
+                ureq::Response::new(code, "denied", "").unwrap(),
+            ));
+            assert!(status.contains("invalid credentials"), "{code}: {status}");
+        }
+
+        // Every mapped status is a message, never a number a window could be
+        // built from. The transport arm (timeout, DNS, TLS) is ureq's own
+        // Display text and cannot be constructed here, but it takes the same
+        // path: an Err, so the caller keeps its last good snapshot.
+        for code in [400, 429, 500, 503] {
+            let status = http_error_status(&ureq::Error::Status(
+                code,
+                ureq::Response::new(code, "x", "").unwrap(),
+            ));
+            assert!(!status.contains('%'), "{code}: {status}");
+        }
+    }
+
+    #[test]
     fn the_endpoint_is_the_official_host_only() {
         assert!(USAGE_URL.starts_with("https://opencode.ai/"));
     }
