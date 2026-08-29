@@ -3,10 +3,11 @@ use crate::herdr::{
     current_focused_pane, list_agent_panes, list_agent_state, plugin_quota_present,
     publish_pane_tokens, refresh_pane_topic, AgentPane, PaneTokens,
 };
-use crate::model::{Harness, Provider, ProviderSnapshot, Resolution};
+use crate::model::{BillingTarget, Harness, Provider, ProviderSnapshot, Resolution};
+use crate::opencode::OpenCodePaths;
 use crate::presentation::MetadataTokens;
 use crate::providers::statusline::enrich_cache_session;
-use crate::providers::{codex, grok};
+use crate::providers::{codex, grok, opencode_go};
 use crate::route;
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -212,6 +213,36 @@ fn handle_named_pane(cache: &CacheStore, pane: AgentPane, topic_pane: Option<&st
     publish_resolved(cache, &mut panes, topic_pane)
 }
 
+/// Refresh a billing target that has no 1:1 harness collector.
+///
+/// Failure is deliberately silent: the pane keeps the last good snapshot for
+/// this same target rather than being cleared, and a missing key is a normal
+/// state (the user may not have a Go subscription) rather than an error worth
+/// surfacing on every event.
+fn refresh_scoped_target(cache: &CacheStore, target: &BillingTarget) {
+    let now = CacheStore::now_unix();
+    if should_skip_fetch(cache, target.billing, false, now).unwrap_or(true) {
+        return;
+    }
+    let Ok(Some(_lease)) = cache.try_lock_target_refresh(target) else {
+        return;
+    };
+    let Some(paths) = OpenCodePaths::from_env() else {
+        return;
+    };
+    let Some(key) = crate::opencode::go_key(&paths) else {
+        return;
+    };
+    // Marked before the request so a failing endpoint cannot be retried on
+    // every event; the debounce window applies to attempts, not successes.
+    if cache.mark_refresh(target.billing, now).is_err() {
+        return;
+    }
+    if let Ok(snapshot) = opencode_go::fetch(&key) {
+        let _ = cache.save(&snapshot);
+    }
+}
+
 fn covers_every_collector(providers: &[Provider]) -> bool {
     Provider::ALL
         .iter()
@@ -293,6 +324,11 @@ fn refresh_provider(
         Provider::Codex => codex::fetch_for_sessions(&session_ids).map(FetchedSnapshot::direct),
         Provider::Grok => grok::fetch_for_sessions(&session_ids).map(FetchedSnapshot::direct),
         Provider::Claude | Provider::Agy => load_statusline_snapshot(cache, provider),
+        // OpenCode Go is fetched for a resolved pane, never through the
+        // provider list; see `fetch_opencode_go`.
+        Provider::OpenCodeGo => Err(anyhow::anyhow!(
+            "OpenCode Go is refreshed per resolved pane, not through --provider"
+        )),
     };
     cache.mark_refresh(provider, now)?;
     match fetched {
@@ -368,7 +404,7 @@ fn current_account_gate(provider: Provider) -> (Option<String>, Option<u64>) {
             (account_id, mtime)
         }
         Provider::Codex => (codex::current_account_id(), codex::auth_mtime_unix()),
-        Provider::Claude | Provider::Agy => (None, None),
+        Provider::Claude | Provider::Agy | Provider::OpenCodeGo => (None, None),
     }
 }
 
@@ -444,9 +480,24 @@ fn publish_resolved(
                             values: Some(values),
                         });
                     }
+                } else {
+                    // Not one of the original four, so it is never fetched by
+                    // the provider list: this pane resolved to it, so this pane
+                    // pays for at most one debounced request.
+                    refresh_scoped_target(cache, &target);
+                    // A scoped target has no per-account gate to fail, so a
+                    // cached snapshot is simply usable; without one the pane
+                    // keeps whatever it already shows.
+                    let snapshot = cache.load(target.billing)?;
+                    if let Some(values) =
+                        tokens_for_provider(snapshot.as_ref(), now, pane.session_id.as_deref())
+                    {
+                        tokens.push(PaneTokens {
+                            pane_id: pane.pane_id.clone(),
+                            values: Some(values),
+                        });
+                    }
                 }
-                // Targets without a collector yet (OpenCode Go) carry no
-                // snapshot, so they publish nothing and keep prior metadata.
             }
             Resolution::NoSubscription => {
                 if plugin_quota_present(&pane.tokens) {

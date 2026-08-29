@@ -142,6 +142,35 @@ agent 仍然安装时执行是安全的，重复执行也没有副作用。两�
 
 `--agent` 同样作用于 `--check`：只报告将要发生的变更，不写入任何文件。
 
+### OpenCode Go 属于尽力而为，欢迎协作者接手
+
+**本仓库维护者没有 OpenCode Go 订阅。** 其余每个 provider 都是对着真实账号做出来并
+验证过的，只有 OpenCode Go 做不到——它是本插件里唯一处于这种状态的部分。
+
+**一手验证过的：**
+
+- OpenCode 的本地存储：只读 `opencode.db` 的会话查询、`auth.json` 的凭据形状，以及
+  `opencode-go` 与 `opencode`（Zen）的区别，均对着真实的 opencode 1.18.20 实测。
+- `https://opencode.ai/zen/go/v1/usage` 确实存在，且对错误 token 返回 `401` 而非 `404`。
+
+**来自二手来源、未亲眼见过的：**
+
+- 成功响应的字段形状与 `percent` 的语义。取自
+  [CodexBar](https://github.com/steipete/CodexBar) 的实现及其自身测试用例，逐行引用
+  记录在 [`docs/research/opencode-go-usage.md`](docs/research/opencode-go-usage.md)。
+
+因此采集器一律 fail closed：字段缺失、格式错误或类型意外时**不产出窗口**而不是猜一个
+数；可选窗口缺失就省略，而不是报成 `0%`；`401`/`403` 永远不会变成 0% 读数。抓取失败
+时 pane 保留上一次的好值，而不是被清空。
+
+**这些都不会影响其他 provider。** OpenCode Go 刻意不在 `Provider::ALL` 里，所以
+`refresh --provider all`、活跃轮次 watcher 以及原有四家的缓存文件行为完全不变。它只会
+为「已归属到它」的那个 pane 触发，走自己独立的凭据作用域缓存和刷新 lease。不用
+OpenCode 就什么都不会跑；没有 Go key 就永远不会发出请求。两条都有测试覆盖。
+
+如果你有 Go 订阅，无论数字看着对不对，都欢迎提 issue 或 PR。一份脱敏的真实响应就能把
+现在的 fixture 换成实测数据。**这个 provider 非常欢迎有人共同维护。**
+
 ### 前提：Herdr 自己的 agent integration
 
 额度是通过 Herdr 为 pane 报告的 session id 归属到具体订阅的，而 Herdr 只有在装了

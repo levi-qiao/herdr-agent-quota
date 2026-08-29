@@ -44,7 +44,7 @@ fn resolve_opencode(session_id: Option<&str>, paths: Option<OpenCodePaths>) -> R
 mod tests {
     use super::*;
     use crate::herdr::AgentPane;
-    use crate::model::{BillingIdentity, CredentialScope, Provider};
+    use crate::model::{CredentialScope, Provider};
     use crate::opencode::{parse_auth_json, AuthReadError, SessionEvidence, SessionLookup};
     use std::collections::BTreeMap;
     use std::fs;
@@ -103,7 +103,7 @@ mod tests {
         let Resolution::Subscription(target) = resolution else {
             panic!("expected subscription");
         };
-        assert_eq!(target.billing, BillingIdentity::OpenCodeGo);
+        assert_eq!(target.billing, Provider::OpenCodeGo);
         assert_eq!(target.credential_scope, CredentialScope::OPENCODE_STORE);
         assert_eq!(target.cache_identity(), "opencode-go.opencode-store");
     }

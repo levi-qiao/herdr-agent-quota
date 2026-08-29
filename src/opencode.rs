@@ -94,6 +94,31 @@ pub fn env_go_key_present() -> bool {
     std::env::var_os("OPENCODE_API_KEY").is_some_and(|value| !value.is_empty())
 }
 
+/// The Go subscription key itself, for the one caller that must send it.
+///
+/// [`AuthMap`] deliberately records only whether a secret exists, so the value
+/// never travels with the parsed credential map. This reads it on demand and
+/// hands back an owned string the caller drops as soon as the request is made.
+/// `OPENCODE_API_KEY` wins, matching how OpenCode itself resolves the key.
+pub fn go_key(paths: &OpenCodePaths) -> Option<String> {
+    if let Some(key) = std::env::var("OPENCODE_API_KEY")
+        .ok()
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+    {
+        return Some(key);
+    }
+    let bytes = fs::read(&paths.auth).ok()?;
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    let key = value
+        .get("opencode-go")?
+        .get("key")?
+        .as_str()?
+        .trim()
+        .to_string();
+    (!key.is_empty()).then_some(key)
+}
+
 pub fn read_auth(paths: &OpenCodePaths) -> Result<AuthMap, AuthReadError> {
     read_auth_file(&paths.auth)
 }
@@ -363,6 +388,29 @@ mod tests {
         fs::write(&db, b"this is not a sqlite database").unwrap();
         let paths = OpenCodePaths::from_dir(directory.path());
         assert_eq!(lookup_session(&paths, "ses_go"), SessionLookup::Unreadable);
+    }
+
+    #[test]
+    fn the_go_key_is_read_on_demand_and_not_kept_in_the_credential_map() {
+        let directory = tempdir().unwrap();
+        let paths = OpenCodePaths::from_dir(directory.path());
+        fs::write(
+            &paths.auth,
+            br#"{"opencode-go":{"type":"api","key":"go_secret"},"anthropic":{"type":"api","key":"other"}}"#,
+        )
+        .unwrap();
+        assert_eq!(go_key(&paths).as_deref(), Some("go_secret"));
+        let auth = read_auth(&paths).unwrap();
+        assert!(!format!("{auth:?}").contains("go_secret"));
+
+        fs::write(
+            &paths.auth,
+            br#"{"anthropic":{"type":"api","key":"other"}}"#,
+        )
+        .unwrap();
+        assert_eq!(go_key(&paths), None);
+        fs::write(&paths.auth, br#"{"opencode-go":{"type":"api","key":"  "}}"#).unwrap();
+        assert_eq!(go_key(&paths), None);
     }
 
     #[test]

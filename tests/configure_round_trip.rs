@@ -1308,3 +1308,74 @@ fn an_unusable_environment_selection_still_installs_everything() {
         assert!(sidebar.contains(expected), "{expected} missing: {sidebar}");
     }
 }
+
+/// Someone with an OpenCode pane but no Go subscription must never cause a
+/// request. The stub herdr logs every call, and the plugin has no key to send,
+/// so a network attempt would show up as a failure or a hang rather than a
+/// clean, silent no-op.
+#[test]
+fn an_opencode_pane_without_a_go_key_makes_no_request_and_no_metadata_write() {
+    let state = tempdir().unwrap();
+    let xdg = state.path().join("xdg-data");
+    install_opencode_store(&xdg, "auth-payg.json", "sessions.db");
+    let inventory = two_opencode_inventory("ses_go", "{}");
+    let (herdr, herdr_log, codex, codex_log) =
+        install_logged_herdr_and_codex(state.path(), &inventory, None);
+
+    let output = run_event_binary_with_xdg(
+        state.path(),
+        &herdr,
+        &codex,
+        &opencode_working_event("w1:p9"),
+        &xdg,
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    thread::sleep(Duration::from_millis(200));
+
+    original_four_untouched(state.path(), &codex_log);
+    let calls = fs::read_to_string(&herdr_log).unwrap_or_default();
+    assert!(!calls.contains("opencode.ai"), "{calls}");
+    assert!(
+        !state
+            .path()
+            .join("opencode-go.opencode-store.json")
+            .exists(),
+        "a snapshot was cached without any credential"
+    );
+}
+
+/// A Go key present but the session on a pay-as-you-go backend must also stay
+/// quiet: resolution decides, not the presence of a credential on disk.
+#[test]
+fn a_payg_session_does_not_fetch_go_usage_even_with_a_key_on_disk() {
+    let state = tempdir().unwrap();
+    let xdg = state.path().join("xdg-data");
+    install_opencode_store(&xdg, "auth-go.json", "sessions.db");
+    let inventory = two_opencode_inventory("ses_payg", "{}");
+    let (herdr, _herdr_log, codex, codex_log) =
+        install_logged_herdr_and_codex(state.path(), &inventory, None);
+
+    assert!(run_event_binary_with_xdg(
+        state.path(),
+        &herdr,
+        &codex,
+        &opencode_working_event("w1:p9"),
+        &xdg,
+    )
+    .status
+    .success());
+    thread::sleep(Duration::from_millis(200));
+
+    original_four_untouched(state.path(), &codex_log);
+    assert!(
+        !state
+            .path()
+            .join("opencode-go.opencode-store.json")
+            .exists(),
+        "a pay-as-you-go session fetched Go usage"
+    );
+}

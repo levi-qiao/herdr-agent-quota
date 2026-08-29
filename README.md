@@ -147,6 +147,44 @@ hook you wrote yourself is left alone.
 `--agent` also narrows `--check`, which reports what would change without
 writing anything.
 
+### OpenCode Go is best-effort and looking for a maintainer
+
+**The maintainer of this repository does not have an OpenCode Go subscription.**
+Every other provider here was built and checked against a live account; OpenCode
+Go could not be, and it is the only part of this plugin in that position.
+
+What *is* verified first hand:
+
+- OpenCode's local storage: the read-only `opencode.db` session lookup, the
+  `auth.json` credential shapes, and the `opencode-go` vs `opencode` (Zen)
+  distinction, all checked against a real opencode 1.18.20 install.
+- That `https://opencode.ai/zen/go/v1/usage` exists and rejects a bad token with
+  `401` rather than `404`.
+
+What is taken from a second source rather than observed:
+
+- The success response shape and the meaning of its `percent` field. These come
+  from [CodexBar](https://github.com/steipete/CodexBar)'s implementation and its
+  own test fixtures, cited line by line in
+  [`docs/research/opencode-go-usage.md`](docs/research/opencode-go-usage.md).
+
+Because of that, the collector is written to fail closed: a missing, malformed
+or unexpected field produces no window instead of a guessed number, an absent
+optional window is omitted rather than reported as `0%`, and `401`/`403` never
+becomes a zero-percent reading. A pane keeps its last good value rather than
+being cleared when a fetch fails.
+
+**None of this can affect the other providers.** OpenCode Go is deliberately
+absent from `Provider::ALL`, so `refresh --provider all`, the active-turn
+watcher and the original four's cache files behave exactly as before. It is only
+ever fetched for a pane that resolved to it, through its own credential-scoped
+cache and refresh lease. If you do not use OpenCode, nothing here runs; if you
+do not have a Go key, no request is ever made. Both are covered by tests.
+
+If you have a Go subscription and the numbers look wrong — or right — please
+open an issue or a PR. A sanitized real response would let the fixtures be
+replaced with observed data, and help with this provider is very welcome.
+
 ### Herdr's agent integration is a prerequisite
 
 Quota is attributed to a pane through the session id Herdr reports for it, and

@@ -23,6 +23,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   quota cannot be attributed and the pane stays blank with no other clue. The
   integration belongs to Herdr (`herdr integration install <agent>`); this
   plugin never installs or changes it.
+- OpenCode Go quota, fetched once per resolved pane from the official
+  `https://opencode.ai/zen/go/v1/usage` endpoint using the key OpenCode already
+  stores for its own `opencode-go` backend. The dashboard also renders a monthly
+  window; the sidebar stays at 5h/7d because there is no monthly token.
+  This provider is best-effort: the repository maintainer has no Go
+  subscription, so the response shape comes from CodexBar's implementation and
+  tests rather than an observed live response, cited in
+  `docs/research/opencode-go-usage.md`. It fails closed on anything unexpected
+  and cannot affect the other providers, which keep their exact previous
+  behavior. Corrections from anyone with a subscription are welcome.
 - OpenCode panes are resolved to a billing target from the exact Herdr session
   id, looked up read-only in `opencode.db` and classified against the
   credential filed for that backend in OpenCode's `auth.json`. Confirmed

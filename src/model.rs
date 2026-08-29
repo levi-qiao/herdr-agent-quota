@@ -16,6 +16,10 @@ pub enum Provider {
     Grok,
     Claude,
     Agy,
+    /// OpenCode's Go subscription. Deliberately absent from [`Provider::ALL`]:
+    /// it has no 1:1 harness mapping and is only ever fetched for a pane that
+    /// resolved to it, so the original four keep their exact refresh behavior.
+    OpenCodeGo,
 }
 
 /// Quota collector identity. The original four keep the historical
@@ -23,6 +27,8 @@ pub enum Provider {
 pub type Billing = Provider;
 
 impl Provider {
+    /// The collectors a bare `--provider all` refreshes. OpenCode Go is not
+    /// here on purpose; see the variant's note.
     pub const ALL: [Self; 4] = [Self::Codex, Self::Grok, Self::Claude, Self::Agy];
 
     pub fn badge(self) -> &'static str {
@@ -31,6 +37,7 @@ impl Provider {
             Self::Grok => "[X]",
             Self::Claude => "[A]",
             Self::Agy => "[G]",
+            Self::OpenCodeGo => "[O]",
         }
     }
 
@@ -42,6 +49,7 @@ impl Provider {
             Self::Grok => "✕G",
             Self::Claude => "✦Cl",
             Self::Agy => "△Ag",
+            Self::OpenCodeGo => "◇Go",
         }
     }
 
@@ -51,6 +59,7 @@ impl Provider {
             Self::Grok => "Grok",
             Self::Claude => "Claude",
             Self::Agy => "Agy",
+            Self::OpenCodeGo => "OpenCode Go",
         }
     }
 
@@ -60,6 +69,9 @@ impl Provider {
             Self::Grok => "grok-cli-billing",
             Self::Claude => "claude-statusline",
             Self::Agy => "agy-statusline",
+            // Scoped to the OpenCode credential store so it can never collide
+            // with the original four's 0.2 filenames.
+            Self::OpenCodeGo => "opencode-go.opencode-store",
         }
     }
 
@@ -136,54 +148,45 @@ impl CredentialScope {
     }
 }
 
-/// Billing identity for a resolved pane. Original-four variants keep using
-/// [`Provider`] so 0.2 cache filenames stay unchanged.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BillingIdentity {
-    Original(Provider),
-    OpenCodeGo,
-}
-
 /// Subscription paying for a pane, scoped to one credential store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BillingTarget {
-    pub billing: BillingIdentity,
+    pub billing: Provider,
     pub credential_scope: CredentialScope,
 }
 
 impl BillingTarget {
     pub fn original_four(provider: Provider) -> Self {
         Self {
-            billing: BillingIdentity::Original(provider),
+            billing: provider,
             credential_scope: CredentialScope::CANONICAL,
         }
     }
 
     pub fn opencode_go() -> Self {
         Self {
-            billing: BillingIdentity::OpenCodeGo,
+            billing: Provider::OpenCodeGo,
             credential_scope: CredentialScope::OPENCODE_STORE,
         }
     }
 
+    /// The billing identity when it is one of the original four collectors.
+    ///
+    /// Those are refreshed through the provider list; anything else is fetched
+    /// only for the pane that resolved to it.
     pub fn original_provider(self) -> Option<Provider> {
-        match self.billing {
-            BillingIdentity::Original(provider) => Some(provider),
-            BillingIdentity::OpenCodeGo => None,
-        }
+        Provider::ALL
+            .contains(&self.billing)
+            .then_some(self.billing)
     }
 
     /// Cache, lease, and refresh-marker filename stem.
     ///
-    /// Original-four stems stay the 0.2 source ids. New targets include the
-    /// credential-scope identity so they cannot collide with those files.
+    /// One authority for every target: the original four keep their 0.2 source
+    /// ids, and a scoped target carries its credential scope in the stem so it
+    /// cannot collide with them.
     pub fn cache_identity(self) -> String {
-        match self.billing {
-            BillingIdentity::Original(provider) => provider.source().to_string(),
-            BillingIdentity::OpenCodeGo => {
-                format!("opencode-go.{}", self.credential_scope.as_str())
-            }
-        }
+        self.billing.source().to_string()
     }
 }
 
@@ -210,6 +213,9 @@ impl std::str::FromStr for Provider {
 pub enum WindowKind {
     FiveHour,
     Weekly,
+    /// Cached and rendered in the dashboard only. The sidebar has no monthly
+    /// token, and a 30d value must never be published through a weekly one.
+    Monthly,
 }
 
 impl WindowKind {
@@ -217,6 +223,7 @@ impl WindowKind {
         match self {
             Self::FiveHour => "5h",
             Self::Weekly => "7d",
+            Self::Monthly => "30d",
         }
     }
 
@@ -224,6 +231,7 @@ impl WindowKind {
         match self {
             Self::FiveHour => 5 * 60 * 60,
             Self::Weekly => 7 * 24 * 60 * 60,
+            Self::Monthly => 30 * 24 * 60 * 60,
         }
     }
 }
@@ -636,7 +644,7 @@ impl ProviderSnapshot {
     ) -> Severity {
         let relevant = match provider {
             Provider::Grok => window_in(windows, WindowKind::Weekly),
-            Provider::Codex | Provider::Claude | Provider::Agy => {
+            Provider::Codex | Provider::Claude | Provider::Agy | Provider::OpenCodeGo => {
                 window_in(windows, WindowKind::FiveHour)
                     .or_else(|| window_in(windows, WindowKind::Weekly))
             }

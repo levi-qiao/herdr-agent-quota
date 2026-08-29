@@ -135,14 +135,40 @@ pub fn sidebar_summary(snapshot: &ProviderSnapshot, now_unix: u64) -> String {
     summary_from_windows(&snapshot.windows, now_unix, false)
 }
 
+/// The dashboard has room for every window, including a monthly one. The
+/// sidebar deliberately stays at 5h/7d: there is no monthly metadata token,
+/// and a 30d value must never be folded into a weekly one.
 pub fn dashboard_summary(snapshot: &ProviderSnapshot, now_unix: u64) -> String {
-    summary_from_windows(&snapshot.windows, now_unix, true)
+    windows_summary(
+        &snapshot.windows,
+        &[
+            WindowKind::FiveHour,
+            WindowKind::Weekly,
+            WindowKind::Monthly,
+        ],
+        now_unix,
+        true,
+    )
 }
 
 fn summary_from_windows(windows: &[UsageWindow], now_unix: u64, include_left: bool) -> String {
-    [WindowKind::FiveHour, WindowKind::Weekly]
-        .into_iter()
-        .filter_map(|kind| window_in(windows, kind))
+    windows_summary(
+        windows,
+        &[WindowKind::FiveHour, WindowKind::Weekly],
+        now_unix,
+        include_left,
+    )
+}
+
+fn windows_summary(
+    windows: &[UsageWindow],
+    kinds: &[WindowKind],
+    now_unix: u64,
+    include_left: bool,
+) -> String {
+    kinds
+        .iter()
+        .filter_map(|kind| window_in(windows, *kind))
         .map(|window| format_window(window, now_unix, include_left))
         .collect::<Vec<_>>()
         .join(" · ")
@@ -170,7 +196,7 @@ fn missing_five_hour_label(provider: Provider) -> Option<&'static str> {
     // Claude/Agy keep a visible placeholder on their separate limits row.
     match provider {
         Provider::Claude | Provider::Agy => Some("5h N/A"),
-        Provider::Codex | Provider::Grok => None,
+        Provider::Codex | Provider::Grok | Provider::OpenCodeGo => None,
     }
 }
 
@@ -232,10 +258,7 @@ fn format_window(window: &UsageWindow, now_unix: u64, include_left: bool) -> Str
 }
 
 fn format_compact_window(window: &UsageWindow, now_unix: u64) -> String {
-    let label = match window.kind {
-        WindowKind::FiveHour => "5h",
-        WindowKind::Weekly => "7d",
-    };
+    let label = window.kind.label();
     let percent = format!("{}%", format_percent(window.remaining_percent));
     let Some(reset) = window.resets_at else {
         return format!("{label} {percent}");
@@ -275,6 +298,28 @@ fn format_ttl(seconds: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_monthly_window_reaches_the_dashboard_but_never_the_sidebar() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::OpenCodeGo,
+            vec![
+                window(WindowKind::FiveHour, 10.0, 3_600),
+                window(WindowKind::Weekly, 20.0, 183_600),
+                window(WindowKind::Monthly, 30.0, 1_500_000),
+            ],
+            0,
+        );
+        let dashboard = dashboard_summary(&snapshot, 0);
+        assert!(dashboard.contains("30d"), "{dashboard}");
+
+        let sidebar = MetadataTokens::from_snapshot(&snapshot, 0);
+        assert!(!sidebar.quota_summary.contains("30d"), "{sidebar:?}");
+        assert!(!sidebar.quota_week.contains("30d"), "{sidebar:?}");
+        // No monthly token exists, so the value must not ride in on another.
+        assert!(sidebar.quota_5h.contains("5h"));
+        assert!(sidebar.quota_week.contains("7d"));
+    }
     use super::*;
     use crate::model::{ProviderSnapshot, UsageWindow};
 
