@@ -1,4 +1,4 @@
-use crate::model::Provider;
+use crate::model::{Harness, Provider};
 use crate::presentation::MetadataTokens;
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -98,9 +98,7 @@ fn list_agent_value() -> Result<Value> {
 
 pub fn current_agent_provider() -> Result<Option<Provider>> {
     if let Some(agent) = std::env::var_os("HERDR_FOCUSED_PANE_AGENT") {
-        if let Ok(provider) = agent.to_string_lossy().parse::<Provider>() {
-            return Ok(Some(provider));
-        }
+        return Ok(Harness::billing_for_agent(&agent.to_string_lossy()));
     }
     let executable = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
     let output = Command::new(executable)
@@ -115,7 +113,7 @@ pub fn current_agent_provider() -> Result<Option<Provider>> {
     Ok(value
         .pointer("/result/pane/agent")
         .and_then(Value::as_str)
-        .and_then(|agent| agent.parse::<Provider>().ok()))
+        .and_then(Harness::billing_for_agent))
 }
 
 // Reading a pane makes Herdr repaint it, which visibly scrolls the agent's
@@ -146,7 +144,7 @@ fn collect_agent_panes(value: &Value, panes: &mut Vec<AgentPane>) {
                         .and_then(Value::as_str)
                 });
             if let (Some(pane_id), Some(kind)) = (pane_id, kind) {
-                if let Ok(provider) = kind.parse::<Provider>() {
+                if let Some(provider) = Harness::billing_for_agent(kind) {
                     let tokens: BTreeMap<String, String> = map
                         .get("tokens")
                         .and_then(Value::as_object)
@@ -224,7 +222,7 @@ fn collect_working_providers(value: &Value, providers: &mut Vec<Provider>) {
                 .and_then(Value::as_str);
             if let (Some(kind), Some(status)) = (kind, status) {
                 if status.eq_ignore_ascii_case("working") {
-                    if let Ok(provider) = kind.parse::<Provider>() {
+                    if let Some(provider) = Harness::billing_for_agent(kind) {
                         providers.push(provider);
                     }
                 }
@@ -597,7 +595,8 @@ mod tests {
         let value = json!({"result": {"agents": [
             {"pane_id": "w1:p1", "tab_id": "w1:t1", "agent": "codex"},
             {"pane_id": "w1:p2", "tab_id": "w1:t2", "agent_session": {"agent": "claude"}},
-            {"pane_id": "w1:p3", "agent": "unknown"}
+            {"pane_id": "w1:p3", "agent": "unknown"},
+            {"pane_id": "w1:p4", "agent": "opencode"}
         ], "tabs": [
             {"tab_id": "w1:t1", "label": "Owner"},
             {"tab_id": "w1:t2", "label": "Executor"}
@@ -808,7 +807,8 @@ mod tests {
     fn working_agent_detection_handles_herdr_agent_list_shape() {
         let value = json!({"result": {"agents": [
             {"agent": "claude", "agent_status": "working"},
-            {"agent": "codex", "agent_status": "idle"}
+            {"agent": "codex", "agent_status": "idle"},
+            {"agent": "opencode", "agent_status": "working"}
         ]}});
         assert_eq!(working_providers_from(&value), vec![Provider::Claude]);
     }

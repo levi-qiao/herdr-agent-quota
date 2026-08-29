@@ -671,6 +671,172 @@ fn agent_event_refreshes_and_reads_topics_only_for_its_provider() {
     assert!(!calls.contains("pane read w1:p2"));
 }
 
+fn chmod_exec(path: &Path) {
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).unwrap();
+}
+
+fn original_four_inventory_with_working_codex() -> &'static str {
+    r#"{"result":{"agents":[{"agent":"claude","pane_id":"w1:p1","agent_status":"idle"},{"agent":"codex","pane_id":"w1:p2","agent_status":"working"},{"agent":"grok","pane_id":"w1:p3","agent_status":"idle"},{"agent":"agy","pane_id":"w1:p4","agent_status":"idle"},{"agent":"opencode","pane_id":"w1:p9","agent_status":"working"}]}}"#
+}
+
+fn install_logged_herdr_and_codex(
+    state: &Path,
+    agent_list: &str,
+    pane_current: Option<&str>,
+) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+    let herdr_log = state.join("herdr.log");
+    let codex_log = state.join("codex.log");
+    let herdr = state.join("herdr");
+    let codex = state.join("codex");
+    let pane_current_branch = pane_current
+        .map(|json| {
+            format!("elif [ \"$1 $2\" = \"pane current\" ]; then\n  printf '%s\\n' '{json}'\n")
+        })
+        .unwrap_or_default();
+    fs::write(
+        &herdr,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\nif [ \"$1 $2\" = \"agent list\" ]; then\n  printf '%s\\n' '{agents}'\n{pane_current}elif [ \"$1 $2\" = \"pane get\" ]; then\n  printf '%s\\n' '{scroll}'\nfi\n",
+            log = herdr_log.display(),
+            agents = agent_list,
+            pane_current = pane_current_branch,
+            scroll = r#"{"result":{"pane":{"scroll":{"offset_from_bottom":0}}}}"#,
+        ),
+    )
+    .unwrap();
+    fs::write(
+        &codex,
+        format!("#!/bin/sh\nprintf called > '{}'\n", codex_log.display()),
+    )
+    .unwrap();
+    chmod_exec(&herdr);
+    chmod_exec(&codex);
+    (herdr, herdr_log, codex, codex_log)
+}
+
+fn run_event_binary(
+    state: &Path,
+    herdr: &Path,
+    codex: &Path,
+    event_json: &str,
+) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_herdr-agent-quota"))
+        .arg("event")
+        .env("HERDR_PLUGIN_STATE_DIR", state)
+        .env("HERDR_BIN_PATH", herdr)
+        .env("CODEX_BIN_PATH", codex)
+        .env("GROK_HOME", state.join("missing-grok-home"))
+        .env_remove("GROK_AUTH_FILE")
+        .env("HERDR_PLUGIN_EVENT_JSON", event_json)
+        .output()
+        .unwrap()
+}
+
+fn assert_no_original_four_collection(state: &Path, herdr_log: &Path, codex_log: &Path) {
+    assert!(
+        !codex_log.exists(),
+        "Codex stub was invoked: {}",
+        fs::read_to_string(codex_log).unwrap_or_default()
+    );
+    let calls = fs::read_to_string(herdr_log).unwrap_or_default();
+    assert!(
+        !calls.contains("pane read"),
+        "unexpected pane read: {calls}"
+    );
+    assert!(
+        !calls.contains("pane report-metadata"),
+        "unexpected metadata write: {calls}"
+    );
+    for marker in [
+        "codex-app-server.refresh",
+        "grok-cli-billing.refresh",
+        "claude-statusline.refresh",
+        "agy-statusline.refresh",
+    ] {
+        assert!(!state.join(marker).exists(), "{marker} was written");
+    }
+}
+
+#[test]
+fn opencode_working_event_does_not_refresh_any_collector() {
+    let state = tempdir().unwrap();
+    let (herdr, herdr_log, codex, codex_log) = install_logged_herdr_and_codex(
+        state.path(),
+        original_four_inventory_with_working_codex(),
+        None,
+    );
+
+    let output = run_event_binary(
+        state.path(),
+        &herdr,
+        &codex,
+        r#"{"event":"pane_agent_status_changed","data":{"pane_id":"w1:p9","agent":"opencode","status":"working"}}"#,
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // A wrongly spawned all-provider watch refreshes working Codex on its first tick.
+    thread::sleep(Duration::from_millis(200));
+    assert_no_original_four_collection(state.path(), &herdr_log, &codex_log);
+}
+
+#[test]
+fn unknown_agent_working_event_does_not_refresh_any_collector() {
+    let state = tempdir().unwrap();
+    let (herdr, herdr_log, codex, codex_log) = install_logged_herdr_and_codex(
+        state.path(),
+        original_four_inventory_with_working_codex(),
+        None,
+    );
+
+    let output = run_event_binary(
+        state.path(),
+        &herdr,
+        &codex,
+        r#"{"event":"pane_agent_status_changed","data":{"pane_id":"w1:p8","agent":"cursor","status":"working"}}"#,
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    thread::sleep(Duration::from_millis(200));
+    assert_no_original_four_collection(state.path(), &herdr_log, &codex_log);
+}
+
+#[test]
+fn focus_on_an_opencode_pane_does_not_refresh_collectors() {
+    let state = tempdir().unwrap();
+    let (herdr, herdr_log, codex, codex_log) = install_logged_herdr_and_codex(
+        state.path(),
+        original_four_inventory_with_working_codex(),
+        Some(r#"{"result":{"pane":{"agent":"opencode","pane_id":"w1:p9"}}}"#),
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_herdr-agent-quota"))
+        .arg("focus")
+        .env("HERDR_PLUGIN_STATE_DIR", state.path())
+        .env("HERDR_BIN_PATH", &herdr)
+        .env("CODEX_BIN_PATH", &codex)
+        .env("GROK_HOME", state.path().join("missing-grok-home"))
+        .env_remove("GROK_AUTH_FILE")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let calls = fs::read_to_string(&herdr_log).unwrap_or_default();
+    assert!(calls.contains("pane current"), "{calls}");
+    assert!(!calls.contains("pane read"), "{calls}");
+    assert_no_original_four_collection(state.path(), &herdr_log, &codex_log);
+}
+
 #[test]
 fn claude_collector_does_not_republish_unchanged_quota() {
     let state = tempdir().unwrap();

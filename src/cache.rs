@@ -664,6 +664,29 @@ mod tests {
     }
 
     #[test]
+    fn original_four_snapshots_use_canonical_0_2_cache_filenames() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        for (provider, filename) in [
+            (Provider::Codex, "codex-app-server.json"),
+            (Provider::Grok, "grok-cli-billing.json"),
+            (Provider::Claude, "claude-statusline.json"),
+            (Provider::Agy, "agy-statusline.json"),
+        ] {
+            cache
+                .save(&ProviderSnapshot::new(provider, vec![], 1))
+                .unwrap();
+            let path = directory.path().join(filename);
+            assert!(path.exists(), "missing {filename}");
+            let loaded: ProviderSnapshot =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(loaded.provider, provider);
+            assert_eq!(loaded.source, provider.source());
+            assert_eq!(cache.load(provider).unwrap().unwrap().provider, provider);
+        }
+    }
+
+    #[test]
     fn statusline_observation_preserves_context_when_the_next_payload_omits_it() {
         let directory = tempdir().unwrap();
         let cache = CacheStore::new(directory.path());

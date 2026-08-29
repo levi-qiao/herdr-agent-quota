@@ -3,7 +3,7 @@ use crate::herdr::{
     current_agent_provider, list_agent_panes, list_agent_state, publish_pane_tokens,
     refresh_pane_topic, AgentPane, PaneTokens,
 };
-use crate::model::{Provider, ProviderSnapshot};
+use crate::model::{Harness, Provider, ProviderSnapshot};
 use crate::presentation::MetadataTokens;
 use crate::providers::statusline::enrich_cache_session;
 use crate::providers::{codex, grok};
@@ -137,12 +137,12 @@ fn run_internal(
 
 pub fn event() -> Result<()> {
     let event = event_json();
-    let providers = event
-        .as_ref()
-        .and_then(find_agent)
-        .and_then(|agent| agent.parse::<Provider>().ok())
-        .map(|provider| vec![provider])
-        .unwrap_or_else(|| Provider::ALL.to_vec());
+    let providers = event_collectors(event.as_ref());
+    // Unknown/OpenCode harnesses have no collector. Do not fall back to
+    // every billing target, read sibling panes, or start an all-provider watch.
+    if providers.is_empty() {
+        return Ok(());
+    }
     let topic_pane = event.as_ref().and_then(find_pane_id);
     let status = event.as_ref().and_then(find_status);
     // The detached watcher owns the final debounced pass. Keeping the event
@@ -157,6 +157,14 @@ pub fn event() -> Result<()> {
         }
     }
     result
+}
+
+fn event_collectors(event: Option<&Value>) -> Vec<Provider> {
+    event
+        .and_then(find_agent)
+        .and_then(Harness::billing_for_agent)
+        .map(|billing| vec![billing])
+        .unwrap_or_default()
 }
 
 pub fn focus() -> Result<()> {
@@ -581,6 +589,29 @@ mod tests {
     // Reading a pane repaints it, which visibly scrolls the agent's terminal.
     // An event must name exactly one pane to read, so the other panes of the
     // same provider are left alone.
+    #[test]
+    fn unknown_and_opencode_events_select_no_collectors() {
+        let opencode: Value = serde_json::from_str(
+            r#"{"event":"pane_agent_status_changed",
+                "data":{"pane_id":"w1:p9","agent":"opencode","status":"working"}}"#,
+        )
+        .unwrap();
+        assert!(event_collectors(Some(&opencode)).is_empty());
+
+        let mixed_case: Value =
+            serde_json::from_str(r#"{"data":{"agent":"OpenCode","status":"working"}}"#).unwrap();
+        assert!(event_collectors(Some(&mixed_case)).is_empty());
+
+        let other: Value =
+            serde_json::from_str(r#"{"data":{"agent":"cursor","status":"working"}}"#).unwrap();
+        assert!(event_collectors(Some(&other)).is_empty());
+
+        let claude: Value =
+            serde_json::from_str(r#"{"data":{"agent":"claude-code","pane_id":"w1:p1"}}"#).unwrap();
+        assert_eq!(event_collectors(Some(&claude)), vec![Provider::Claude]);
+        assert!(event_collectors(None).is_empty());
+    }
+
     #[test]
     fn event_payload_names_the_single_pane_whose_topic_may_be_read() {
         let value: Value = serde_json::from_str(

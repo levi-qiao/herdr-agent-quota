@@ -46,10 +46,17 @@ needs to say so explicitly in the pull request.
    once per configured interval, exits when all turns settle, and has a safety
    cap.
 
-## Adding a provider
+## Adding a billing collector
+
+A Herdr harness is not automatically a billing collector. Add a `Harness`
+classification without a `Provider` route when there is no verified
+subscription contract and matching credential source. `Provider` remains the
+legacy Rust name for billing identity while 0.2 cache and CLI compatibility is
+preserved.
 
 1. Add the variant to `Provider` in `src/model.rs`, including its aliases in
-   `FromStr` so Herdr's agent name maps to it.
+   the explicit harness-to-billing route only when the two identities truly
+   match.
 2. Add `src/providers/<name>.rs` with a pure `parse_*` function that takes
    `&serde_json::Value` and returns a `ProviderSnapshot`. Keep I/O in a
    separate `fetch` function so the parser stays unit-testable.

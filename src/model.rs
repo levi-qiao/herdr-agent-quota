@@ -3,6 +3,12 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
+/// Original-four quota collector (the subscription billed for a pane).
+///
+/// Distinct from [`Harness`], the Herdr agent drawing the pane. A Herdr agent
+/// name is not itself a collector: parse it as a harness first, then take
+/// [`Harness::billing`]. Cache filenames and the `provider` serde tag stay
+/// 1:1 with 0.2 snapshots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Provider {
@@ -11,6 +17,10 @@ pub enum Provider {
     Claude,
     Agy,
 }
+
+/// Quota collector identity. The original four keep the historical
+/// [`Provider`] name so 0.2 cache files and CLI flags stay compatible.
+pub type Billing = Provider;
 
 impl Provider {
     pub const ALL: [Self; 4] = [Self::Codex, Self::Grok, Self::Claude, Self::Agy];
@@ -62,17 +72,61 @@ impl Provider {
     }
 }
 
+/// The agent drawing a Herdr pane. Distinct from [`Billing`]: OpenCode, Pi,
+/// OMP, and Kimi are harnesses in this release's identity split, but they do
+/// not yet select a quota collector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Harness {
+    Codex,
+    Grok,
+    Claude,
+    Agy,
+    OpenCode,
+    Pi,
+    Omp,
+    Kimi,
+}
+
+impl Harness {
+    /// Classify a Herdr `agent` field. Unknown names are `None`, not a
+    /// collector fallback.
+    pub fn from_agent_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "codex" => Some(Self::Codex),
+            "grok" => Some(Self::Grok),
+            "claude" | "claude-code" | "anthropic" => Some(Self::Claude),
+            "agy" | "antigravity" | "antigravity-cli" => Some(Self::Agy),
+            "opencode" => Some(Self::OpenCode),
+            "pi" => Some(Self::Pi),
+            "omp" => Some(Self::Omp),
+            "kimi" => Some(Self::Kimi),
+            _ => None,
+        }
+    }
+
+    /// Original-four 1:1 map. Named harnesses without a collector, and
+    /// unknown names, return `None`.
+    pub fn billing(self) -> Option<Billing> {
+        match self {
+            Self::Codex => Some(Provider::Codex),
+            Self::Grok => Some(Provider::Grok),
+            Self::Claude => Some(Provider::Claude),
+            Self::Agy => Some(Provider::Agy),
+            Self::OpenCode | Self::Pi | Self::Omp | Self::Kimi => None,
+        }
+    }
+
+    pub fn billing_for_agent(name: &str) -> Option<Billing> {
+        Self::from_agent_name(name).and_then(Self::billing)
+    }
+}
+
 impl std::str::FromStr for Provider {
     type Err = ModelError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "codex" => Ok(Self::Codex),
-            "grok" => Ok(Self::Grok),
-            "claude" | "claude-code" | "anthropic" => Ok(Self::Claude),
-            "agy" | "antigravity" | "antigravity-cli" => Ok(Self::Agy),
-            other => Err(ModelError::UnknownProvider(other.to_string())),
-        }
+        Harness::billing_for_agent(value)
+            .ok_or_else(|| ModelError::UnknownProvider(value.trim().to_ascii_lowercase()))
     }
 }
 
@@ -839,6 +893,66 @@ mod tests {
         assert!(Provider::Codex.exposes_five_hour_quota());
         assert!(Provider::Claude.exposes_five_hour_quota());
         assert!(!Provider::Grok.exposes_five_hour_quota());
+        assert!("opencode".parse::<Provider>().is_err());
+        assert!("OpenCode".parse::<Provider>().is_err());
+        assert!("pi".parse::<Provider>().is_err());
+    }
+
+    #[test]
+    fn harness_identity_is_not_a_quota_collector() {
+        assert_eq!(
+            Harness::from_agent_name("OpenCode"),
+            Some(Harness::OpenCode)
+        );
+        assert_eq!(
+            Harness::from_agent_name("opencode"),
+            Some(Harness::OpenCode)
+        );
+        assert_eq!(Harness::billing_for_agent("opencode"), None);
+        assert_eq!(Harness::billing_for_agent("pi"), None);
+        assert_eq!(Harness::billing_for_agent("cursor"), None);
+        assert_eq!(
+            Harness::billing_for_agent("claude-code"),
+            Some(Provider::Claude)
+        );
+        assert_eq!(
+            Harness::billing_for_agent("antigravity"),
+            Some(Provider::Agy)
+        );
+        assert_eq!(Harness::billing_for_agent("codex"), Some(Provider::Codex));
+        assert_eq!(Harness::billing_for_agent("grok"), Some(Provider::Grok));
+    }
+
+    #[test]
+    fn original_four_v0_2_snapshots_deserialize_with_canonical_sources() {
+        let cases = [
+            (
+                r#"{"provider":"codex","source":"codex-app-server","fetched_at_unix":1,"windows":[]}"#,
+                Provider::Codex,
+                "codex-app-server",
+            ),
+            (
+                r#"{"provider":"grok","source":"grok-cli-billing","fetched_at_unix":1,"windows":[]}"#,
+                Provider::Grok,
+                "grok-cli-billing",
+            ),
+            (
+                r#"{"provider":"claude","source":"claude-statusline","fetched_at_unix":1,"windows":[]}"#,
+                Provider::Claude,
+                "claude-statusline",
+            ),
+            (
+                r#"{"provider":"agy","source":"agy-statusline","fetched_at_unix":1,"windows":[]}"#,
+                Provider::Agy,
+                "agy-statusline",
+            ),
+        ];
+        for (json, provider, source) in cases {
+            let snapshot: ProviderSnapshot = serde_json::from_str(json).unwrap();
+            assert_eq!(snapshot.provider, provider);
+            assert_eq!(snapshot.source, source);
+            assert_eq!(provider.source(), source);
+        }
     }
 
     fn quota_window(kind: WindowKind, used: f64, reset: u64) -> UsageWindow {

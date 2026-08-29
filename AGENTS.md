@@ -1,7 +1,25 @@
-# AGENTS.md
+# Agent guide
 
 Notes for agents working on `herdr-agent-quota`. Read this before touching
 anything that talks to Herdr.
+
+## Working method
+
+1. Establish the exact requested scope and inspect the current diff before
+   editing. Treat unrelated worktree changes as user-owned.
+2. Separate observed facts, inferences, and unknowns. When evidence is missing,
+   name the cheapest useful verification instead of guessing.
+3. Prefer the smallest surgical change that creates a checkable behavior. Add
+   abstractions only when two real callers or adapters need the same seam.
+4. Give every implementation step a verification condition and run the
+   repository gates before calling it complete.
+5. For multi-goal work, keep the decision record and dispatch prompts under
+   the ignored `.agents/` directory. Public documentation must describe shipped
+   behavior, not private execution state.
+
+Before changing dependencies, inspect `Cargo.toml`, `Cargo.lock`, and
+`rust-toolchain.toml`. Use the pinned Rust toolchain and repository-local Cargo
+artifacts; do not install project tooling globally.
 
 ## The rule that matters most: reading or writing a pane is not free
 
