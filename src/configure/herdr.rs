@@ -1,3 +1,5 @@
+use crate::cli::AgentSelection;
+use crate::model::Harness;
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -43,18 +45,29 @@ const QUOTA_SAFE_COLOR: &str = "#84b084";
 const QUOTA_WARNING_COLOR: &str = "#cdaa65";
 const QUOTA_DANGER_COLOR: &str = "#ca6470";
 const DIAGNOSTIC_COLOR: &str = "#9aa7b8";
-const PROVIDER_STYLES: [(&str, Option<&str>); 5] = [
-    ("claude", Some("#c47f6a")),
-    ("codex", Some("#7998b7")),
-    ("grok", Some("#acb4c3")),
-    ("agy", Some("#84b0af")),
-    ("opencode", Some("#c49a6a")),
+const PROVIDER_STYLES: [(Harness, &str, Option<&str>); 5] = [
+    (Harness::Claude, "claude", Some("#c47f6a")),
+    (Harness::Codex, "codex", Some("#7998b7")),
+    (Harness::Grok, "grok", Some("#acb4c3")),
+    (Harness::Agy, "agy", Some("#84b0af")),
+    (Harness::OpenCode, "opencode", Some("#c49a6a")),
 ];
 
-pub fn check() -> Result<()> {
+/// Sidebar rows for the selected agents only, so `--agent grok` never writes
+/// or removes another agent's row.
+fn selected_styles(
+    agents: &[Harness],
+) -> impl Iterator<Item = (&'static str, Option<&'static str>)> + '_ {
+    PROVIDER_STYLES
+        .into_iter()
+        .filter(move |(harness, _, _)| agents.contains(harness))
+        .map(|(_, provider, color)| (provider, color))
+}
+
+pub fn check(agents: &[Harness]) -> Result<()> {
     let path = config_path()?;
     let original = fs::read_to_string(&path).unwrap_or_default();
-    let updated = add_quota_row(&original)?;
+    let updated = add_quota_row_for(&original, agents)?;
     if updated == original {
         println!(
             "Herdr sidebar already contains quota tokens: {}",
@@ -67,11 +80,11 @@ pub fn check() -> Result<()> {
     Ok(())
 }
 
-pub fn apply() -> Result<()> {
+pub fn apply(agents: &[Harness]) -> Result<()> {
     let path = config_path()?;
     let existed = path.exists();
     let original = fs::read_to_string(&path).unwrap_or_default();
-    let updated = add_quota_row(&original)?;
+    let updated = add_quota_row_for(&original, agents)?;
     if updated == original {
         return Ok(());
     }
@@ -86,8 +99,25 @@ pub fn apply() -> Result<()> {
     Ok(())
 }
 
-pub fn uninstall() -> Result<()> {
+/// `full` removes the whole sidebar installation, including the backup that
+/// makes it reversible. A narrower selection only drops those agents' rows and
+/// deliberately keeps the backup, because the rest is still installed.
+pub fn uninstall(agents: &[Harness], full: bool) -> Result<()> {
     let path = config_path()?;
+    if !full {
+        if path.exists() {
+            let original = fs::read_to_string(&path).context("read Herdr config")?;
+            let updated = remove_quota_row_for(&original, agents, false)?;
+            if updated != original {
+                fs::write(&path, updated).context("remove quota sidebar rows")?;
+                println!(
+                    "Removed selected quota sidebar rows from {}",
+                    path.display()
+                );
+            }
+        }
+        return Ok(());
+    }
     if path.exists() {
         let original = fs::read_to_string(&path).context("read Herdr config")?;
         let updated = reversible_backup(&original)?.unwrap_or(remove_quota_row(&original)?);
@@ -165,7 +195,12 @@ fn reversible_backup(current: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
+/// Full-installation form, used by callers that configure every agent.
 pub fn add_quota_row(input: &str) -> Result<String> {
+    add_quota_row_for(input, &AgentSelection::SUPPORTED)
+}
+
+pub fn add_quota_row_for(input: &str, agents: &[Harness]) -> Result<String> {
     let mut document = if input.trim().is_empty() {
         DocumentMut::new()
     } else {
@@ -174,15 +209,15 @@ pub fn add_quota_row(input: &str) -> Result<String> {
             .context("parse Herdr TOML config")?
     };
     add_refresh_keybinding(&mut document)?;
-    let agents = ensure_table(&mut document, &["ui", "sidebar", "agents"])?;
-    if !agents.contains_key("row_gap") {
+    let table = ensure_table(&mut document, &["ui", "sidebar", "agents"])?;
+    if !table.contains_key("row_gap") {
         let mut row_gap = Value::from(1);
         row_gap
             .decor_mut()
             .set_suffix(format!(" # {ROW_GAP_MARKER}"));
-        agents.insert("row_gap", Item::Value(row_gap));
+        table.insert("row_gap", Item::Value(row_gap));
     }
-    let rows = agents["rows"].or_insert(Item::Value(Value::Array(Array::new())));
+    let rows = table["rows"].or_insert(Item::Value(Value::Array(Array::new())));
     let rows = rows
         .as_array_mut()
         .context("Herdr ui.sidebar.agents.rows must be an array")?;
@@ -202,22 +237,32 @@ pub fn add_quota_row(input: &str) -> Result<String> {
     append_quota_rows(&mut updated_rows);
     *rows = updated_rows;
     let rows = rows.clone();
-    add_provider_rows(agents, &rows)?;
+    add_provider_rows(table, &rows, agents)?;
     Ok(document.to_string())
 }
 
+/// Full-installation form, used by callers that remove every agent.
 pub fn remove_quota_row(input: &str) -> Result<String> {
+    remove_quota_row_for(input, &AgentSelection::SUPPORTED, true)
+}
+
+/// `full` means the whole plugin is being removed, so the shared base rows and
+/// the refresh keybinding go too. A narrower selection only drops that agent's
+/// own `rows_by_agent` entry and leaves the rest of the sidebar intact.
+pub fn remove_quota_row_for(input: &str, agents: &[Harness], full: bool) -> Result<String> {
     if input.trim().is_empty() {
         return Ok(input.to_string());
     }
-    if add_quota_row("")?.as_str() == input {
+    if full && add_quota_row("")?.as_str() == input {
         return Ok(String::new());
     }
     let mut document = input
         .parse::<DocumentMut>()
         .context("parse Herdr TOML config")?;
-    remove_refresh_keybinding(&mut document);
-    let Some(agents) = document
+    if full {
+        remove_refresh_keybinding(&mut document);
+    }
+    let Some(table) = document
         .get_mut("ui")
         .and_then(Item::as_table_mut)
         .and_then(|ui| ui.get_mut("sidebar"))
@@ -227,8 +272,14 @@ pub fn remove_quota_row(input: &str) -> Result<String> {
     else {
         return Ok(document.to_string());
     };
-    remove_managed_provider_rows(agents);
-    if let Some(rows) = agents.get_mut("rows").and_then(Item::as_array_mut) {
+    remove_managed_provider_rows(table, agents);
+    // The base rows, row gap and keybinding are shared by every agent. Only a
+    // full removal may take them; otherwise the agents left installed would
+    // lose their sidebar out from under them.
+    if !full {
+        return Ok(document.to_string());
+    }
+    if let Some(rows) = table.get_mut("rows").and_then(Item::as_array_mut) {
         let mut retained = Array::new();
         for row in rows.iter() {
             let cleaned = strip_quota_tokens(row, false);
@@ -244,16 +295,16 @@ pub fn remove_quota_row(input: &str) -> Result<String> {
                 retained.push(Value::Array(cleaned));
             }
         }
-        agents["rows"] = Item::Value(Value::Array(retained));
+        table["rows"] = Item::Value(Value::Array(retained));
     }
-    let managed_row_gap = agents
+    let managed_row_gap = table
         .get("row_gap")
         .and_then(Item::as_value)
         .and_then(|value| value.decor().suffix())
         .and_then(|suffix| suffix.as_str())
         .is_some_and(|suffix| suffix.contains(ROW_GAP_MARKER));
     if managed_row_gap {
-        agents.remove("row_gap");
+        table.remove("row_gap");
     }
     Ok(document.to_string())
 }
@@ -351,14 +402,14 @@ fn configured_token_name(value: &Value) -> Option<&str> {
     })
 }
 
-fn add_provider_rows(agents: &mut Table, rows: &Array) -> Result<()> {
-    let rows_by_agent = agents
+fn add_provider_rows(table: &mut Table, rows: &Array, agents: &[Harness]) -> Result<()> {
+    let rows_by_agent = table
         .entry("rows_by_agent")
         .or_insert(Item::Table(Table::new()))
         .as_table_mut()
         .context("Herdr ui.sidebar.agents.rows_by_agent must be a table")?;
 
-    for (provider, color) in PROVIDER_STYLES {
+    for (provider, color) in selected_styles(agents) {
         let is_managed = rows_by_agent
             .get(provider)
             .and_then(Item::as_value)
@@ -405,11 +456,11 @@ fn append_themed_provider_row(row: &mut Array, items: &Array, color: Option<&str
     }
 }
 
-fn remove_managed_provider_rows(agents: &mut Table) {
-    let Some(rows_by_agent) = agents.get_mut("rows_by_agent").and_then(Item::as_table_mut) else {
+fn remove_managed_provider_rows(table: &mut Table, agents: &[Harness]) {
+    let Some(rows_by_agent) = table.get_mut("rows_by_agent").and_then(Item::as_table_mut) else {
         return;
     };
-    for (provider, _) in PROVIDER_STYLES {
+    for (provider, _) in selected_styles(agents) {
         let is_managed = rows_by_agent
             .get(provider)
             .and_then(Item::as_value)
@@ -419,7 +470,7 @@ fn remove_managed_provider_rows(agents: &mut Table) {
         }
     }
     if rows_by_agent.is_empty() {
-        agents.remove("rows_by_agent");
+        table.remove("rows_by_agent");
     }
 }
 
@@ -803,6 +854,63 @@ claude = [["state_icon", "agent"]]
         assert!(removed.contains("claude = [[\"state_icon\", \"agent\"]]"));
         assert!(!removed.contains("codex ="));
         assert!(!removed.contains("opencode ="));
+    }
+
+    #[test]
+    fn applying_one_agent_writes_only_that_agents_row() {
+        let updated = add_quota_row_for(
+            "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"agent\"]]\n",
+            &[Harness::Grok],
+        )
+        .unwrap();
+        assert!(updated.contains("grok ="));
+        for other in ["claude =", "codex =", "agy =", "opencode ="] {
+            assert!(!updated.contains(other), "{other} was written: {updated}");
+        }
+    }
+
+    #[test]
+    fn removing_one_agent_leaves_the_others_installed() {
+        let full =
+            add_quota_row("[ui.sidebar.agents]\nrows = [[\"state_icon\", \"agent\"]]\n").unwrap();
+        let removed = remove_quota_row_for(&full, &[Harness::Grok], false).unwrap();
+        assert!(!removed.contains("grok ="), "grok survived: {removed}");
+        for kept in ["claude =", "codex =", "agy =", "opencode ="] {
+            assert!(removed.contains(kept), "{kept} was lost: {removed}");
+        }
+        // The shared parts belong to the installation, not to grok.
+        assert!(removed.contains("rows = "));
+        assert!(removed.contains("row_gap"));
+        assert!(removed.contains(REFRESH_ACTION));
+    }
+
+    #[test]
+    fn removing_every_agent_one_at_a_time_matches_a_full_uninstall() {
+        let original = "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"agent\"]]\n";
+        let full = add_quota_row(original).unwrap();
+        let mut piecemeal = full.clone();
+        for harness in AgentSelection::SUPPORTED {
+            piecemeal = remove_quota_row_for(&piecemeal, &[harness], false).unwrap();
+        }
+        assert!(!piecemeal.contains("rows_by_agent"));
+        // The last agent leaving does not take the shared rows with it; that
+        // is what the full uninstall is for.
+        let complete = remove_quota_row(&full).unwrap();
+        assert!(!complete.contains("rows_by_agent"));
+        assert!(!complete.contains(REFRESH_ACTION));
+    }
+
+    #[test]
+    fn a_partial_uninstall_never_touches_a_user_owned_row() {
+        let original = r#"[ui.sidebar.agents]
+rows = [["state_icon", "agent"]]
+
+[ui.sidebar.agents.rows_by_agent]
+grok = [["state_icon", "agent"]]
+"#;
+        let applied = add_quota_row(original).unwrap();
+        let removed = remove_quota_row_for(&applied, &[Harness::Grok], false).unwrap();
+        assert!(removed.contains("grok = [[\"state_icon\", \"agent\"]]"));
     }
 
     #[test]

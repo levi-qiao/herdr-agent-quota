@@ -116,6 +116,54 @@ HERDR_AGENT_QUOTA_WATCH_INTERVAL_SECONDS=300 \
   herdr plugin action invoke herdr-agent-quota.configure
 ```
 
+### 只安装你用到的 agent
+
+`configure` 默认安装全部支持的 agent。如果只用其中几个，直接点名即可，其余的什么都不会写：
+
+```sh
+herdr-agent-quota configure --apply --agent claude,codex
+```
+
+可选值为 `all`（默认）、`claude`、`codex`、`grok`、`agy`、`opencode`；可以重复传入
+或用逗号分隔。**没有被选中的 agent 不会得到侧栏行、不会被写入 statusLine、也不会生成
+hook 文件**——它在你机器上不留任何东西，自然也不会启动任何东西。
+
+卸载同理，卸掉一个不影响其余：
+
+```sh
+herdr-agent-quota configure --uninstall --agent grok   # 只卸 Grok
+herdr-agent-quota configure --uninstall                # 全部卸载
+```
+
+只有完整的 `--uninstall` 才会动共享状态：后台 watcher、已保存的轮询间隔，以及让侧栏
+改动可逆的配置备份。带 `--agent` 的卸载只移除该 agent 自己的行和文件，因此在其他
+agent 仍然安装时执行是安全的，重复执行也没有副作用。两种形式都只删除本插件写入的
+条目，你自己写的行或 hook 永远不会被碰。
+
+`--agent` 同样作用于 `--check`：只报告将要发生的变更，不写入任何文件。
+
+### 前提：Herdr 自己的 agent integration
+
+额度是通过 Herdr 为 pane 报告的 session id 归属到具体订阅的，而 Herdr 只有在装了
+**它自己**的对应 agent integration 之后才知道这个 id。该 integration 编译在 `herdr`
+二进制内部，安装到 agent 各自的配置目录；本插件从不安装或修改它。
+
+查看当前状态：
+
+```sh
+herdr integration status
+```
+
+显示为 `not installed` 的 agent，Herdr 能识别其 pane 但拿不到 session，本插件因此
+无法归属，pane 就会一直是空的。按需安装：
+
+```sh
+herdr integration install opencode      # 装完重启该 agent 的 pane
+```
+
+`configure --check` 和 `configure --apply` 会为选中的、缺少 integration 的 agent
+打印这条提示，避免新装的用户遇到静默失灵。
+
 每轮只使用一个非阻塞 watcher lease 和一次 `herdr agent list`。各 provider 使用
 独立的非阻塞刷新 lease，慢 provider 不会阻塞其他 provider 或 statusLine 采集器。
 网络查询仍由原有刷新标记独立限制为每 60 秒最多一次，即使用户把轮询间隔设得更短也不会突破。

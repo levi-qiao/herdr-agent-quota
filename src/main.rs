@@ -21,8 +21,15 @@ fn main() -> Result<()> {
             check,
             apply,
             uninstall,
+            agent,
             watch_interval_seconds,
-        } => herdr_agent_quota::configure::run(check, apply, uninstall, watch_interval_seconds),
+        } => herdr_agent_quota::configure::run(
+            check,
+            apply,
+            uninstall,
+            &herdr_agent_quota::cli::AgentSelection::from_args_or_env(&agent),
+            watch_interval_seconds,
+        ),
         Command::ClaudeStatusline => herdr_agent_quota::configure::claude::run_statusline_hook(),
         Command::AgyStatusline => herdr_agent_quota::configure::agy::run_statusline_hook(),
     }

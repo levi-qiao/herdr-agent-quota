@@ -116,6 +116,61 @@ the same action from a shell with:
 herdr plugin action invoke herdr-agent-quota.refresh
 ```
 
+### Installing only the agents you use
+
+By default `configure` installs every supported agent. If you only use some of
+them, name them and nothing else is written:
+
+```sh
+herdr-agent-quota configure --apply --agent claude,codex
+```
+
+Accepted values are `all` (the default), `claude`, `codex`, `grok`, `agy` and
+`opencode`; repeat the flag or comma-separate the values. An agent you do not
+select gets no sidebar row, no statusLine entry and no hook file — nothing of
+that agent's is created or started on your machine.
+
+Removal works the same way, and removing one agent leaves the others working:
+
+```sh
+herdr-agent-quota configure --uninstall --agent grok   # just Grok
+herdr-agent-quota configure --uninstall                # everything
+```
+
+Only a full `--uninstall` touches shared state: the background watcher, the
+saved poll interval and the config backup that makes the sidebar changes
+reversible. A `--agent` uninstall removes just that agent's own rows and files,
+so it is safe to run while other agents stay installed, and it can be repeated
+without effect. Both forms only ever remove entries this plugin wrote; a row or
+hook you wrote yourself is left alone.
+
+`--agent` also narrows `--check`, which reports what would change without
+writing anything.
+
+### Herdr's agent integration is a prerequisite
+
+Quota is attributed to a pane through the session id Herdr reports for it, and
+Herdr only knows that id once **its own** integration for that agent is
+installed. That integration ships inside the `herdr` binary and lives in the
+agent's config directory; this plugin never installs or modifies it.
+
+Check yours with:
+
+```sh
+herdr integration status
+```
+
+An agent listed as `not installed` is detected by Herdr but reports no session,
+so this plugin cannot attribute it and its pane simply stays blank. Install the
+one you need:
+
+```sh
+herdr integration install opencode      # then restart that agent's pane
+```
+
+`configure --check` and `configure --apply` print this hint for any selected
+agent whose integration is missing, so a fresh install does not fail silently.
+
 The Herdr plugin API does not currently let plugins add buttons to the native agent
 group header, so the shortcut is the closest stable one-step entry point.
 Selecting a pane also runs a provider-only refresh, debounced to once per

@@ -6,6 +6,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `configure --agent` installs and removes one agent at a time. Values are
+  `all` (the default), `claude`, `codex`, `grok`, `agy` and `opencode`, and can
+  be repeated or comma-separated. An agent you do not select gets no sidebar
+  row, no statusLine entry and no hook file, so nothing of theirs is created on
+  a machine that does not use them. `install.sh --agent` and
+  `uninstall.sh --agent` pass the same selection through
+  `HERDR_AGENT_QUOTA_AGENTS`, because Herdr plugin actions run a fixed command
+  line. Removing one agent leaves the others installed and never touches the
+  shared watcher, poll interval or config backup; `--uninstall` with no
+  selection still removes everything.
+- `configure` now reports when Herdr's own integration for a selected agent is
+  missing. Without it Herdr reports no session id for that agent's panes, so
+  quota cannot be attributed and the pane stays blank with no other clue. The
+  integration belongs to Herdr (`herdr integration install <agent>`); this
+  plugin never installs or changes it.
+- OpenCode panes are resolved to a billing target from the exact Herdr session
+  id, looked up read-only in `opencode.db` and classified against the
+  credential filed for that backend in OpenCode's `auth.json`. Confirmed
+  pay-as-you-go clears stale quota once; missing, unreadable or ambiguous
+  evidence preserves whatever the pane already shows. No quota is fetched for
+  OpenCode yet.
+
+### Changed
+
+- `event` and `focus` act on exactly one named pane from a single agent
+  inventory, so a sibling pane on the same subscription receives neither a pane
+  read nor a metadata write.
+
 ## [0.2.0] - 2026-08-29
 
 ### Fixed

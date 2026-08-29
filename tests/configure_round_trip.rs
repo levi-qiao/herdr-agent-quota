@@ -1132,3 +1132,179 @@ fn opencode_mismatched_event_pane_is_a_noop() {
     assert!(!calls.contains("pane read"), "{calls}");
     assert!(!calls.contains("pane report-metadata"), "{calls}");
 }
+
+/// Every file the plugin can write for an agent, so an on-demand install can
+/// be checked for footprint rather than just for the row it added.
+struct AgentHomes {
+    state: PathBuf,
+    herdr_config: PathBuf,
+    claude_settings: PathBuf,
+    agy_settings: PathBuf,
+    grok_home: PathBuf,
+}
+
+impl AgentHomes {
+    fn new(root: &Path) -> Self {
+        Self {
+            state: root.join("state"),
+            herdr_config: root.join("herdr/config.toml"),
+            claude_settings: root.join("claude/settings.json"),
+            agy_settings: root.join("agy/settings.json"),
+            grok_home: root.join("grok-home"),
+        }
+    }
+
+    fn configure(&self, args: &[&str]) -> std::process::Output {
+        self.configure_with_env(args, &[])
+    }
+
+    fn configure_with_env(&self, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
+        fs::create_dir_all(&self.state).unwrap();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_herdr-agent-quota"));
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        command
+            .arg("configure")
+            .args(args)
+            .env("HERDR_PLUGIN_STATE_DIR", &self.state)
+            .env("HERDR_CONFIG_FILE", &self.herdr_config)
+            .env("CLAUDE_SETTINGS_FILE", &self.claude_settings)
+            .env("AGY_SETTINGS_FILE", &self.agy_settings)
+            .env("GROK_HOME", &self.grok_home)
+            .env("HERDR_BIN_PATH", self.state.join("herdr-absent"))
+            .output()
+            .unwrap()
+    }
+
+    fn sidebar(&self) -> String {
+        fs::read_to_string(&self.herdr_config).unwrap_or_default()
+    }
+}
+
+#[test]
+fn installing_one_agent_leaves_every_other_agent_untouched() {
+    let root = tempdir().unwrap();
+    let homes = AgentHomes::new(root.path());
+
+    let output = homes.configure(&["--apply", "--agent", "claude"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let sidebar = homes.sidebar();
+    assert!(sidebar.contains("claude ="), "{sidebar}");
+    for other in ["codex =", "grok =", "agy =", "opencode ="] {
+        assert!(!sidebar.contains(other), "{other} was written: {sidebar}");
+    }
+
+    // Someone who does not use Agy or Grok must end up with nothing of theirs
+    // on disk, so nothing of theirs can start or interfere later.
+    assert!(homes.claude_settings.exists(), "Claude was not configured");
+    assert!(
+        !homes.agy_settings.exists(),
+        "an unselected Agy settings file was created"
+    );
+    assert!(
+        !homes.grok_home.exists(),
+        "an unselected Grok home was created"
+    );
+}
+
+#[test]
+fn uninstalling_one_agent_keeps_the_rest_working() {
+    let root = tempdir().unwrap();
+    let homes = AgentHomes::new(root.path());
+    assert!(homes.configure(&["--apply"]).status.success());
+    assert!(homes.claude_settings.exists());
+
+    let output = homes.configure(&["--uninstall", "--agent", "grok"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let sidebar = homes.sidebar();
+    assert!(!sidebar.contains("grok ="), "grok survived: {sidebar}");
+    for kept in ["claude =", "codex =", "agy =", "opencode ="] {
+        assert!(sidebar.contains(kept), "{kept} was lost: {sidebar}");
+    }
+    assert!(
+        homes.claude_settings.exists(),
+        "removing Grok tore out the Claude statusLine"
+    );
+}
+
+#[test]
+fn uninstall_without_an_agent_still_removes_everything() {
+    let root = tempdir().unwrap();
+    let homes = AgentHomes::new(root.path());
+    assert!(homes.configure(&["--apply"]).status.success());
+    assert!(!homes.sidebar().is_empty());
+
+    assert!(homes.configure(&["--uninstall"]).status.success());
+    let sidebar = homes.sidebar();
+    assert!(
+        !sidebar.contains("rows_by_agent"),
+        "a managed row survived a full uninstall: {sidebar}"
+    );
+}
+
+#[test]
+fn a_partial_uninstall_can_be_repeated_and_then_completed() {
+    let root = tempdir().unwrap();
+    let homes = AgentHomes::new(root.path());
+    assert!(homes.configure(&["--apply"]).status.success());
+
+    for _ in 0..2 {
+        assert!(homes
+            .configure(&["--uninstall", "--agent", "grok,agy"])
+            .status
+            .success());
+        let sidebar = homes.sidebar();
+        assert!(!sidebar.contains("grok ="));
+        assert!(!sidebar.contains("agy ="));
+        assert!(sidebar.contains("claude ="));
+    }
+
+    assert!(homes.configure(&["--uninstall"]).status.success());
+    assert!(!homes.sidebar().contains("rows_by_agent"));
+}
+
+#[test]
+fn an_installer_can_narrow_the_selection_through_the_environment() {
+    // Herdr plugin actions run a fixed command line, so install.sh has no way
+    // to pass --agent; it sets this variable instead.
+    let root = tempdir().unwrap();
+    let homes = AgentHomes::new(root.path());
+    let output =
+        homes.configure_with_env(&["--apply"], &[("HERDR_AGENT_QUOTA_AGENTS", "codex,grok")]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let sidebar = homes.sidebar();
+    assert!(sidebar.contains("codex ="), "{sidebar}");
+    assert!(sidebar.contains("grok ="), "{sidebar}");
+    assert!(!sidebar.contains("claude ="), "{sidebar}");
+    assert!(!homes.claude_settings.exists());
+}
+
+#[test]
+fn an_unusable_environment_selection_still_installs_everything() {
+    let root = tempdir().unwrap();
+    let homes = AgentHomes::new(root.path());
+    assert!(homes
+        .configure_with_env(&["--apply"], &[("HERDR_AGENT_QUOTA_AGENTS", "nonsense")])
+        .status
+        .success());
+    let sidebar = homes.sidebar();
+    for expected in ["claude =", "codex =", "grok =", "agy =", "opencode ="] {
+        assert!(sidebar.contains(expected), "{expected} missing: {sidebar}");
+    }
+}
