@@ -23,6 +23,9 @@ thiserror = "2.0"
 time = { version = "0.3", features = ["parsing"] }
 toml_edit = "0.22"
 ureq = { version = "2.12", features = ["json"] }
+# Bundled SQLite so macOS/Linux CI does not need libsqlite3 or a sqlite3 binary.
+# Used only for exact session-id lookups in OpenCode's local opencode.db.
+rusqlite = { version = "0.32.1", features = ["bundled"] }
 
 # Only used to put the Codex app-server in its own process group.
 [target.'cfg(unix)'.dependencies]

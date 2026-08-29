@@ -43,11 +43,12 @@ const QUOTA_SAFE_COLOR: &str = "#84b084";
 const QUOTA_WARNING_COLOR: &str = "#cdaa65";
 const QUOTA_DANGER_COLOR: &str = "#ca6470";
 const DIAGNOSTIC_COLOR: &str = "#9aa7b8";
-const PROVIDER_STYLES: [(&str, Option<&str>); 4] = [
+const PROVIDER_STYLES: [(&str, Option<&str>); 5] = [
     ("claude", Some("#c47f6a")),
     ("codex", Some("#7998b7")),
     ("grok", Some("#acb4c3")),
     ("agy", Some("#84b0af")),
+    ("opencode", Some("#c49a6a")),
 ];
 
 pub fn check() -> Result<()> {
@@ -797,9 +798,37 @@ claude = [["state_icon", "agent"]]
         let updated = add_quota_row(original).unwrap();
         assert!(updated.contains("claude = [[\"state_icon\", \"agent\"]]"));
         assert!(updated.contains("codex ="));
+        assert!(updated.contains("opencode ="));
         let removed = remove_quota_row(&updated).unwrap();
         assert!(removed.contains("claude = [[\"state_icon\", \"agent\"]]"));
         assert!(!removed.contains("codex ="));
+        assert!(!removed.contains("opencode ="));
+    }
+
+    #[test]
+    fn preserves_user_owned_opencode_rows() {
+        let original = r#"[ui.sidebar.agents]
+rows = [["state_icon", "agent"]]
+
+[ui.sidebar.agents.rows_by_agent]
+opencode = [["state_icon", "agent"]]
+"#;
+        let updated = add_quota_row(original).unwrap();
+        assert!(updated.contains("opencode = [[\"state_icon\", \"agent\"]]"));
+        assert!(!updated
+            .contains("opencode = [[\"state_icon\", \"agent\"]] # herdr-agent-quota-provider"));
+        let removed = remove_quota_row(&updated).unwrap();
+        assert!(removed.contains("opencode = [[\"state_icon\", \"agent\"]]"));
+    }
+
+    #[test]
+    fn fresh_tree_gains_managed_opencode_rows() {
+        let updated =
+            add_quota_row("[ui.sidebar.agents]\nrows = [[\"state_icon\", \"agent\"]]\n").unwrap();
+        assert!(updated.contains("opencode ="));
+        assert!(updated.contains("herdr-agent-quota-provider"));
+        let removed = remove_quota_row(&updated).unwrap();
+        assert!(!removed.contains("opencode ="));
     }
 
     #[test]

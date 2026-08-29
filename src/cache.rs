@@ -1,4 +1,6 @@
-use crate::model::{merge_omitted_window_list, ContextUsage, Provider, ProviderSnapshot};
+use crate::model::{
+    merge_omitted_window_list, BillingTarget, ContextUsage, Provider, ProviderSnapshot,
+};
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
@@ -319,7 +321,13 @@ impl CacheStore {
     /// Claim a provider refresh lease without making a statusLine or event
     /// caller wait behind another provider's slow I/O.
     pub fn try_lock_provider_refresh(&self, provider: Provider) -> Result<Option<File>> {
-        self.try_lock_named(&format!("{}.refresh.lock", provider.source()))
+        self.try_lock_target_refresh(&BillingTarget::original_four(provider))
+    }
+
+    /// Refresh lease for a billing target. Original-four names stay the 0.2
+    /// `*.refresh.lock` files; OpenCode Go is scoped to the OpenCode store.
+    pub fn try_lock_target_refresh(&self, target: &BillingTarget) -> Result<Option<File>> {
+        self.try_lock_named(&format!("{}.refresh.lock", target.cache_identity()))
     }
 
     pub fn stop_turn_watchers(&self) -> Result<()> {
@@ -643,7 +651,9 @@ fn sessions_match(previous_session_id: Option<&str>, session_id: Option<&str>) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{CacheUsage, ContextUsage, Provider, ResetAt, UsageWindow, WindowKind};
+    use crate::model::{
+        BillingTarget, CacheUsage, ContextUsage, Provider, ResetAt, UsageWindow, WindowKind,
+    };
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -661,6 +671,38 @@ mod tests {
         let cache = CacheStore::new(directory.path());
         cache.save(&snapshot()).unwrap();
         assert_eq!(cache.load(Provider::Grok).unwrap(), Some(snapshot()));
+    }
+
+    #[test]
+    fn opencode_go_lease_does_not_touch_original_four_cache_files() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        let target = BillingTarget::opencode_go();
+        let lease = cache.try_lock_target_refresh(&target).unwrap();
+        assert!(lease.is_some());
+        assert!(directory
+            .path()
+            .join("opencode-go.opencode-store.refresh.lock")
+            .exists());
+        for filename in [
+            "codex-app-server.json",
+            "grok-cli-billing.json",
+            "claude-statusline.json",
+            "agy-statusline.json",
+            "codex-app-server.refresh.lock",
+            "grok-cli-billing.refresh.lock",
+            "claude-statusline.refresh.lock",
+            "agy-statusline.refresh.lock",
+            "codex-app-server.refresh",
+            "grok-cli-billing.refresh",
+            "claude-statusline.refresh",
+            "agy-statusline.refresh",
+        ] {
+            assert!(
+                !directory.path().join(filename).exists(),
+                "OpenCode lease created {filename}"
+            );
+        }
     }
 
     #[test]

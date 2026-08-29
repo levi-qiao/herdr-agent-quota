@@ -36,7 +36,7 @@ const LEGACY_METADATA_TOKEN_NAMES: [&str; 2] = ["quota_badge", "quota_session"];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentPane {
     pub pane_id: String,
-    pub provider: Provider,
+    pub harness: Harness,
     pub session_id: Option<String>,
     pub session_summary: String,
     pub topic: String,
@@ -52,7 +52,8 @@ pub struct AgentState {
 #[derive(Debug, Clone)]
 pub struct PaneTokens {
     pub pane_id: String,
-    pub values: MetadataTokens,
+    /// `None` clears plugin-owned quota tokens once and keeps the topic.
+    pub values: Option<MetadataTokens>,
 }
 
 pub fn list_agent_panes() -> Result<Vec<AgentPane>> {
@@ -96,10 +97,12 @@ fn list_agent_value() -> Result<Value> {
     serde_json::from_slice(&output.stdout).context("parse Herdr agent list")
 }
 
-pub fn current_agent_provider() -> Result<Option<Provider>> {
-    if let Some(agent) = std::env::var_os("HERDR_FOCUSED_PANE_AGENT") {
-        return Ok(Harness::billing_for_agent(&agent.to_string_lossy()));
-    }
+/// Pane id and harness of the focused pane.
+///
+/// `pane.focused` carries no agent in its payload, so this is the only way to
+/// learn which pane the user moved to. Herdr answers with the pane id, which
+/// is what keeps `focus` scoped to exactly one pane.
+pub fn current_focused_pane() -> Result<Option<(String, Harness)>> {
     let executable = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
     let output = Command::new(executable)
         .args(["pane", "current"])
@@ -110,10 +113,15 @@ pub fn current_agent_provider() -> Result<Option<Provider>> {
     }
     let value: Value =
         serde_json::from_slice(&output.stdout).context("parse focused Herdr pane")?;
-    Ok(value
-        .pointer("/result/pane/agent")
+    let pane = value.pointer("/result/pane").unwrap_or(&value);
+    let Some(pane_id) = pane.get("pane_id").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    Ok(pane
+        .get("agent")
         .and_then(Value::as_str)
-        .and_then(Harness::billing_for_agent))
+        .and_then(Harness::from_agent_name)
+        .map(|harness| (pane_id.to_string(), harness)))
 }
 
 // Reading a pane makes Herdr repaint it, which visibly scrolls the agent's
@@ -144,7 +152,7 @@ fn collect_agent_panes(value: &Value, panes: &mut Vec<AgentPane>) {
                         .and_then(Value::as_str)
                 });
             if let (Some(pane_id), Some(kind)) = (pane_id, kind) {
-                if let Some(provider) = Harness::billing_for_agent(kind) {
+                if let Some(harness) = Harness::from_agent_name(kind) {
                     let tokens: BTreeMap<String, String> = map
                         .get("tokens")
                         .and_then(Value::as_object)
@@ -166,7 +174,7 @@ fn collect_agent_panes(value: &Value, panes: &mut Vec<AgentPane>) {
                         .map(str::to_string);
                     panes.push(AgentPane {
                         pane_id: pane_id.to_string(),
-                        provider,
+                        harness,
                         session_id,
                         session_summary,
                         // Preserve the last published topic during quota-only
@@ -255,10 +263,10 @@ pub fn publish_tokens(
         .filter_map(|pane| {
             tokens
                 .iter()
-                .find(|(provider, _)| *provider == pane.provider)
+                .find(|(provider, _)| pane.harness.billing() == Some(*provider))
                 .map(|(_, values)| PaneTokens {
                     pane_id: pane.pane_id.clone(),
-                    values: values.clone(),
+                    values: Some(values.clone()),
                 })
         })
         .collect::<Vec<_>>();
@@ -274,15 +282,14 @@ pub fn publish_pane_tokens(
     let mut reported = 0usize;
     let mut failed = Vec::new();
     for pane in panes {
-        let Some(values) = tokens
-            .iter()
-            .find(|tokens| tokens.pane_id == pane.pane_id)
-            .map(|tokens| &tokens.values)
-        else {
+        let Some(pane_tokens) = tokens.iter().find(|tokens| tokens.pane_id == pane.pane_id) else {
             continue;
         };
         let topic = display_topic(pane);
-        let desired = desired_tokens(values, &topic);
+        let desired = match &pane_tokens.values {
+            Some(values) => desired_tokens(values, &topic),
+            None => desired_cleared_quota(pane),
+        };
         if metadata_matches(&pane.tokens, &desired) {
             continue;
         }
@@ -389,6 +396,24 @@ fn display_topic(pane: &AgentPane) -> String {
         return truncate_topic(&pane.session_summary);
     }
     truncate_topic(topic)
+}
+
+pub(crate) fn plugin_quota_present(tokens: &BTreeMap<String, String>) -> bool {
+    METADATA_TOKEN_NAMES
+        .into_iter()
+        .chain(OBSOLETE_METADATA_TOKEN_NAMES)
+        .chain(LEGACY_METADATA_TOKEN_NAMES)
+        .filter(|name| *name != "quota_topic")
+        .any(|name| tokens.contains_key(name))
+}
+
+fn desired_cleared_quota(pane: &AgentPane) -> BTreeMap<String, String> {
+    let mut tokens = BTreeMap::new();
+    let topic = display_topic(pane);
+    if !topic.is_empty() {
+        tokens.insert("quota_topic".to_string(), topic);
+    }
+    tokens
 }
 
 fn metadata_matches(
@@ -528,14 +553,14 @@ fn read_pane_topic(executable: &std::ffi::OsStr, pane: &AgentPane) -> Option<Str
         return None;
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    extract_topic(&text, pane.provider)
+    extract_topic(&text, pane.harness)
 }
 
-fn extract_topic(text: &str, provider: Provider) -> Option<String> {
+fn extract_topic(text: &str, harness: Harness) -> Option<String> {
     text.lines().rev().find_map(|line| {
         let cleaned_line = strip_control_chars(line);
         let line = cleaned_line.trim();
-        let candidate = prompt_candidate(line, provider)?;
+        let candidate = prompt_candidate(line, harness)?;
         if candidate.is_empty() || is_status_line(candidate) {
             return None;
         }
@@ -543,12 +568,12 @@ fn extract_topic(text: &str, provider: Provider) -> Option<String> {
     })
 }
 
-fn prompt_candidate(line: &str, provider: Provider) -> Option<&str> {
-    let marker = match provider {
-        Provider::Claude if line.starts_with('❯') => '❯',
-        Provider::Codex if line.starts_with('›') => '›',
-        Provider::Grok if line.starts_with('❯') => '❯',
-        Provider::Grok | Provider::Agy if line.starts_with('>') => '>',
+fn prompt_candidate(line: &str, harness: Harness) -> Option<&str> {
+    let marker = match harness {
+        Harness::Claude if line.starts_with('❯') => '❯',
+        Harness::Codex if line.starts_with('›') => '›',
+        Harness::Grok if line.starts_with('❯') => '❯',
+        Harness::Grok | Harness::Agy if line.starts_with('>') => '>',
         _ => return None,
     };
     Some(line.trim_start_matches(marker).trim())
@@ -609,7 +634,7 @@ mod tests {
             vec![
                 AgentPane {
                     pane_id: "w1:p1".to_string(),
-                    provider: Provider::Codex,
+                    harness: Harness::Codex,
                     session_id: None,
                     session_summary: String::new(),
                     topic: String::new(),
@@ -617,7 +642,15 @@ mod tests {
                 },
                 AgentPane {
                     pane_id: "w1:p2".to_string(),
-                    provider: Provider::Claude,
+                    harness: Harness::Claude,
+                    session_id: None,
+                    session_summary: String::new(),
+                    topic: String::new(),
+                    tokens: BTreeMap::new(),
+                },
+                AgentPane {
+                    pane_id: "w1:p4".to_string(),
+                    harness: Harness::OpenCode,
                     session_id: None,
                     session_summary: String::new(),
                     topic: String::new(),
@@ -625,6 +658,28 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn plugin_quota_presence_ignores_topic_only_tokens() {
+        let mut tokens = BTreeMap::new();
+        tokens.insert("quota_topic".to_string(), "keep me".to_string());
+        assert!(!plugin_quota_present(&tokens));
+        tokens.insert("quota_5h".to_string(), "5h 10%".to_string());
+        assert!(plugin_quota_present(&tokens));
+    }
+
+    #[test]
+    fn retains_opencode_pane_session_id() {
+        let value = json!({"result": {"agents": [{
+            "pane_id": "w1:p9",
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "value": "ses_go"}
+        }]}});
+        let mut panes = Vec::new();
+        collect_agent_panes(&value, &mut panes);
+        assert_eq!(panes[0].harness, Harness::OpenCode);
+        assert_eq!(panes[0].session_id.as_deref(), Some("ses_go"));
     }
 
     #[test]
@@ -657,7 +712,7 @@ mod tests {
     fn legacy_metadata_tokens_force_one_bounded_cleanup_report() {
         let pane = AgentPane {
             pane_id: "w1:p1".to_string(),
-            provider: Provider::Claude,
+            harness: Harness::Claude,
             session_id: None,
             session_summary: String::new(),
             topic: String::new(),
@@ -699,7 +754,7 @@ mod tests {
         let desired = desired_tokens(&MetadataTokens::from_snapshot(&snapshot, 0), "prompt");
         let pane = AgentPane {
             pane_id: "w1:p1".to_string(),
-            provider: Provider::Grok,
+            harness: Harness::Grok,
             session_id: None,
             session_summary: String::new(),
             topic: String::new(),
@@ -741,7 +796,7 @@ mod tests {
         let desired = desired_tokens(&MetadataTokens::from_snapshot(&snapshot, 0), "prompt");
         let pane = AgentPane {
             pane_id: "w1:p1".to_string(),
-            provider: Provider::Claude,
+            harness: Harness::Claude,
             session_id: None,
             session_summary: String::new(),
             topic: String::new(),
@@ -787,7 +842,7 @@ mod tests {
         tokens.insert("quota_session".to_string(), "old".to_string());
         let pane = AgentPane {
             pane_id: "w1:p1".to_string(),
-            provider: Provider::Claude,
+            harness: Harness::Claude,
             session_id: None,
             session_summary: String::new(),
             topic: String::new(),
@@ -826,19 +881,19 @@ mod tests {
     #[test]
     fn extracts_latest_agy_prompt_instead_of_status_line() {
         let text = "> older\nHello\n> hi\nHello!\n> Accept-edits mode: file edits auto-approved\n";
-        assert_eq!(extract_topic(text, Provider::Agy).as_deref(), Some("hi"));
+        assert_eq!(extract_topic(text, Harness::Agy).as_deref(), Some("hi"));
     }
 
     #[test]
     fn extracts_latest_claude_prompt_and_skips_clear_command() {
         let text = "❯ /clear\n❯ hi\n⏺ Hi! What can I help with?\n❯\n";
-        assert_eq!(extract_topic(text, Provider::Claude).as_deref(), Some("hi"));
+        assert_eq!(extract_topic(text, Harness::Claude).as_deref(), Some("hi"));
     }
 
     #[test]
     fn ignores_codex_default_prompt_placeholder() {
         assert_eq!(
-            extract_topic("› Ask Codex to do anything\n", Provider::Codex),
+            extract_topic("› Ask Codex to do anything\n", Harness::Codex),
             None
         );
     }
@@ -940,7 +995,7 @@ mod tests {
         tokens.insert("quota_week_normal".to_string(), "7d 75% 5d0h".to_string());
         let pane = AgentPane {
             pane_id: "w1:p1".to_string(),
-            provider: Provider::Grok,
+            harness: Harness::Grok,
             session_id: None,
             session_summary: String::new(),
             topic: String::new(),
@@ -979,7 +1034,7 @@ mod tests {
         tokens.insert("quota_week_inline_normal".to_string(), "7d 99%".to_string());
         let pane = AgentPane {
             pane_id: "w1:p1".to_string(),
-            provider: Provider::Codex,
+            harness: Harness::Codex,
             session_id: None,
             session_summary: String::new(),
             topic: String::new(),
@@ -1013,7 +1068,7 @@ mod tests {
     fn extracts_latest_grok_user_prompt_instead_of_ai_output() {
         let text = "❯ /goal 你在 ti 工作区接手 L7\n先读计划与权威文档，再按七步做 L7 盘点与设计。\n◇ Ran 1 subagent\n计划已读。先冻结坐标并读材料。\n";
         assert_eq!(
-            extract_topic(text, Provider::Grok).as_deref(),
+            extract_topic(text, Harness::Grok).as_deref(),
             Some("/goal 你在 ti 工作区接手 L7")
         );
     }

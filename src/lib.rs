@@ -7,5 +7,7 @@ pub mod process;
 pub mod configure;
 pub mod dashboard;
 pub mod herdr;
+pub mod opencode;
 pub mod providers;
 pub mod refresh;
+pub mod route;

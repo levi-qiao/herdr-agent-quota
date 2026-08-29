@@ -121,6 +121,81 @@ impl Harness {
     }
 }
 
+/// Opaque local identity for a credential store. Not a token, path, or account id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CredentialScope(&'static str);
+
+impl CredentialScope {
+    /// Canonical CLI stores for the original four collectors.
+    pub const CANONICAL: Self = Self("canonical");
+    /// OpenCode default data store (`$XDG_DATA_HOME/opencode` or `~/.local/share/opencode`).
+    pub const OPENCODE_STORE: Self = Self("opencode-store");
+
+    pub fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+/// Billing identity for a resolved pane. Original-four variants keep using
+/// [`Provider`] so 0.2 cache filenames stay unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BillingIdentity {
+    Original(Provider),
+    OpenCodeGo,
+}
+
+/// Subscription paying for a pane, scoped to one credential store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BillingTarget {
+    pub billing: BillingIdentity,
+    pub credential_scope: CredentialScope,
+}
+
+impl BillingTarget {
+    pub fn original_four(provider: Provider) -> Self {
+        Self {
+            billing: BillingIdentity::Original(provider),
+            credential_scope: CredentialScope::CANONICAL,
+        }
+    }
+
+    pub fn opencode_go() -> Self {
+        Self {
+            billing: BillingIdentity::OpenCodeGo,
+            credential_scope: CredentialScope::OPENCODE_STORE,
+        }
+    }
+
+    pub fn original_provider(self) -> Option<Provider> {
+        match self.billing {
+            BillingIdentity::Original(provider) => Some(provider),
+            BillingIdentity::OpenCodeGo => None,
+        }
+    }
+
+    /// Cache, lease, and refresh-marker filename stem.
+    ///
+    /// Original-four stems stay the 0.2 source ids. New targets include the
+    /// credential-scope identity so they cannot collide with those files.
+    pub fn cache_identity(self) -> String {
+        match self.billing {
+            BillingIdentity::Original(provider) => provider.source().to_string(),
+            BillingIdentity::OpenCodeGo => {
+                format!("opencode-go.{}", self.credential_scope.as_str())
+            }
+        }
+    }
+}
+
+/// Result of attributing a pane to a subscription. Uncertain evidence never
+/// guesses from the number of credentials on disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    Subscription(BillingTarget),
+    NoSubscription,
+    Indeterminate,
+}
+
 impl std::str::FromStr for Provider {
     type Err = ModelError;
 
@@ -896,6 +971,21 @@ mod tests {
         assert!("opencode".parse::<Provider>().is_err());
         assert!("OpenCode".parse::<Provider>().is_err());
         assert!("pi".parse::<Provider>().is_err());
+    }
+
+    #[test]
+    fn opencode_go_cache_identity_cannot_borrow_original_four_files() {
+        let target = BillingTarget::opencode_go();
+        assert_eq!(target.cache_identity(), "opencode-go.opencode-store");
+        assert_eq!(target.credential_scope, CredentialScope::OPENCODE_STORE);
+        assert!(target.original_provider().is_none());
+        for provider in Provider::ALL {
+            let original = BillingTarget::original_four(provider);
+            assert_eq!(original.cache_identity(), provider.source());
+            assert_eq!(original.credential_scope, CredentialScope::CANONICAL);
+            assert_ne!(target.cache_identity(), original.cache_identity());
+            assert!(!target.cache_identity().contains(provider.source()));
+        }
     }
 
     #[test]
