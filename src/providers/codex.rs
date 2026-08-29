@@ -5,6 +5,7 @@ use crate::model::{
 };
 use crate::providers::ProviderError;
 use anyhow::{Context, Result};
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
@@ -24,11 +25,6 @@ const WEEKLY_WINDOW_MINUTES: u64 = 7 * 24 * 60;
 const ROLLOUT_TAIL_BYTES: u64 = 256 * 1024;
 const ROLLOUT_HEAD_BYTES: u64 = 256 * 1024;
 const CODEX_CONTEXT_BASELINE_TOKENS: u64 = 12_000;
-// Codex rollout usage does not include an expiry timestamp. OpenAI documents
-// the default in-memory prompt cache as typically expiring after 5–10 minutes
-// of inactivity and always being removed within one hour of its last use, so
-// the sidebar exposes this as an explicitly approximate upper-bound estimate.
-const CODEX_PROMPT_CACHE_MAX_TTL_SECONDS: u64 = 60 * 60;
 
 pub fn parse_rate_limits(
     value: &Value,
@@ -473,29 +469,13 @@ fn parse_rollout_observation(text: &str, session_id: &str) -> Option<RolloutObse
         let Some(info_object) = info.as_object() else {
             continue;
         };
-        let cache_activity = token_count(last, "cached_input_tokens", "cachedInputTokens") > 0
-            || token_count(last, "cache_write_input_tokens", "cacheWriteInputTokens") > 0
-            || token_count(
-                last,
-                "cache_creation_input_tokens",
-                "cacheCreationInputTokens",
-            ) > 0;
         let cache = parse_rollout_cache(info_object).map(|cache| {
             let totals = CacheTotals::from_token_counts(
                 cache.fresh_input_tokens,
                 cache.read_tokens,
                 cache.creation_tokens,
             );
-            let mut cache = cache.with_session_totals(totals, session_id, 0);
-            if cache_activity {
-                if let Some(last_activity_unix) =
-                    entry.get("timestamp").and_then(parse_rollout_timestamp)
-                {
-                    cache = cache
-                        .with_ttl_estimate(CODEX_PROMPT_CACHE_MAX_TTL_SECONDS, last_activity_unix);
-                }
-            }
-            cache
+            cache.with_session_totals(totals, session_id, 0)
         });
         let context_value = ContextUsage::new(used.clamp(0.0, 100.0))
             .ok()?
@@ -506,15 +486,6 @@ fn parse_rollout_observation(text: &str, session_id: &str) -> Option<RolloutObse
         model,
         context,
         windows,
-    })
-}
-
-fn parse_rollout_timestamp(value: &Value) -> Option<u64> {
-    value.as_u64().or_else(|| {
-        value
-            .as_str()
-            .and_then(ResetAt::parse)
-            .map(ResetAt::unix_seconds)
     })
 }
 
@@ -665,12 +636,24 @@ pub fn auth_mtime_unix() -> Option<u64> {
 }
 
 pub fn account_id_from_auth(path: &Path) -> Option<String> {
-    let value: Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
-    value
-        .pointer("/tokens/account_id")
-        .and_then(Value::as_str)
+    #[derive(Deserialize)]
+    struct AuthMetadata {
+        tokens: Option<TokenMetadata>,
+    }
+
+    #[derive(Deserialize)]
+    struct TokenMetadata {
+        account_id: Option<String>,
+    }
+
+    // Only materialize the stable account id. Token fields are ignored by the
+    // streaming deserializer and never enter an owned Rust value.
+    let metadata: AuthMetadata =
+        serde_json::from_reader(BufReader::new(fs::File::open(path).ok()?)).ok()?;
+    metadata
+        .tokens?
+        .account_id
         .filter(|value| !value.is_empty())
-        .map(str::to_string)
 }
 
 fn account_id_from_rpc(value: &Value) -> Option<String> {
@@ -870,8 +853,8 @@ mod tests {
         assert_eq!(cache.creation_tokens, 100);
         assert_eq!(cache.session_id.as_deref(), Some("session-1"));
         assert_eq!(cache.session_totals.unwrap().hit_percent, 72.72727272727273);
-        assert_eq!(cache.ttl_seconds, Some(60 * 60));
-        assert_eq!(cache.last_activity_unix, Some(1_787_711_322));
+        assert_eq!(cache.ttl_seconds, None);
+        assert_eq!(cache.last_activity_unix, None);
     }
 
     #[test]

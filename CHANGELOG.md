@@ -9,7 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - `configure --agent` installs and removes one agent at a time. Values are
-  `all` (the default), `claude`, `codex`, `grok`, `agy` and `opencode`, and can
+  `all` (the default), `claude`, `codex`, `grok`, `agy`, `opencode` and `pi`, and can
   be repeated or comma-separated. An agent you do not select gets no sidebar
   row, no statusLine entry and no hook file, so nothing of theirs is created on
   a machine that does not use them. `install.sh --agent` and
@@ -37,14 +37,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   id, looked up read-only in `opencode.db` and classified against the
   credential filed for that backend in OpenCode's `auth.json`. Confirmed
   pay-as-you-go clears stale quota once; missing, unreadable or ambiguous
-  evidence preserves whatever the pane already shows. No quota is fetched for
-  OpenCode yet.
+  evidence preserves whatever the pane already shows.
+- Exact OpenCode sessions publish their local provider/model and context even
+  when the backend has no supported subscription collector. Context follows
+  OpenCode's own latest-completed-assistant token formula and bounded local
+  model cache; no credential or unrelated session is consulted.
 
 ### Changed
 
 - `event` and `focus` act on exactly one named pane from a single agent
   inventory, so a sibling pane on the same subscription receives neither a pane
   read nor a metadata write.
+- Plugin-owned sidebar spacing now migrates to Herdr's packed `row_gap = 0`;
+  empty metadata rows collapse dynamically, while user-owned spacing remains
+  unchanged.
+- Cache TTL is published only from a recorded provider bucket. Pi/Anthropic
+  sessions now use their `cacheWrite1h` split and request-start timestamp;
+  Codex keeps its cache hit rate but no longer guesses a one-hour expiry from a
+  rollout event timestamp.
+- Missing-integration diagnostics now cover Pi as well as OpenCode and tell the
+  user to restart the affected pane after installation.
+- The English and Chinese READMEs now lead with installation prerequisites,
+  exact route coverage, accuracy gaps, privacy, and concise troubleshooting.
 
 ## [0.2.0] - 2026-08-29
 

@@ -1,0 +1,3 @@
+{"type":"session","version":3,"id":"session-xai-usage","timestamp":"2026-08-29T00:00:00.000Z","cwd":"/workspace"}
+{"type":"model_change","id":"entry-1","parentId":null,"timestamp":"2026-08-29T00:00:01.000Z","provider":"xai","modelId":"model-x"}
+{"type":"message","id":"entry-2","parentId":"entry-1","timestamp":"2026-08-29T00:00:02.000Z","message":{"role":"assistant","provider":"xai","model":"model-x","content":[],"stopReason":"stop","usage":{"input":20,"output":5,"cacheRead":80,"cacheWrite":0,"totalTokens":105,"cost":{"total":0}}}}

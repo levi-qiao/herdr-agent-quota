@@ -1,4 +1,4 @@
-use crate::model::{Harness, Provider};
+use crate::model::{ContextUsage, Harness, Provider};
 use crate::presentation::MetadataTokens;
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -34,10 +34,34 @@ const OBSOLETE_METADATA_TOKEN_NAMES: [&str; 2] = ["quota_icon", "quota_status"];
 const LEGACY_METADATA_TOKEN_NAMES: [&str; 2] = ["quota_badge", "quota_session"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentSession {
+    pub kind: Option<String>,
+    pub value: String,
+}
+
+impl AgentSession {
+    /// Existing Herdr integrations historically omitted `kind`; keep treating
+    /// those values as opaque ids. A path is never exposed through this seam.
+    pub fn id(&self) -> Option<&str> {
+        self.kind
+            .as_deref()
+            .is_none_or(|kind| kind == "id")
+            .then_some(self.value.as_str())
+    }
+
+    pub fn path(&self) -> Option<&str> {
+        self.kind
+            .as_deref()
+            .is_some_and(|kind| kind == "path")
+            .then_some(self.value.as_str())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentPane {
     pub pane_id: String,
     pub harness: Harness,
-    pub session_id: Option<String>,
+    pub session: Option<AgentSession>,
     pub session_summary: String,
     pub topic: String,
     pub tokens: BTreeMap<String, String>,
@@ -50,10 +74,24 @@ pub struct AgentState {
 }
 
 #[derive(Debug, Clone)]
+pub struct PaneIdentity {
+    pub provider: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum PaneQuotaUpdate {
+    Replace(Box<MetadataTokens>),
+    Clear,
+    Preserve,
+}
+
+#[derive(Debug, Clone)]
 pub struct PaneTokens {
     pub pane_id: String,
-    /// `None` clears plugin-owned quota tokens once and keeps the topic.
-    pub values: Option<MetadataTokens>,
+    pub quota: PaneQuotaUpdate,
+    pub identity: Option<PaneIdentity>,
+    pub context: Option<ContextUsage>,
 }
 
 pub fn list_agent_panes() -> Result<Vec<AgentPane>> {
@@ -166,16 +204,24 @@ fn collect_agent_panes(value: &Value, panes: &mut Vec<AgentPane>) {
                         .collect();
                     let topic = tokens.get("quota_topic").cloned().unwrap_or_default();
                     let session_summary = tokens.get("quota_session").cloned().unwrap_or_default();
-                    let session_id = map
-                        .get("agent_session")
-                        .and_then(Value::as_object)
-                        .and_then(|session| session.get("value"))
-                        .and_then(Value::as_str)
-                        .map(str::to_string);
+                    let session =
+                        map.get("agent_session")
+                            .and_then(Value::as_object)
+                            .and_then(|session| {
+                                session.get("value").and_then(Value::as_str).map(|value| {
+                                    AgentSession {
+                                        kind: session
+                                            .get("kind")
+                                            .and_then(Value::as_str)
+                                            .map(str::to_string),
+                                        value: value.to_string(),
+                                    }
+                                })
+                            });
                     panes.push(AgentPane {
                         pane_id: pane_id.to_string(),
                         harness,
-                        session_id,
+                        session,
                         session_summary,
                         // Preserve the last published topic during quota-only
                         // refreshes. Agent events refresh it from pane output.
@@ -266,7 +312,9 @@ pub fn publish_tokens(
                 .find(|(provider, _)| pane.harness.billing() == Some(*provider))
                 .map(|(_, values)| PaneTokens {
                     pane_id: pane.pane_id.clone(),
-                    values: Some(values.clone()),
+                    quota: PaneQuotaUpdate::Replace(Box::new(values.clone())),
+                    identity: None,
+                    context: None,
                 })
         })
         .collect::<Vec<_>>();
@@ -286,10 +334,17 @@ pub fn publish_pane_tokens(
             continue;
         };
         let topic = display_topic(pane);
-        let desired = match &pane_tokens.values {
-            Some(values) => desired_tokens(values, &topic),
-            None => desired_cleared_quota(pane),
+        let mut desired = match &pane_tokens.quota {
+            PaneQuotaUpdate::Replace(values) => desired_tokens(values, &topic),
+            PaneQuotaUpdate::Clear => desired_cleared_quota(pane),
+            PaneQuotaUpdate::Preserve => pane.tokens.clone(),
         };
+        if let Some(identity) = &pane_tokens.identity {
+            apply_identity(&mut desired, identity);
+        }
+        if let Some(context) = &pane_tokens.context {
+            apply_context(&mut desired, context, sequence / 1_000);
+        }
         if metadata_matches(&pane.tokens, &desired) {
             continue;
         }
@@ -414,6 +469,43 @@ fn desired_cleared_quota(pane: &AgentPane) -> BTreeMap<String, String> {
         tokens.insert("quota_topic".to_string(), topic);
     }
     tokens
+}
+
+fn apply_identity(tokens: &mut BTreeMap<String, String>, identity: &PaneIdentity) {
+    tokens.insert("quota_provider".to_string(), identity.provider.clone());
+    if identity.model.is_empty() {
+        tokens.remove("quota_model");
+        tokens.insert(
+            "quota_provider_model".to_string(),
+            identity.provider.clone(),
+        );
+    } else {
+        tokens.insert("quota_model".to_string(), identity.model.clone());
+        tokens.insert(
+            "quota_provider_model".to_string(),
+            format!("{}/{}", identity.provider, identity.model),
+        );
+    }
+}
+
+fn apply_context(tokens: &mut BTreeMap<String, String>, context: &ContextUsage, now_unix: u64) {
+    insert_optional_token(
+        tokens,
+        "quota_context",
+        &crate::presentation::sidebar_context(Some(context)),
+    );
+    let cache = crate::presentation::sidebar_cache(Some(context));
+    if cache.is_empty() {
+        tokens.remove("quota_cache");
+    } else {
+        tokens.insert("quota_cache".to_string(), cache);
+    }
+    let cache_ttl = crate::presentation::sidebar_cache_ttl(Some(context), now_unix);
+    if cache_ttl.is_empty() {
+        tokens.remove("quota_cache_ttl");
+    } else {
+        tokens.insert("quota_cache_ttl".to_string(), cache_ttl);
+    }
 }
 
 fn metadata_matches(
@@ -638,7 +730,7 @@ mod tests {
                 AgentPane {
                     pane_id: "w1:p1".to_string(),
                     harness: Harness::Codex,
-                    session_id: None,
+                    session: None,
                     session_summary: String::new(),
                     topic: String::new(),
                     tokens: BTreeMap::new(),
@@ -646,7 +738,7 @@ mod tests {
                 AgentPane {
                     pane_id: "w1:p2".to_string(),
                     harness: Harness::Claude,
-                    session_id: None,
+                    session: None,
                     session_summary: String::new(),
                     topic: String::new(),
                     tokens: BTreeMap::new(),
@@ -654,7 +746,7 @@ mod tests {
                 AgentPane {
                     pane_id: "w1:p4".to_string(),
                     harness: Harness::OpenCode,
-                    session_id: None,
+                    session: None,
                     session_summary: String::new(),
                     topic: String::new(),
                     tokens: BTreeMap::new(),
@@ -754,7 +846,69 @@ mod tests {
         let mut panes = Vec::new();
         collect_agent_panes(&value, &mut panes);
         assert_eq!(panes[0].harness, Harness::OpenCode);
-        assert_eq!(panes[0].session_id.as_deref(), Some("ses_go"));
+        assert_eq!(
+            panes[0].session.as_ref().and_then(AgentSession::id),
+            Some("ses_go")
+        );
+    }
+
+    #[test]
+    fn carries_path_kind_without_exposing_it_as_an_id() {
+        let value = json!({"result": {"agents": [{
+            "pane_id": "w1:p9",
+            "agent": "pi",
+            "agent_session": {
+                "agent": "pi",
+                "kind": "path",
+                "source": "herdr:pi",
+                "value": "/tmp/pi/sessions/project/session-pi.jsonl"
+            }
+        }]}});
+        let mut panes = Vec::new();
+        collect_agent_panes(&value, &mut panes);
+        let session = panes[0].session.as_ref().unwrap();
+        assert_eq!(panes[0].harness, Harness::Pi);
+        assert_eq!(session.kind.as_deref(), Some("path"));
+        assert_eq!(session.id(), None);
+        assert_eq!(
+            session.path(),
+            Some("/tmp/pi/sessions/project/session-pi.jsonl")
+        );
+    }
+
+    #[test]
+    fn id_kind_preserves_every_existing_harness_session() {
+        for agent in ["claude", "codex", "grok", "agy", "opencode"] {
+            let value = json!({"result": {"agents": [{
+                "pane_id": "w1:p1",
+                "agent": agent,
+                "agent_session": {"kind": "id", "value": "session-id"}
+            }]}});
+            let mut panes = Vec::new();
+            collect_agent_panes(&value, &mut panes);
+            assert_eq!(
+                panes[0].session.as_ref().and_then(AgentSession::id),
+                Some("session-id"),
+                "{agent}"
+            );
+            assert_eq!(
+                panes[0].session.as_ref().and_then(AgentSession::path),
+                None,
+                "{agent}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_session_kinds_are_not_reinterpreted() {
+        for kind in ["PATH", "ID", "uri"] {
+            let session = AgentSession {
+                kind: Some(kind.to_string()),
+                value: "session-value".to_string(),
+            };
+            assert_eq!(session.id(), None, "{kind}");
+            assert_eq!(session.path(), None, "{kind}");
+        }
     }
 
     #[test]
@@ -779,7 +933,10 @@ mod tests {
         }]}});
         let mut panes = Vec::new();
         collect_agent_panes(&value, &mut panes);
-        assert_eq!(panes[0].session_id.as_deref(), Some("thread-1"));
+        assert_eq!(
+            panes[0].session.as_ref().and_then(AgentSession::id),
+            Some("thread-1")
+        );
         assert_eq!(panes[0].session_summary, "previous summary");
     }
 
@@ -788,7 +945,7 @@ mod tests {
         let pane = AgentPane {
             pane_id: "w1:p1".to_string(),
             harness: Harness::Claude,
-            session_id: None,
+            session: None,
             session_summary: String::new(),
             topic: String::new(),
             tokens: BTreeMap::from([(String::from("quota_badge"), String::from("[A]"))]),
@@ -830,7 +987,7 @@ mod tests {
         let pane = AgentPane {
             pane_id: "w1:p1".to_string(),
             harness: Harness::Grok,
-            session_id: None,
+            session: None,
             session_summary: String::new(),
             topic: String::new(),
             tokens: BTreeMap::new(),
@@ -872,7 +1029,7 @@ mod tests {
         let pane = AgentPane {
             pane_id: "w1:p1".to_string(),
             harness: Harness::Claude,
-            session_id: None,
+            session: None,
             session_summary: String::new(),
             topic: String::new(),
             tokens: BTreeMap::new(),
@@ -881,6 +1038,22 @@ mod tests {
         assert!(names.len() <= MAX_METADATA_TOKENS);
         assert!(names.contains(&"quota_cache"));
         assert!(names.contains(&"quota_cache_ttl"));
+    }
+
+    #[test]
+    fn exact_context_without_cache_clears_stale_cache_diagnostics() {
+        let mut tokens = BTreeMap::from([
+            ("quota_context".to_string(), "context 99%".to_string()),
+            ("quota_cache".to_string(), "cache 95.0%".to_string()),
+            ("quota_cache_ttl".to_string(), "ttl≈1h".to_string()),
+        ]);
+        apply_context(&mut tokens, &ContextUsage::new(12.0).unwrap(), 0);
+        assert_eq!(
+            tokens.get("quota_context").map(String::as_str),
+            Some("context 12%")
+        );
+        assert!(!tokens.contains_key("quota_cache"));
+        assert!(!tokens.contains_key("quota_cache_ttl"));
     }
 
     #[test]
@@ -918,7 +1091,7 @@ mod tests {
         let pane = AgentPane {
             pane_id: "w1:p1".to_string(),
             harness: Harness::Claude,
-            session_id: None,
+            session: None,
             session_summary: String::new(),
             topic: String::new(),
             tokens,
@@ -1071,7 +1244,7 @@ mod tests {
         let pane = AgentPane {
             pane_id: "w1:p1".to_string(),
             harness: Harness::Grok,
-            session_id: None,
+            session: None,
             session_summary: String::new(),
             topic: String::new(),
             tokens,
@@ -1110,7 +1283,7 @@ mod tests {
         let pane = AgentPane {
             pane_id: "w1:p1".to_string(),
             harness: Harness::Codex,
-            session_id: None,
+            session: None,
             session_summary: String::new(),
             topic: String::new(),
             tokens,

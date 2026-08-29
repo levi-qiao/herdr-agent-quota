@@ -62,7 +62,7 @@ pub enum Command {
         /// configuration. Without `--agent` this removes everything.
         #[arg(long, conflicts_with_all = ["check", "apply"])]
         uninstall: bool,
-        /// Agents to configure: all, claude, codex, grok, agy, opencode.
+        /// Agents to configure: all, claude, codex, grok, agy, opencode, pi.
         /// Repeat or comma-separate to pick several. Defaults to every
         /// supported agent (or $HERDR_AGENT_QUOTA_AGENTS when set), so
         /// `--uninstall` alone still removes everything this plugin installed.
@@ -111,16 +111,18 @@ pub enum AgentSelection {
     Grok,
     Agy,
     Opencode,
+    Pi,
 }
 
 impl AgentSelection {
     /// Every agent `configure` supports, in the order they are reported.
-    pub const SUPPORTED: [Harness; 5] = [
+    pub const SUPPORTED: [Harness; 6] = [
         Harness::Claude,
         Harness::Codex,
         Harness::Grok,
         Harness::Agy,
         Harness::OpenCode,
+        Harness::Pi,
     ];
 
     fn harness(self) -> Option<Harness> {
@@ -131,6 +133,7 @@ impl AgentSelection {
             Self::Grok => Some(Harness::Grok),
             Self::Agy => Some(Harness::Agy),
             Self::Opencode => Some(Harness::OpenCode),
+            Self::Pi => Some(Harness::Pi),
         }
     }
 
@@ -165,6 +168,7 @@ impl AgentSelection {
             "grok" => Some(Self::Grok),
             "agy" => Some(Self::Agy),
             "opencode" => Some(Self::Opencode),
+            "pi" => Some(Self::Pi),
             _ => None,
         }
     }
@@ -202,6 +206,7 @@ mod tests {
     #[test]
     fn an_unusable_environment_selection_falls_back_to_everything() {
         assert_eq!(AgentSelection::parse("Grok"), Some(AgentSelection::Grok));
+        assert_eq!(AgentSelection::parse("Pi"), Some(AgentSelection::Pi));
         assert_eq!(AgentSelection::parse("nonsense"), None);
         // An explicit flag must win over the environment, which is checked in
         // `from_args_or_env` before the variable is read at all.

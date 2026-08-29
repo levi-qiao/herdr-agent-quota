@@ -84,9 +84,9 @@ impl Provider {
     }
 }
 
-/// The agent drawing a Herdr pane. Distinct from [`Billing`]: OpenCode, Pi,
-/// OMP, and Kimi are harnesses in this release's identity split, but they do
-/// not yet select a quota collector.
+/// The agent drawing a Herdr pane. Distinct from [`Billing`]: harnesses without
+/// a 1:1 collector may still resolve an exact session to a scoped billing
+/// target (for example, Pi to canonical Codex after an account-id match).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Harness {
     Codex,

@@ -2,7 +2,7 @@ id = "herdr-agent-quota"
 name = "Herdr Agent Quota"
 version = "0.2.0"
 min_herdr_version = "0.8.0"
-description = "Never hit a quota limit mid-task: see Claude, Codex, Grok and Agy usage live in your Herdr sidebar. Quota windows, supported context usage, and session summaries refresh throughout active turns."
+description = "Credential-scoped AI quota and context for Claude, Codex, Grok, Agy, OpenCode, and Pi."
 platforms = ["macos", "linux"]
 
 [[build]]

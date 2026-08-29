@@ -7,7 +7,7 @@
 #   ./install.sh --watch-interval-seconds 300
 #
 # --agent installs only the agents you name (all, claude, codex, grok, agy,
-# opencode). Anything you leave out gets no sidebar row, no statusLine entry
+# opencode, pi). Anything you leave out gets no sidebar row, no statusLine entry
 # and no hook file. The default is every supported agent.
 #
 # The matching uninstall.sh first restores every configuration entry owned by

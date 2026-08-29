@@ -1,0 +1,2 @@
+{"type":"session","version":99,"id":"session-unknown","timestamp":"2026-08-29T00:00:00.000Z","cwd":"/workspace"}
+{"type":"model_change","id":"entry-1","parentId":null,"timestamp":"2026-08-29T00:00:01.000Z","provider":"openai-codex","modelId":"model-b"}

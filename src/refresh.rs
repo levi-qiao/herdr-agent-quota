@@ -1,7 +1,7 @@
 use crate::cache::CacheStore;
 use crate::herdr::{
     current_focused_pane, list_agent_panes, list_agent_state, plugin_quota_present,
-    publish_pane_tokens, refresh_pane_topic, AgentPane, PaneTokens,
+    publish_pane_tokens, refresh_pane_topic, AgentPane, PaneQuotaUpdate, PaneTokens,
 };
 use crate::model::{BillingTarget, Harness, Provider, ProviderSnapshot, Resolution};
 use crate::opencode::OpenCodePaths;
@@ -167,7 +167,10 @@ pub fn event() -> Result<()> {
     };
 
     let status = find_status(event);
-    let result = handle_named_pane(&cache, pane, Some(pane_id));
+    // Pi's exact session file carries the routing evidence. Reading its pane
+    // would add a visible repaint without improving attribution.
+    let topic_pane = (harness != Harness::Pi).then_some(pane_id);
+    let result = handle_named_pane(&cache, pane, topic_pane);
     // OpenCode (and other non-collector harnesses) must not start the
     // original-four all-provider watch.
     if status.is_some_and(is_working_status) && harness.billing().is_some() {
@@ -205,12 +208,90 @@ fn named_pane(pane_id: &str, harness: Harness) -> Result<Option<AgentPane>> {
 
 fn handle_named_pane(cache: &CacheStore, pane: AgentPane, topic_pane: Option<&str>) -> Result<()> {
     let mut panes = [pane];
-    // A harness with no collector still resolves and publishes; it just has
-    // nothing to fetch first.
-    if let Some(provider) = panes[0].harness.billing() {
-        refresh_selected(cache, &[provider], false, &panes)?;
+    if topic_pane == Some(panes[0].pane_id.as_str()) {
+        refresh_pane_topic(&mut panes[0]);
     }
-    publish_resolved(cache, &mut panes, topic_pane)
+    let resolved = route::resolve_with_identity(&panes[0]);
+    // A cross-harness route may reuse an original collector only after its
+    // credential scope is proved. Pi's account-id match is the first such
+    // route; its path-shaped session is deliberately not passed to Codex as a
+    // thread id.
+    if let Resolution::Subscription(target) = &resolved.resolution {
+        if let Some(provider) = target.original_provider() {
+            refresh_selected(cache, &[provider], false, &panes)?;
+        }
+    }
+    let tokens = resolved_pane_tokens(cache, &mut panes[0], resolved, CacheStore::now_unix())?
+        .into_iter()
+        .collect::<Vec<_>>();
+    publish_pane_tokens(&panes, &tokens, CacheStore::now_millis())
+}
+
+fn resolved_pane_tokens(
+    cache: &CacheStore,
+    pane: &mut AgentPane,
+    resolved: route::ResolvedPane,
+    now: u64,
+) -> Result<Option<PaneTokens>> {
+    let route::ResolvedPane {
+        resolution,
+        identity,
+        context,
+    } = resolved;
+    let mut quota = match resolution {
+        Resolution::Subscription(target) => {
+            if let Some(provider) = target.original_provider() {
+                let snapshot = cache.load(provider)?;
+                let (account_id, mtime) = current_account_gate(provider);
+                let usable = snapshot
+                    .as_ref()
+                    .filter(|snapshot| snapshot.usable_for_account(account_id.as_deref(), mtime));
+                if let Some(snapshot) = usable {
+                    if let Some(session_id) = pane.session.as_ref().and_then(|session| session.id())
+                    {
+                        if let Some(summary) = snapshot.session_summaries.get(session_id) {
+                            pane.session_summary = summary.clone();
+                        }
+                    }
+                }
+                tokens_for_loaded_snapshot(
+                    provider,
+                    snapshot.as_ref(),
+                    usable,
+                    now,
+                    pane.session.as_ref().and_then(|session| session.id()),
+                )
+                .map(|values| PaneQuotaUpdate::Replace(Box::new(values)))
+            } else {
+                // Not one of the original four, so it is never fetched by the
+                // provider list: this pane resolved to it, so this pane pays
+                // for at most one debounced request.
+                refresh_scoped_target(cache, &target);
+                let snapshot = cache.load(target.billing)?;
+                tokens_for_provider(
+                    snapshot.as_ref(),
+                    now,
+                    pane.session.as_ref().and_then(|session| session.id()),
+                )
+                .map(|values| PaneQuotaUpdate::Replace(Box::new(values)))
+            }
+        }
+        Resolution::NoSubscription if plugin_quota_present(&pane.tokens) || identity.is_some() => {
+            Some(PaneQuotaUpdate::Clear)
+        }
+        Resolution::NoSubscription => None,
+        Resolution::Indeterminate if identity.is_some() => Some(PaneQuotaUpdate::Preserve),
+        Resolution::Indeterminate => None,
+    };
+    if quota.is_none() && (identity.is_some() || context.is_some()) {
+        quota = Some(PaneQuotaUpdate::Preserve);
+    }
+    Ok(quota.map(|quota| PaneTokens {
+        pane_id: pane.pane_id.clone(),
+        quota,
+        identity,
+        context,
+    }))
 }
 
 /// Refresh a billing target that has no 1:1 harness collector.
@@ -318,7 +399,12 @@ fn refresh_provider(
     let session_ids = panes
         .iter()
         .filter(|pane| pane.harness.billing() == Some(provider))
-        .filter_map(|pane| pane.session_id.clone())
+        .filter_map(|pane| {
+            pane.session
+                .as_ref()
+                .and_then(|session| session.id())
+                .map(str::to_string)
+        })
         .collect::<Vec<_>>();
     let fetched = match provider {
         Provider::Codex => codex::fetch_for_sessions(&session_ids).map(FetchedSnapshot::direct),
@@ -453,61 +539,10 @@ fn publish_resolved(
     let mut tokens = Vec::new();
     let now = CacheStore::now_unix();
     for pane in panes.iter_mut() {
-        match route::resolve(pane) {
-            Resolution::Subscription(target) => {
-                if let Some(provider) = target.original_provider() {
-                    let snapshot = cache.load(provider)?;
-                    let (account_id, mtime) = current_account_gate(provider);
-                    let usable = snapshot.as_ref().filter(|snapshot| {
-                        snapshot.usable_for_account(account_id.as_deref(), mtime)
-                    });
-                    if let Some(snapshot) = usable {
-                        if let Some(session_id) = pane.session_id.as_deref() {
-                            if let Some(summary) = snapshot.session_summaries.get(session_id) {
-                                pane.session_summary = summary.clone();
-                            }
-                        }
-                    }
-                    if let Some(values) = tokens_for_loaded_snapshot(
-                        provider,
-                        snapshot.as_ref(),
-                        usable,
-                        now,
-                        pane.session_id.as_deref(),
-                    ) {
-                        tokens.push(PaneTokens {
-                            pane_id: pane.pane_id.clone(),
-                            values: Some(values),
-                        });
-                    }
-                } else {
-                    // Not one of the original four, so it is never fetched by
-                    // the provider list: this pane resolved to it, so this pane
-                    // pays for at most one debounced request.
-                    refresh_scoped_target(cache, &target);
-                    // A scoped target has no per-account gate to fail, so a
-                    // cached snapshot is simply usable; without one the pane
-                    // keeps whatever it already shows.
-                    let snapshot = cache.load(target.billing)?;
-                    if let Some(values) =
-                        tokens_for_provider(snapshot.as_ref(), now, pane.session_id.as_deref())
-                    {
-                        tokens.push(PaneTokens {
-                            pane_id: pane.pane_id.clone(),
-                            values: Some(values),
-                        });
-                    }
-                }
-            }
-            Resolution::NoSubscription => {
-                if plugin_quota_present(&pane.tokens) {
-                    tokens.push(PaneTokens {
-                        pane_id: pane.pane_id.clone(),
-                        values: None,
-                    });
-                }
-            }
-            Resolution::Indeterminate => {}
+        if let Some(pane_tokens) =
+            resolved_pane_tokens(cache, pane, route::resolve_with_identity(pane), now)?
+        {
+            tokens.push(pane_tokens);
         }
     }
     publish_pane_tokens(panes, &tokens, CacheStore::now_millis())

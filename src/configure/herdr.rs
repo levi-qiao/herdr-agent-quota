@@ -45,12 +45,13 @@ const QUOTA_SAFE_COLOR: &str = "#84b084";
 const QUOTA_WARNING_COLOR: &str = "#cdaa65";
 const QUOTA_DANGER_COLOR: &str = "#ca6470";
 const DIAGNOSTIC_COLOR: &str = "#9aa7b8";
-const PROVIDER_STYLES: [(Harness, &str, Option<&str>); 5] = [
+const PROVIDER_STYLES: [(Harness, &str, Option<&str>); 6] = [
     (Harness::Claude, "claude", Some("#c47f6a")),
     (Harness::Codex, "codex", Some("#7998b7")),
     (Harness::Grok, "grok", Some("#acb4c3")),
     (Harness::Agy, "agy", Some("#84b0af")),
     (Harness::OpenCode, "opencode", Some("#c49a6a")),
+    (Harness::Pi, "pi", Some("#b58bbd")),
 ];
 
 /// Sidebar rows for the selected agents only, so `--agent grok` never writes
@@ -210,8 +211,14 @@ pub fn add_quota_row_for(input: &str, agents: &[Harness]) -> Result<String> {
     };
     add_refresh_keybinding(&mut document)?;
     let table = ensure_table(&mut document, &["ui", "sidebar", "agents"])?;
-    if !table.contains_key("row_gap") {
-        let mut row_gap = Value::from(1);
+    let managed_row_gap = table
+        .get("row_gap")
+        .and_then(Item::as_value)
+        .and_then(|value| value.decor().suffix())
+        .and_then(|suffix| suffix.as_str())
+        .is_some_and(|suffix| suffix.contains(ROW_GAP_MARKER));
+    if !table.contains_key("row_gap") || managed_row_gap {
+        let mut row_gap = Value::from(0);
         row_gap
             .decor_mut()
             .set_suffix(format!(" # {ROW_GAP_MARKER}"));

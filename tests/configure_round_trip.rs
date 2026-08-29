@@ -1,4 +1,6 @@
+use herdr_agent_quota::cache::CacheStore;
 use herdr_agent_quota::configure::herdr::{add_quota_row, remove_quota_row};
+use herdr_agent_quota::model::{Provider, ProviderSnapshot, UsageWindow, WindowKind};
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -162,7 +164,7 @@ fn default_herdr_rows_become_plane_provider_usage_and_topic_lines() {
     assert!(applied.contains("$quota_cache"));
     assert!(applied.contains("$quota_cache_ttl"));
     assert!(applied.contains("fg = \"#9aa7b8\""));
-    assert!(applied.contains("row_gap = 1 # herdr-agent-quota"));
+    assert!(applied.contains("row_gap = 0 # herdr-agent-quota"));
     assert!(applied.find("$quota_topic").unwrap() < applied.find("$quota_5h_normal").unwrap());
     assert!(applied.contains("fg = \"#84b084\""));
     assert!(applied.contains("fg = \"#cdaa65\""));
@@ -172,6 +174,7 @@ fn default_herdr_rows_become_plane_provider_usage_and_topic_lines() {
     assert!(applied.contains("fg = \"#7998b7\""));
     assert!(applied.contains("fg = \"#acb4c3\""));
     assert!(applied.contains("fg = \"#84b0af\""));
+    assert!(applied.contains("fg = \"#b58bbd\""));
 }
 
 #[test]
@@ -234,7 +237,7 @@ fn provider_model_is_compact_and_every_provider_can_fold_week_without_five_hour(
         )
     }));
 
-    for provider in ["claude", "codex", "grok", "agy", "opencode"] {
+    for provider in ["claude", "codex", "grok", "agy", "opencode", "pi"] {
         let provider_rows = agents["rows_by_agent"][provider].as_array().unwrap();
         let context_row = provider_rows
             .iter()
@@ -337,6 +340,18 @@ fn sidebar_configuration_preserves_an_explicit_row_gap() {
         remove_quota_row(&applied).unwrap(),
         "[ui.sidebar.agents]\nrow_gap = 2\nrows = [[\"state_icon\"]]\n"
     );
+}
+
+#[test]
+fn sidebar_configuration_migrates_the_plugin_owned_gap_to_packed_layout() {
+    let original = concat!(
+        "[ui.sidebar.agents]\n",
+        "row_gap = 1 # herdr-agent-quota\n",
+        "rows = [[\"state_icon\", \"agent\"]]\n"
+    );
+    let applied = add_quota_row(original).unwrap();
+    assert!(applied.contains("row_gap = 0 # herdr-agent-quota"));
+    assert!(!applied.contains("row_gap = 1"));
 }
 
 #[test]
@@ -739,6 +754,13 @@ fn run_event_binary_with_xdg(
         .env("CODEX_BIN_PATH", codex)
         .env("GROK_HOME", state.join("missing-grok-home"))
         .env("XDG_DATA_HOME", xdg_data_home)
+        .env(
+            "XDG_CACHE_HOME",
+            xdg_data_home
+                .parent()
+                .unwrap_or(xdg_data_home)
+                .join("xdg-cache"),
+        )
         .env_remove("GROK_AUTH_FILE")
         .env_remove("OPENCODE_API_KEY")
         .env("HERDR_PLUGIN_EVENT_JSON", event_json)
@@ -754,9 +776,15 @@ fn opencode_fixture(name: &str) -> PathBuf {
 
 fn install_opencode_store(xdg_data_home: &Path, auth_name: &str, db_name: &str) {
     let dir = xdg_data_home.join("opencode");
+    let cache = xdg_data_home
+        .parent()
+        .unwrap_or(xdg_data_home)
+        .join("xdg-cache/opencode");
     fs::create_dir_all(&dir).unwrap();
+    fs::create_dir_all(&cache).unwrap();
     fs::copy(opencode_fixture(db_name), dir.join("opencode.db")).unwrap();
     fs::copy(opencode_fixture(auth_name), dir.join("auth.json")).unwrap();
+    fs::copy(opencode_fixture("models.json"), cache.join("models.json")).unwrap();
 }
 
 fn plugin_quota_tokens() -> &'static str {
@@ -854,7 +882,7 @@ fn assert_no_original_four_collection(state: &Path, herdr_log: &Path, codex_log:
 }
 
 #[test]
-fn opencode_working_event_does_not_refresh_any_collector() {
+fn opencode_working_event_publishes_only_the_named_local_identity() {
     let state = tempdir().unwrap();
     let xdg = state.path().join("xdg-data");
     install_opencode_store(&xdg, "auth-go.json", "sessions.db");
@@ -879,9 +907,11 @@ fn opencode_working_event_does_not_refresh_any_collector() {
     assert_named_opencode_event(&herdr_log, "w1:p9", "w1:p10");
     let calls = fs::read_to_string(&herdr_log).unwrap_or_default();
     assert!(!calls.contains("pane report-metadata w1:p10"), "{calls}");
-    // Resolved as OpenCode Go, but no collector exists yet, so the pane keeps
-    // whatever metadata it already had instead of taking a write.
-    assert!(!calls.contains("pane report-metadata w1:p9"), "{calls}");
+    assert!(calls.contains("pane report-metadata w1:p9"), "{calls}");
+    assert!(
+        calls.contains("--token quota_provider_model=OpenCode Go/kimi-k2.5"),
+        "{calls}"
+    );
 }
 
 #[test]
@@ -977,11 +1007,30 @@ fn sidebar_configuration_preserves_user_owned_opencode_rows() {
 }
 
 #[test]
+fn sidebar_configuration_preserves_user_owned_pi_rows() {
+    let original = concat!(
+        "[ui.sidebar.agents]\n",
+        "rows = [[\"state_icon\", \"agent\"]]\n\n",
+        "[ui.sidebar.agents.rows_by_agent]\n",
+        "pi = [[\"state_icon\", \"agent\"]]\n"
+    );
+    let applied = add_quota_row(original).unwrap();
+    assert!(applied.contains("pi = [[\"state_icon\", \"agent\"]]"));
+    assert!(applied.contains("codex ="));
+    let removed = remove_quota_row(&applied).unwrap();
+    assert!(removed.contains("pi = [[\"state_icon\", \"agent\"]]"));
+    assert!(!removed.contains("codex ="));
+}
+
+#[test]
 fn opencode_go_event_is_named_pane_only_and_repeatable() {
     let state = tempdir().unwrap();
     let xdg = state.path().join("xdg-data");
     install_opencode_store(&xdg, "auth-go.json", "sessions.db");
-    let inventory = two_opencode_inventory("ses_go", "{}");
+    let inventory = two_opencode_inventory(
+        "ses_go",
+        r#"{"quota_provider":"OpenCode Go","quota_model":"kimi-k2.5","quota_provider_model":"OpenCode Go/kimi-k2.5"}"#,
+    );
     let (herdr, herdr_log, codex, codex_log) =
         install_logged_herdr_and_codex(state.path(), &inventory, None);
     let event = opencode_working_event("w1:p9");
@@ -1196,7 +1245,7 @@ fn installing_one_agent_leaves_every_other_agent_untouched() {
 
     let sidebar = homes.sidebar();
     assert!(sidebar.contains("claude ="), "{sidebar}");
-    for other in ["codex =", "grok =", "agy =", "opencode ="] {
+    for other in ["codex =", "grok =", "agy =", "opencode =", "pi ="] {
         assert!(!sidebar.contains(other), "{other} was written: {sidebar}");
     }
 
@@ -1211,6 +1260,26 @@ fn installing_one_agent_leaves_every_other_agent_untouched() {
         !homes.grok_home.exists(),
         "an unselected Grok home was created"
     );
+}
+
+#[test]
+fn installing_only_pi_adds_only_its_sidebar_style() {
+    let root = tempdir().unwrap();
+    let homes = AgentHomes::new(root.path());
+    let output = homes.configure(&["--apply", "--agent", "pi"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sidebar = homes.sidebar();
+    assert!(sidebar.contains("pi ="), "{sidebar}");
+    for other in ["claude =", "codex =", "grok =", "agy =", "opencode ="] {
+        assert!(!sidebar.contains(other), "{other} was written: {sidebar}");
+    }
+    assert!(!homes.claude_settings.exists());
+    assert!(!homes.agy_settings.exists());
+    assert!(!homes.grok_home.exists());
 }
 
 #[test]
@@ -1229,7 +1298,7 @@ fn uninstalling_one_agent_keeps_the_rest_working() {
 
     let sidebar = homes.sidebar();
     assert!(!sidebar.contains("grok ="), "grok survived: {sidebar}");
-    for kept in ["claude =", "codex =", "agy =", "opencode ="] {
+    for kept in ["claude =", "codex =", "agy =", "opencode =", "pi ="] {
         assert!(sidebar.contains(kept), "{kept} was lost: {sidebar}");
     }
     assert!(
@@ -1304,9 +1373,431 @@ fn an_unusable_environment_selection_still_installs_everything() {
         .status
         .success());
     let sidebar = homes.sidebar();
-    for expected in ["claude =", "codex =", "grok =", "agy =", "opencode ="] {
+    for expected in [
+        "claude =",
+        "codex =",
+        "grok =",
+        "agy =",
+        "opencode =",
+        "pi =",
+    ] {
         assert!(sidebar.contains(expected), "{expected} missing: {sidebar}");
     }
+}
+
+fn pi_fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/pi")
+        .join(name)
+}
+
+fn install_pi_store(
+    state: &Path,
+    auth_fixture: &str,
+    session_fixture: &str,
+    session_id: &str,
+) -> (PathBuf, PathBuf, PathBuf) {
+    let agent = state.join("pi-agent");
+    let sessions = state.join("pi-sessions");
+    let project = sessions.join("project");
+    fs::create_dir_all(&agent).unwrap();
+    fs::create_dir_all(&project).unwrap();
+    fs::copy(pi_fixture(auth_fixture), agent.join("auth.json")).unwrap();
+    let session = project.join(format!("2026-08-29T00-00-00-000Z_{session_id}.jsonl"));
+    fs::copy(pi_fixture(session_fixture), &session).unwrap();
+    (agent, sessions, session)
+}
+
+fn write_pi_models_store(agent: &Path, provider: &str, model: &str, context_window: u64) {
+    fs::write(
+        agent.join("models-store.json"),
+        serde_json::json!({
+            provider: {
+                "models": [{"id": model, "contextWindow": context_window}]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
+fn write_codex_auth(state: &Path, account_id: &str) -> PathBuf {
+    let home = state.join("codex-home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        home.join("auth.json"),
+        serde_json::json!({"tokens": {"account_id": account_id}}).to_string(),
+    )
+    .unwrap();
+    home
+}
+
+fn pi_inventory(session: &Path, tokens: &str) -> String {
+    serde_json::json!({
+        "result": {"agents": [
+            {
+                "agent": "pi",
+                "pane_id": "w1:p9",
+                "agent_status": "working",
+                "agent_session": {
+                    "agent": "pi",
+                    "kind": "path",
+                    "source": "herdr:pi",
+                    "value": session
+                },
+                "tokens": serde_json::from_str::<serde_json::Value>(tokens).unwrap()
+            },
+            {"agent": "pi", "pane_id": "w1:p10", "agent_status": "idle"}
+        ]}
+    })
+    .to_string()
+}
+
+fn pi_working_event() -> &'static str {
+    r#"{"event":"pane_agent_status_changed","data":{"pane_id":"w1:p9","agent":"pi","status":"working"}}"#
+}
+
+fn run_pi_event(
+    state: &Path,
+    herdr: &Path,
+    codex: &Path,
+    codex_home: &Path,
+    pi_agent: &Path,
+    pi_sessions: &Path,
+) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_herdr-agent-quota"))
+        .arg("event")
+        .env("HERDR_PLUGIN_STATE_DIR", state)
+        .env("HERDR_BIN_PATH", herdr)
+        .env("CODEX_BIN_PATH", codex)
+        .env("CODEX_HOME", codex_home)
+        .env_remove("CODEX_AUTH_FILE")
+        .env("PI_CODING_AGENT_DIR", pi_agent)
+        .env("PI_CODING_AGENT_SESSION_DIR", pi_sessions)
+        .env("GROK_HOME", state.join("missing-grok-home"))
+        .env_remove("GROK_AUTH_FILE")
+        .env_remove("OPENCODE_API_KEY")
+        .env("HERDR_PLUGIN_EVENT_JSON", pi_working_event())
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn pi_codex_event_uses_only_the_proved_canonical_cache_and_reads_no_pane() {
+    let state = tempdir().unwrap();
+    let (pi_agent, pi_sessions, session) = install_pi_store(
+        state.path(),
+        "auth-matching.json",
+        "session-codex.jsonl",
+        "session-codex",
+    );
+    let codex_home = write_codex_auth(state.path(), "account-same");
+    let snapshot = ProviderSnapshot::new(
+        Provider::Codex,
+        vec![UsageWindow::new(WindowKind::Weekly, 20.0, None).unwrap()],
+        CacheStore::now_unix(),
+    )
+    .with_account_id(Some("account-same".to_string()));
+    CacheStore::new(state.path()).save(&snapshot).unwrap();
+
+    let inventory = pi_inventory(&session, "{}");
+    let (herdr, herdr_log, codex, codex_log) =
+        install_logged_herdr_and_codex(state.path(), &inventory, None);
+    let output = run_pi_event(
+        state.path(),
+        &herdr,
+        &codex,
+        &codex_home,
+        &pi_agent,
+        &pi_sessions,
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let calls = fs::read_to_string(&herdr_log).unwrap();
+    assert_eq!(calls.matches("agent list").count(), 1, "{calls}");
+    assert!(!calls.contains("pane read"), "{calls}");
+    assert!(calls.contains("pane report-metadata w1:p9"), "{calls}");
+    assert!(!calls.contains("pane report-metadata w1:p10"), "{calls}");
+    assert!(
+        calls.contains("--token quota_provider_model=Codex/model-b"),
+        "{calls}"
+    );
+    assert!(
+        codex_log.exists(),
+        "proved Pi route did not invoke Codex collector"
+    );
+    assert!(state.path().join("codex-app-server.json").exists());
+    assert!(!state
+        .path()
+        .join("opencode-go.opencode-store.json")
+        .exists());
+    assert!(!state.path().join("pi.json").exists());
+}
+
+#[test]
+fn pi_codex_event_overlays_exact_session_context_and_cache_without_inventing_ttl() {
+    let state = tempdir().unwrap();
+    let (pi_agent, pi_sessions, session) = install_pi_store(
+        state.path(),
+        "auth-matching.json",
+        "session-codex-usage.jsonl",
+        "session-codex-usage",
+    );
+    write_pi_models_store(&pi_agent, "openai-codex", "model-b", 200);
+    let codex_home = write_codex_auth(state.path(), "account-same");
+    let snapshot = ProviderSnapshot::new(
+        Provider::Codex,
+        vec![UsageWindow::new(WindowKind::Weekly, 20.0, None).unwrap()],
+        CacheStore::now_unix(),
+    )
+    .with_account_id(Some("account-same".to_string()));
+    CacheStore::new(state.path()).save(&snapshot).unwrap();
+
+    let inventory = pi_inventory(&session, "{}");
+    let (herdr, herdr_log, codex, _) =
+        install_logged_herdr_and_codex(state.path(), &inventory, None);
+    let output = run_pi_event(
+        state.path(),
+        &herdr,
+        &codex,
+        &codex_home,
+        &pi_agent,
+        &pi_sessions,
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let calls = fs::read_to_string(&herdr_log).unwrap();
+    assert!(
+        calls.contains("--token quota_context=context 55%"),
+        "{calls}"
+    );
+    assert!(calls.contains("--token quota_cache=cache 85.0%"), "{calls}");
+    assert!(!calls.contains("quota_cache_ttl"), "{calls}");
+    assert!(calls.contains("--token quota_week=7d 80%"), "{calls}");
+}
+
+#[test]
+fn pi_anthropic_event_uses_the_recorded_one_hour_cache_bucket() {
+    let state = tempdir().unwrap();
+    let (pi_agent, pi_sessions, session) = install_pi_store(
+        state.path(),
+        "auth-unsupported-oauth.json",
+        "session-anthropic-usage.jsonl",
+        "session-anthropic-usage",
+    );
+    write_pi_models_store(&pi_agent, "anthropic", "model-a", 200);
+    let now_millis = CacheStore::now_unix().saturating_mul(1_000).to_string();
+    let session_jsonl = fs::read_to_string(&session)
+        .unwrap()
+        .replace("4070908801000", &now_millis)
+        .replace("4070908861000", &now_millis);
+    fs::write(&session, session_jsonl).unwrap();
+    let codex_home = write_codex_auth(state.path(), "account-same");
+    let inventory = pi_inventory(&session, plugin_quota_tokens());
+    let (herdr, herdr_log, codex, codex_log) =
+        install_logged_herdr_and_codex(state.path(), &inventory, None);
+
+    assert!(run_pi_event(
+        state.path(),
+        &herdr,
+        &codex,
+        &codex_home,
+        &pi_agent,
+        &pi_sessions,
+    )
+    .status
+    .success());
+
+    let calls = fs::read_to_string(&herdr_log).unwrap();
+    assert!(
+        calls.contains("--token quota_provider_model=Claude/model-a"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("--token quota_context=context 55%"),
+        "{calls}"
+    );
+    assert!(calls.contains("--token quota_cache_ttl=ttl≈"), "{calls}");
+    assert!(!codex_log.exists(), "unsupported OAuth invoked Codex");
+}
+
+#[test]
+fn pi_payg_event_clears_stale_quota_without_invoking_a_collector() {
+    let state = tempdir().unwrap();
+    let (pi_agent, pi_sessions, session) = install_pi_store(
+        state.path(),
+        "auth-payg.json",
+        "session-payg-usage.jsonl",
+        "session-payg-usage",
+    );
+    write_pi_models_store(&pi_agent, "openai", "model-payg", 210);
+    let codex_home = write_codex_auth(state.path(), "account-same");
+    let inventory = pi_inventory(&session, plugin_quota_tokens());
+    let (herdr, herdr_log, codex, codex_log) =
+        install_logged_herdr_and_codex(state.path(), &inventory, None);
+    assert!(run_pi_event(
+        state.path(),
+        &herdr,
+        &codex,
+        &codex_home,
+        &pi_agent,
+        &pi_sessions,
+    )
+    .status
+    .success());
+
+    let calls = fs::read_to_string(&herdr_log).unwrap();
+    assert_eq!(calls.matches("agent list").count(), 1, "{calls}");
+    assert!(!calls.contains("pane read"), "{calls}");
+    assert!(calls.contains("pane report-metadata w1:p9"), "{calls}");
+    assert!(
+        calls.contains("--clear-token") && calls.contains("quota_5h"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("--token quota_context=context 50%"),
+        "{calls}"
+    );
+    assert!(calls.contains("--token quota_cache=cache 80.0%"), "{calls}");
+    assert!(!calls.contains("quota_cache_ttl"), "{calls}");
+    assert!(!codex_log.exists(), "PAYG route invoked Codex");
+}
+
+#[test]
+fn pi_indeterminate_event_preserves_quota_but_replaces_session_diagnostics() {
+    let state = tempdir().unwrap();
+    let (pi_agent, pi_sessions, session) = install_pi_store(
+        state.path(),
+        "auth-unsupported-oauth.json",
+        "session-xai-usage.jsonl",
+        "session-xai-usage",
+    );
+    write_pi_models_store(&pi_agent, "xai", "model-x", 210);
+    let codex_home = write_codex_auth(state.path(), "account-same");
+    let stale = r#"{"quota_state":"?","quota_provider":"Claude","quota_provider_model":"Claude/old","quota_context":"context 99%","quota_cache":"cache 1.0%","quota_cache_ttl":"ttl≈1h","quota_5h":"5h 10%","quota_week":"7d 20%","quota_summary":"5h 10% · 7d 20%"}"#;
+    let inventory = pi_inventory(&session, stale);
+    let (herdr, herdr_log, codex, codex_log) =
+        install_logged_herdr_and_codex(state.path(), &inventory, None);
+    assert!(run_pi_event(
+        state.path(),
+        &herdr,
+        &codex,
+        &codex_home,
+        &pi_agent,
+        &pi_sessions,
+    )
+    .status
+    .success());
+
+    let calls = fs::read_to_string(&herdr_log).unwrap();
+    assert!(
+        calls.contains("--token quota_provider_model=Grok/model-x"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("--token quota_context=context 50%"),
+        "{calls}"
+    );
+    assert!(calls.contains("--token quota_cache=cache 80.0%"), "{calls}");
+    assert!(calls.contains("--clear-token quota_cache_ttl"), "{calls}");
+    assert!(calls.contains("--token quota_5h=5h 10%"), "{calls}");
+    assert!(calls.contains("--token quota_week=7d 20%"), "{calls}");
+    assert!(!codex_log.exists(), "indeterminate route invoked Codex");
+}
+
+#[test]
+fn pi_different_account_preserves_stale_quota_and_cannot_borrow_codex_cache() {
+    let state = tempdir().unwrap();
+    let (pi_agent, pi_sessions, session) = install_pi_store(
+        state.path(),
+        "auth-matching.json",
+        "session-codex.jsonl",
+        "session-codex",
+    );
+    let codex_home = write_codex_auth(state.path(), "different-account");
+    let snapshot = ProviderSnapshot::new(
+        Provider::Codex,
+        vec![UsageWindow::new(WindowKind::Weekly, 20.0, None).unwrap()],
+        CacheStore::now_unix(),
+    )
+    .with_account_id(Some("different-account".to_string()));
+    CacheStore::new(state.path()).save(&snapshot).unwrap();
+
+    let inventory = pi_inventory(&session, plugin_quota_tokens());
+    let (herdr, herdr_log, codex, codex_log) =
+        install_logged_herdr_and_codex(state.path(), &inventory, None);
+    assert!(run_pi_event(
+        state.path(),
+        &herdr,
+        &codex,
+        &codex_home,
+        &pi_agent,
+        &pi_sessions,
+    )
+    .status
+    .success());
+
+    let calls = fs::read_to_string(&herdr_log).unwrap();
+    assert_eq!(calls.matches("agent list").count(), 1, "{calls}");
+    assert!(!calls.contains("pane read"), "{calls}");
+    assert!(calls.contains("pane report-metadata w1:p9"), "{calls}");
+    assert!(
+        calls.contains("--token quota_provider_model=Codex/model-b"),
+        "{calls}"
+    );
+    assert!(calls.contains("--token quota_5h=5h 10%"), "{calls}");
+    assert!(calls.contains("--token quota_week=7d 20%"), "{calls}");
+    assert!(!calls.contains("--clear-token quota_5h"), "{calls}");
+    assert!(!calls.contains("--clear-token quota_week"), "{calls}");
+    assert!(!codex_log.exists(), "indeterminate route invoked Codex");
+}
+
+#[test]
+fn pi_model_switch_updates_identity_but_preserves_indeterminate_quota() {
+    let state = tempdir().unwrap();
+    let (pi_agent, pi_sessions, session) = install_pi_store(
+        state.path(),
+        "auth-unsupported-oauth.json",
+        "session-switched-xai.jsonl",
+        "session-switched-xai",
+    );
+    let codex_home = write_codex_auth(state.path(), "account-same");
+    let inventory = pi_inventory(&session, plugin_quota_tokens());
+    let (herdr, herdr_log, codex, codex_log) =
+        install_logged_herdr_and_codex(state.path(), &inventory, None);
+    assert!(run_pi_event(
+        state.path(),
+        &herdr,
+        &codex,
+        &codex_home,
+        &pi_agent,
+        &pi_sessions,
+    )
+    .status
+    .success());
+
+    let calls = fs::read_to_string(&herdr_log).unwrap_or_default();
+    assert_eq!(calls.matches("agent list").count(), 1, "{calls}");
+    assert!(!calls.contains("pane read"), "{calls}");
+    assert!(calls.contains("pane report-metadata w1:p9"), "{calls}");
+    assert!(!calls.contains("pane report-metadata w1:p10"), "{calls}");
+    assert!(
+        calls.contains("--token quota_provider_model=Grok/grok-4.6"),
+        "{calls}"
+    );
+    assert!(calls.contains("--token quota_5h=5h 10%"), "{calls}");
+    assert!(calls.contains("--token quota_week=7d 20%"), "{calls}");
+    assert!(!calls.contains("--clear-token quota_5h"), "{calls}");
+    assert!(!calls.contains("--clear-token quota_week"), "{calls}");
+    assert!(!codex_log.exists(), "switched xAI route invoked Codex");
 }
 
 /// Someone with an OpenCode pane but no Go subscription must never cause a
@@ -1314,7 +1805,7 @@ fn an_unusable_environment_selection_still_installs_everything() {
 /// so a network attempt would show up as a failure or a hang rather than a
 /// clean, silent no-op.
 #[test]
-fn an_opencode_pane_without_a_go_key_makes_no_request_and_no_metadata_write() {
+fn an_opencode_pane_without_a_go_key_makes_no_request_but_shows_exact_identity() {
     let state = tempdir().unwrap();
     let xdg = state.path().join("xdg-data");
     install_opencode_store(&xdg, "auth-payg.json", "sessions.db");
@@ -1339,6 +1830,14 @@ fn an_opencode_pane_without_a_go_key_makes_no_request_and_no_metadata_write() {
     original_four_untouched(state.path(), &codex_log);
     let calls = fs::read_to_string(&herdr_log).unwrap_or_default();
     assert!(!calls.contains("opencode.ai"), "{calls}");
+    assert!(
+        calls.contains("pane report-metadata w1:p9"),
+        "exact OpenCode session stayed blank: {calls}"
+    );
+    assert!(
+        calls.contains("--token quota_provider_model=OpenCode Go/kimi-k2.5"),
+        "exact OpenCode identity was not published: {calls}"
+    );
     assert!(
         !state
             .path()

@@ -1,16 +1,29 @@
-use crate::herdr::AgentPane;
-use crate::model::{BillingTarget, Harness, Resolution};
+use crate::herdr::{AgentPane, PaneIdentity};
+use crate::model::{BillingTarget, ContextUsage, Harness, Resolution};
 use crate::opencode::{
-    classify_opencode, env_go_key_present, lookup_session, read_auth, AuthReadError, OpenCodePaths,
+    classify_opencode, env_go_key_present, lookup_session, model_context_window, read_auth,
+    AuthReadError, OpenCodePaths, SessionEvidence, SessionLookup,
 };
+use crate::pi::PiPaths;
+use crate::providers::codex;
 
 /// Attribute a pane to a subscription from local evidence only.
 ///
-/// One function with internal match. Missing or malformed OpenCode evidence
-/// is [`Resolution::Indeterminate`]; this never infers a pane from the number
-/// of credentials on disk.
+/// One function with internal harness-specific readers. Missing or malformed
+/// OpenCode/Pi evidence is [`Resolution::Indeterminate`]; this never infers a
+/// pane from the number of credentials on disk.
 pub fn resolve(pane: &AgentPane) -> Resolution {
-    match pane.harness {
+    resolve_with_identity(pane).resolution
+}
+
+pub struct ResolvedPane {
+    pub resolution: Resolution,
+    pub identity: Option<PaneIdentity>,
+    pub context: Option<ContextUsage>,
+}
+
+pub fn resolve_with_identity(pane: &AgentPane) -> ResolvedPane {
+    let resolution = match pane.harness {
         Harness::Codex | Harness::Grok | Harness::Claude | Harness::Agy => pane
             .harness
             .billing()
@@ -18,26 +31,121 @@ pub fn resolve(pane: &AgentPane) -> Resolution {
             .map(Resolution::Subscription)
             .unwrap_or(Resolution::Indeterminate),
         Harness::OpenCode => {
-            resolve_opencode(pane.session_id.as_deref(), OpenCodePaths::from_env())
+            return resolve_opencode_with_identity(
+                pane.session.as_ref().and_then(|session| session.id()),
+                OpenCodePaths::from_env(),
+            )
         }
-        Harness::Pi | Harness::Omp | Harness::Kimi => Resolution::Indeterminate,
+        Harness::Pi => {
+            return resolve_pi_with_identity(
+                pane.session.as_ref(),
+                PiPaths::from_env(),
+                codex::current_account_id,
+            )
+        }
+        Harness::Omp | Harness::Kimi => Resolution::Indeterminate,
+    };
+    ResolvedPane {
+        resolution,
+        identity: None,
+        context: None,
     }
 }
 
-fn resolve_opencode(session_id: Option<&str>, paths: Option<OpenCodePaths>) -> Resolution {
+fn resolve_pi_with_identity(
+    session: Option<&crate::herdr::AgentSession>,
+    paths: Option<PiPaths>,
+    canonical_codex_account_id: impl FnOnce() -> Option<String>,
+) -> ResolvedPane {
+    let route = crate::pi::resolve_with_session(
+        session.and_then(|session| session.path()),
+        paths,
+        canonical_codex_account_id,
+    );
+    ResolvedPane {
+        resolution: route.resolution,
+        identity: route.session.as_ref().and_then(pi_identity),
+        context: route.context,
+    }
+}
+
+fn pi_identity(session: &crate::pi::SessionEvidence) -> Option<PaneIdentity> {
+    let provider = match session.provider_id.as_str() {
+        "openai-codex" => "Codex".to_string(),
+        "xai" => "Grok".to_string(),
+        "anthropic" => "Claude".to_string(),
+        value => safe_identity_part(value)?,
+    };
+    let model = match session.model_id.as_deref() {
+        Some(value) => safe_identity_part(value)?,
+        None => String::new(),
+    };
+    Some(PaneIdentity { provider, model })
+}
+
+fn safe_identity_part(value: &str) -> Option<String> {
+    (!value.is_empty() && value.len() <= 128 && !value.chars().any(char::is_control))
+        .then(|| value.to_string())
+}
+
+fn resolve_opencode_with_identity(
+    session_id: Option<&str>,
+    paths: Option<OpenCodePaths>,
+) -> ResolvedPane {
     let Some(session_id) = session_id.filter(|id| !id.is_empty()) else {
-        return Resolution::Indeterminate;
+        return indeterminate_pane();
     };
     let Some(paths) = paths else {
-        return Resolution::Indeterminate;
+        return indeterminate_pane();
     };
     let lookup = lookup_session(&paths, session_id);
+    let session = match &lookup {
+        SessionLookup::Found(session) => Some(session),
+        SessionLookup::Missing | SessionLookup::Unreadable => None,
+    };
+    let identity = session.and_then(opencode_identity);
+    let context = session.and_then(|session| opencode_context(&paths, session));
     let auth = read_auth(&paths);
-    classify_opencode(
+    let resolution = classify_opencode(
         lookup,
         auth.as_ref().map_err(|_| AuthReadError),
         env_go_key_present(),
-    )
+    );
+    ResolvedPane {
+        resolution,
+        identity,
+        context,
+    }
+}
+
+fn indeterminate_pane() -> ResolvedPane {
+    ResolvedPane {
+        resolution: Resolution::Indeterminate,
+        identity: None,
+        context: None,
+    }
+}
+
+fn opencode_identity(session: &SessionEvidence) -> Option<PaneIdentity> {
+    let provider = match session.provider_id.as_deref()? {
+        "opencode" => "OpenCode".to_string(),
+        "opencode-go" => "OpenCode Go".to_string(),
+        value => safe_identity_part(value)?,
+    };
+    let model = match session.model_id.as_deref() {
+        Some(value) => safe_identity_part(value)?,
+        None => String::new(),
+    };
+    Some(PaneIdentity { provider, model })
+}
+
+fn opencode_context(paths: &OpenCodePaths, session: &SessionEvidence) -> Option<ContextUsage> {
+    let provider_id = session.provider_id.as_deref()?;
+    let model_id = session.model_id.as_deref()?;
+    let context_tokens = session.context_tokens?;
+    let context_window = model_context_window(paths, provider_id, model_id)?;
+    let used_percent = (context_tokens as f64 / context_window as f64 * 100.0).clamp(0.0, 100.0);
+    ContextUsage::new(used_percent).ok()
 }
 
 #[cfg(test)]
@@ -48,17 +156,27 @@ mod tests {
     use crate::opencode::{parse_auth_json, AuthReadError, SessionEvidence, SessionLookup};
     use std::collections::BTreeMap;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     fn pane(harness: Harness, session_id: Option<&str>) -> AgentPane {
         AgentPane {
             pane_id: "w1:p9".to_string(),
             harness,
-            session_id: session_id.map(str::to_string),
+            session: session_id.map(|value| crate::herdr::AgentSession {
+                kind: Some("id".to_string()),
+                value: value.to_string(),
+            }),
             session_summary: String::new(),
             topic: String::new(),
             tokens: BTreeMap::new(),
         }
+    }
+
+    fn pi_fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/pi")
+            .join(name)
     }
 
     fn write_opencode(dir: &std::path::Path, auth: &str, rows: &[(&str, &str)]) -> OpenCodePaths {
@@ -85,6 +203,67 @@ mod tests {
     }
 
     #[test]
+    fn pi_path_route_reuses_only_a_proved_canonical_codex_scope() {
+        let directory = tempdir().unwrap();
+        let agent = directory.path().join("agent");
+        let sessions = directory.path().join("sessions/project");
+        fs::create_dir_all(&agent).unwrap();
+        fs::create_dir_all(&sessions).unwrap();
+        fs::copy(pi_fixture("auth-matching.json"), agent.join("auth.json")).unwrap();
+        let session_path = sessions.join("2026-08-29T00-00-00-000Z_session-codex.jsonl");
+        fs::copy(pi_fixture("session-codex.jsonl"), &session_path).unwrap();
+        let paths = PiPaths::from_dirs(agent, directory.path().join("sessions"));
+        let session = crate::herdr::AgentSession {
+            kind: Some("path".to_string()),
+            value: session_path.to_string_lossy().into_owned(),
+        };
+
+        let resolved = resolve_pi_with_identity(Some(&session), Some(paths.clone()), || {
+            Some("account-same".to_string())
+        });
+        assert_eq!(
+            resolved
+                .identity
+                .as_ref()
+                .map(|identity| (identity.provider.as_str(), identity.model.as_str())),
+            Some(("Codex", "model-b"))
+        );
+        let resolution = resolved.resolution;
+        assert_eq!(
+            resolution,
+            Resolution::Subscription(BillingTarget::original_four(Provider::Codex))
+        );
+        let Resolution::Subscription(target) = resolution else {
+            panic!("expected canonical Codex route")
+        };
+        assert_eq!(target.credential_scope, CredentialScope::CANONICAL);
+        assert_eq!(target.cache_identity(), Provider::Codex.source());
+
+        assert_eq!(
+            resolve_pi_with_identity(Some(&session), Some(paths), || {
+                Some("different-account".to_string())
+            })
+            .resolution,
+            Resolution::Indeterminate
+        );
+    }
+
+    #[test]
+    fn pi_rejects_an_id_shaped_session_reference() {
+        let session = crate::herdr::AgentSession {
+            kind: Some("id".to_string()),
+            value: "session-codex".to_string(),
+        };
+        assert_eq!(
+            resolve_pi_with_identity(Some(&session), None, || {
+                Some("account-same".to_string())
+            })
+            .resolution,
+            Resolution::Indeterminate
+        );
+    }
+
+    #[test]
     fn exact_go_session_is_subscription_in_opencode_store_scope() {
         let auth = parse_auth_json(
             br#"{"opencode-go":{"type":"api","key":"placeholder"},"anthropic":{"type":"api","key":"placeholder"}}"#,
@@ -94,6 +273,7 @@ mod tests {
             session_id: "ses_go".to_string(),
             provider_id: Some("opencode-go".to_string()),
             model_id: Some("kimi-k2.5".to_string()),
+            context_tokens: None,
         });
         let resolution = classify_opencode(lookup, Ok(&auth), false);
         assert_eq!(
@@ -109,12 +289,48 @@ mod tests {
     }
 
     #[test]
+    fn exact_opencode_session_exposes_identity_and_context_without_a_subscription() {
+        let directory = tempdir().unwrap();
+        let paths = write_opencode(
+            directory.path(),
+            r#"{}"#,
+            &[(
+                "ses_free",
+                r#"{"role":"assistant","providerID":"opencode","modelID":"big-pickle","tokens":{"input":11424,"output":10,"reasoning":0,"cache":{"read":0,"write":0}}}"#,
+            )],
+        );
+        fs::write(
+            &paths.models,
+            br#"{"opencode":{"models":{"big-pickle":{"limit":{"context":200000}}}}}"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_opencode_with_identity(Some("ses_free"), Some(paths));
+        assert_eq!(resolved.resolution, Resolution::Indeterminate);
+        assert_eq!(
+            resolved
+                .identity
+                .as_ref()
+                .map(|identity| (identity.provider.as_str(), identity.model.as_str())),
+            Some(("OpenCode", "big-pickle"))
+        );
+        assert_eq!(
+            resolved
+                .context
+                .as_ref()
+                .map(|context| context.used_percent),
+            Some(5.717)
+        );
+    }
+
+    #[test]
     fn known_payg_backend_with_api_key_is_no_subscription() {
         let auth = parse_auth_json(br#"{"anthropic":{"type":"api","key":"placeholder"}}"#).unwrap();
         let lookup = SessionLookup::Found(SessionEvidence {
             session_id: "ses_payg".to_string(),
             provider_id: Some("anthropic".to_string()),
             model_id: Some("claude-sonnet-4".to_string()),
+            context_tokens: None,
         });
         assert_eq!(
             classify_opencode(lookup, Ok(&auth), false),
@@ -141,6 +357,7 @@ mod tests {
                 session_id: "ses_payg".to_string(),
                 provider_id: Some(provider_id.to_string()),
                 model_id: None,
+                context_tokens: None,
             });
             assert_eq!(
                 classify_opencode(lookup, Ok(&auth), false),
@@ -159,6 +376,7 @@ mod tests {
             session_id: "ses_oauth".to_string(),
             provider_id: Some("github-copilot".to_string()),
             model_id: None,
+            context_tokens: None,
         });
         assert_eq!(
             classify_opencode(lookup, Ok(&auth), false),
@@ -188,6 +406,7 @@ mod tests {
             session_id: "ses_go".to_string(),
             provider_id: Some("opencode-go".to_string()),
             model_id: None,
+            context_tokens: None,
         });
         assert_eq!(
             classify_opencode(lookup.clone(), Err(AuthReadError), false),
@@ -206,6 +425,7 @@ mod tests {
             session_id: "ses_go".to_string(),
             provider_id: Some("opencode-go".to_string()),
             model_id: None,
+            context_tokens: None,
         });
         assert_eq!(
             classify_opencode(go, Ok(&empty), true),
@@ -215,6 +435,7 @@ mod tests {
             session_id: "ses_payg".to_string(),
             provider_id: Some("anthropic".to_string()),
             model_id: None,
+            context_tokens: None,
         });
         assert_eq!(
             classify_opencode(payg, Ok(&empty), true),
@@ -230,6 +451,7 @@ mod tests {
             session_id: "ses_payg".to_string(),
             provider_id: Some("anthropic".to_string()),
             model_id: None,
+            context_tokens: None,
         });
         assert_eq!(
             classify_opencode(lookup, Ok(&auth), false),
@@ -255,15 +477,15 @@ mod tests {
             ],
         );
         assert_eq!(
-            resolve_opencode(Some("ses_go"), Some(paths.clone())),
+            resolve_opencode_with_identity(Some("ses_go"), Some(paths.clone())).resolution,
             Resolution::Subscription(BillingTarget::opencode_go())
         );
         assert_eq!(
-            resolve_opencode(Some("ses_payg"), Some(paths.clone())),
+            resolve_opencode_with_identity(Some("ses_payg"), Some(paths.clone())).resolution,
             Resolution::NoSubscription
         );
         assert_eq!(
-            resolve_opencode(Some("ses_absent"), Some(paths)),
+            resolve_opencode_with_identity(Some("ses_absent"), Some(paths)).resolution,
             Resolution::Indeterminate
         );
     }
@@ -280,10 +502,11 @@ mod tests {
             )],
         );
         assert_eq!(
-            resolve_opencode(
+            resolve_opencode_with_identity(
                 None,
                 Some(OpenCodePaths::from_dir(directory.path().join("opencode")))
-            ),
+            )
+            .resolution,
             Resolution::Indeterminate
         );
     }

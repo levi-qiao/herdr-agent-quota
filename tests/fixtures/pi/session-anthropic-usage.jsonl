@@ -1,0 +1,4 @@
+{"type":"session","version":3,"id":"session-anthropic-usage","timestamp":"2099-01-01T00:00:00.000Z","cwd":"/workspace"}
+{"type":"model_change","id":"entry-1","parentId":null,"timestamp":"2099-01-01T00:00:01.000Z","provider":"anthropic","modelId":"model-a"}
+{"type":"message","id":"entry-2","parentId":"entry-1","timestamp":"2099-01-01T00:00:02.000Z","message":{"role":"assistant","provider":"anthropic","model":"model-a","content":[],"stopReason":"stop","timestamp":4070908801000,"usage":{"input":20,"output":5,"cacheRead":80,"cacheWrite":20,"cacheWrite1h":20,"totalTokens":125,"cost":{"total":0}}}}
+{"type":"message","id":"entry-3","parentId":"entry-2","timestamp":"2099-01-01T00:01:02.000Z","message":{"role":"assistant","provider":"anthropic","model":"model-a","content":[],"stopReason":"stop","timestamp":4070908861000,"usage":{"input":10,"output":10,"cacheRead":90,"cacheWrite":0,"cacheWrite1h":0,"totalTokens":110,"cost":{"total":0}}}}

@@ -1,0 +1,3 @@
+{"type":"session","version":3,"id":"session-payg","timestamp":"2026-08-29T00:00:00.000Z","cwd":"/workspace"}
+{"type":"model_change","id":"entry-1","parentId":null,"timestamp":"2026-08-29T00:00:01.000Z","provider":"openai","modelId":"model-payg"}
+{"type":"message","id":"entry-2","parentId":"entry-1","timestamp":"2026-08-29T00:00:02.000Z","message":{"role":"assistant","provider":"openai","model":"model-payg","content":[],"stopReason":"stop","usage":{"input":10,"output":2,"cacheRead":0,"cacheWrite":0,"totalTokens":12,"cost":{"total":0}}}}

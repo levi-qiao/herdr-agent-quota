@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"session-xai","timestamp":"2026-08-29T00:00:00.000Z","cwd":"/workspace"}
+{"type":"message","id":"entry-1","parentId":null,"timestamp":"2026-08-29T00:00:01.000Z","message":{"role":"assistant","provider":"xai","model":"model-x","content":[],"usage":{"cost":{"total":0}}}}

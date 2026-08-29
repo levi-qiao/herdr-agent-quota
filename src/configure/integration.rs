@@ -21,7 +21,8 @@ fn integration_id(harness: Harness) -> Option<&'static str> {
         Harness::Codex => Some("codex"),
         Harness::Grok => Some("grok"),
         Harness::OpenCode => Some("opencode"),
-        Harness::Agy | Harness::Pi | Harness::Omp | Harness::Kimi => None,
+        Harness::Pi => Some("pi"),
+        Harness::Agy | Harness::Omp | Harness::Kimi => None,
     }
 }
 
@@ -37,7 +38,7 @@ pub fn report_missing(agents: &[Harness]) {
             continue;
         }
         println!(
-            "Herdr's {id} integration is not installed, so Herdr reports no session id for {id} panes and their quota cannot be attributed. Install it with: herdr integration install {id}"
+            "Herdr's {id} integration is not installed, so Herdr reports no session id for {id} panes and their quota cannot be attributed. Install it with `herdr integration install {id}`, then restart that agent pane."
         );
     }
 }
@@ -94,8 +95,9 @@ grok: outdated (v0) (/home/u/.grok/hooks/herdr-agent-state.sh)
     }
 
     #[test]
-    fn agy_reports_through_its_statusline_and_has_no_integration() {
+    fn session_backed_harnesses_report_their_integration_id() {
         assert_eq!(integration_id(Harness::Agy), None);
         assert_eq!(integration_id(Harness::OpenCode), Some("opencode"));
+        assert_eq!(integration_id(Harness::Pi), Some("pi"));
     }
 }

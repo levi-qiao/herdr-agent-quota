@@ -2,6 +2,7 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Exact session-id lookup. Never a full-table scan.
@@ -9,6 +10,7 @@ const SESSION_BY_ID: &str = "SELECT id FROM session WHERE id = ?1 LIMIT 1";
 /// Bounded same-session providerID lookup. Not a spend scan.
 const MESSAGE_DATA_FOR_SESSION: &str =
     "SELECT data FROM message WHERE session_id = ?1 ORDER BY time_created DESC LIMIT 8";
+const MAX_MODELS_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialKind {
@@ -49,6 +51,7 @@ pub struct SessionEvidence {
     pub session_id: String,
     pub provider_id: Option<String>,
     pub model_id: Option<String>,
+    pub context_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,14 +65,17 @@ pub enum SessionLookup {
 pub struct OpenCodePaths {
     pub auth: PathBuf,
     pub db: PathBuf,
+    pub models: PathBuf,
 }
 
 impl OpenCodePaths {
     pub fn from_env() -> Option<Self> {
         let dir = opencode_data_dir()?;
+        let cache = opencode_cache_dir()?;
         Some(Self {
             auth: dir.join("auth.json"),
             db: dir.join("opencode.db"),
+            models: cache.join("models.json"),
         })
     }
 
@@ -78,8 +84,17 @@ impl OpenCodePaths {
         Self {
             auth: dir.join("auth.json"),
             db: dir.join("opencode.db"),
+            models: dir.join("models.json"),
         }
     }
+}
+
+fn opencode_cache_dir() -> Option<PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME") {
+        return Some(PathBuf::from(xdg).join("opencode"));
+    }
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join(".cache/opencode"))
 }
 
 fn opencode_data_dir() -> Option<PathBuf> {
@@ -176,11 +191,12 @@ fn lookup_session_db(path: &Path, session_id: &str) -> SessionLookup {
     match session_exists(&connection, session_id) {
         Ok(false) => SessionLookup::Missing,
         Err(_) => SessionLookup::Unreadable,
-        Ok(true) => match session_provider(&connection, session_id) {
-            Ok((provider_id, model_id)) => SessionLookup::Found(SessionEvidence {
+        Ok(true) => match session_evidence(&connection, session_id) {
+            Ok((provider_id, model_id, context_tokens)) => SessionLookup::Found(SessionEvidence {
                 session_id: session_id.to_string(),
                 provider_id,
                 model_id,
+                context_tokens,
             }),
             Err(_) => SessionLookup::Unreadable,
         },
@@ -197,24 +213,37 @@ fn session_exists(connection: &Connection, session_id: &str) -> rusqlite::Result
     Ok(rows.next()?.is_some())
 }
 
-fn session_provider(
+fn session_evidence(
     connection: &Connection,
     session_id: &str,
-) -> rusqlite::Result<(Option<String>, Option<String>)> {
+) -> rusqlite::Result<(Option<String>, Option<String>, Option<u64>)> {
     let mut statement = connection.prepare(MESSAGE_DATA_FOR_SESSION)?;
     let mut rows = statement.query([session_id])?;
+    let mut identity = None;
     while let Some(row) = rows.next()? {
         let data: String = row.get(0)?;
-        if let Some((provider_id, model_id)) = provider_from_message_data(&data) {
-            return Ok((Some(provider_id), model_id));
+        let Ok(value) = serde_json::from_str::<Value>(&data) else {
+            continue;
+        };
+        let message_identity = provider_from_message(&value);
+        if identity.is_none() {
+            identity.clone_from(&message_identity);
+        }
+        if let (Some((provider_id, model_id)), Some(context_tokens)) =
+            (message_identity, context_tokens_from_message(&value))
+        {
+            if identity.as_ref() == Some(&(provider_id, model_id)) {
+                let (provider_id, model_id) = identity.unwrap();
+                return Ok((Some(provider_id), model_id, Some(context_tokens)));
+            }
         }
     }
-    Ok((None, None))
+    let (provider_id, model_id) = identity.unzip();
+    Ok((provider_id, model_id.flatten(), None))
 }
 
-fn provider_from_message_data(data: &str) -> Option<(String, Option<String>)> {
-    let value: Value = serde_json::from_str(data).ok()?;
-    let provider_id = string_field(&value, "providerID")
+fn provider_from_message(value: &Value) -> Option<(String, Option<String>)> {
+    let provider_id = string_field(value, "providerID")
         .or_else(|| {
             value
                 .get("model")
@@ -225,12 +254,60 @@ fn provider_from_message_data(data: &str) -> Option<(String, Option<String>)> {
     if provider_id.is_empty() {
         return None;
     }
-    let model_id = string_field(&value, "modelID").or_else(|| {
+    let model_id = string_field(value, "modelID").or_else(|| {
         value
             .get("model")
             .and_then(|model| string_field(model, "modelID"))
     });
     Some((provider_id, model_id))
+}
+
+fn context_tokens_from_message(value: &Value) -> Option<u64> {
+    if value.get("role").and_then(Value::as_str) != Some("assistant") {
+        return None;
+    }
+    let tokens = value.get("tokens")?;
+    let output = token(tokens, "output");
+    if output == 0 {
+        return None;
+    }
+    let cache = tokens.get("cache").unwrap_or(&Value::Null);
+    Some(
+        token(tokens, "input")
+            .saturating_add(output)
+            .saturating_add(token(tokens, "reasoning"))
+            .saturating_add(token(cache, "read"))
+            .saturating_add(token(cache, "write")),
+    )
+}
+
+fn token(value: &Value, name: &str) -> u64 {
+    value.get(name).and_then(Value::as_u64).unwrap_or(0)
+}
+
+pub fn model_context_window(
+    paths: &OpenCodePaths,
+    provider_id: &str,
+    model_id: &str,
+) -> Option<u64> {
+    let mut bytes = Vec::new();
+    fs::File::open(&paths.models)
+        .ok()?
+        .take(MAX_MODELS_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_MODELS_BYTES {
+        return None;
+    }
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    value
+        .get(provider_id)?
+        .get("models")?
+        .get(model_id)?
+        .get("limit")?
+        .get("context")?
+        .as_u64()
+        .filter(|window| *window > 0)
 }
 
 fn string_field(value: &Value, name: &str) -> Option<String> {
@@ -355,11 +432,13 @@ mod tests {
         let paths = OpenCodePaths {
             auth: directory.path().join("auth.json"),
             db,
+            models: directory.path().join("models.json"),
         };
         match lookup_session(&paths, "ses_go") {
             SessionLookup::Found(session) => {
                 assert_eq!(session.provider_id.as_deref(), Some("opencode-go"));
                 assert_eq!(session.model_id.as_deref(), Some("kimi-k2.5"));
+                assert_eq!(session.context_tokens, None);
             }
             other => panic!("expected found session, got {other:?}"),
         }
@@ -457,6 +536,53 @@ mod tests {
             }
             other => panic!("expected found, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn latest_completed_assistant_matches_opencode_context_math() {
+        let directory = tempdir().unwrap();
+        let paths = OpenCodePaths::from_dir(directory.path());
+        write_fixture_db(
+            &paths.db,
+            &[
+                (
+                    "ses_context",
+                    r#"{"role":"assistant","providerID":"opencode","modelID":"big-pickle","tokens":{"input":100,"output":10,"reasoning":5,"cache":{"read":20,"write":30}}}"#,
+                ),
+                (
+                    "ses_context",
+                    r#"{"role":"assistant","providerID":"opencode","modelID":"big-pickle","tokens":{"input":999,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}"#,
+                ),
+            ],
+        )
+        .unwrap();
+        match lookup_session(&paths, "ses_context") {
+            SessionLookup::Found(session) => {
+                assert_eq!(session.provider_id.as_deref(), Some("opencode"));
+                assert_eq!(session.model_id.as_deref(), Some("big-pickle"));
+                assert_eq!(session.context_tokens, Some(165));
+            }
+            other => panic!("expected found session, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn model_context_lookup_is_exact_and_bounded() {
+        let directory = tempdir().unwrap();
+        let paths = OpenCodePaths::from_dir(directory.path());
+        fs::write(
+            &paths.models,
+            br#"{"opencode":{"models":{"big-pickle":{"limit":{"context":200000}}}},"other":{"models":{"big-pickle":{"limit":{"context":1}}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            model_context_window(&paths, "opencode", "big-pickle"),
+            Some(200_000)
+        );
+        assert_eq!(model_context_window(&paths, "other", "missing"), None);
+
+        fs::write(&paths.models, vec![b' '; MAX_MODELS_BYTES as usize + 1]).unwrap();
+        assert_eq!(model_context_window(&paths, "opencode", "big-pickle"), None);
     }
 
     #[test]

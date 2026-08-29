@@ -1,0 +1,1 @@
+{"opencode-go":{"models":{"kimi-k2.5":{"limit":{"context":262144}}}},"anthropic":{"models":{"sonnet":{"limit":{"context":200000}}}}}

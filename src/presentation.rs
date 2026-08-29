@@ -205,14 +205,14 @@ fn missing_five_hour_severity(provider: Provider, quota_5h: &str) -> Option<Seve
         .then_some(Severity::Unknown)
 }
 
-fn sidebar_context(context: Option<&crate::model::ContextUsage>) -> String {
+pub(crate) fn sidebar_context(context: Option<&crate::model::ContextUsage>) -> String {
     let Some(context) = context else {
         return String::new();
     };
     format!("context {}%", format_percent(context.used_percent))
 }
 
-fn sidebar_cache(context: Option<&crate::model::ContextUsage>) -> String {
+pub(crate) fn sidebar_cache(context: Option<&crate::model::ContextUsage>) -> String {
     let Some(cache) = context.and_then(|context| context.cache.as_ref()) else {
         return String::new();
     };
@@ -224,7 +224,10 @@ fn sidebar_cache(context: Option<&crate::model::ContextUsage>) -> String {
     format!("cache {:.1}%", hit_percent)
 }
 
-fn sidebar_cache_ttl(context: Option<&crate::model::ContextUsage>, now_unix: u64) -> String {
+pub(crate) fn sidebar_cache_ttl(
+    context: Option<&crate::model::ContextUsage>,
+    now_unix: u64,
+) -> String {
     let Some(cache) = context.and_then(|context| context.cache.as_ref()) else {
         return String::new();
     };
@@ -508,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_formats_codex_cache_ttl_for_the_pane_session() {
+    fn metadata_formats_cache_ttl_for_a_matching_pane_session() {
         let cache = crate::model::CacheUsage::from_token_counts(100, 800, 100)
             .unwrap()
             .with_ttl_estimate(60 * 60, 1_000)
@@ -517,7 +520,7 @@ mod tests {
                 "codex-session",
                 0,
             );
-        let mut snapshot = ProviderSnapshot::new(Provider::Codex, vec![], 1);
+        let mut snapshot = ProviderSnapshot::new(Provider::Claude, vec![], 1);
         snapshot.session_contexts.insert(
             "codex-session".to_string(),
             crate::model::ContextUsage::new(23.5)
