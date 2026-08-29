@@ -1,6 +1,6 @@
 id = "herdr-agent-quota"
 name = "Herdr Agent Quota"
-version = "0.2.0"
+version = "1.0.0"
 min_herdr_version = "0.8.0"
 description = "Credential-scoped AI quota and context for Claude, Codex, Grok, Agy, OpenCode, and Pi."
 platforms = ["macos", "linux"]
