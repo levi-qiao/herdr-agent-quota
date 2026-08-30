@@ -802,6 +802,7 @@ mod tests {
                     hit_percent: 96.4,
                     ttl_seconds: Some(3_540),
                     last_activity_unix: None,
+                    expires_at_unix: None,
                     session_totals: None,
                     session_id: None,
                     transcript_offset: 0,

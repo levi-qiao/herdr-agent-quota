@@ -1,6 +1,6 @@
 use crate::cache::CacheStore;
-use crate::model::{Provider, ProviderSnapshot, ResetAt, UsageWindow, WindowKind};
-use crate::providers::statusline::{enrich_cache_ttl, parse_context, parse_model};
+use crate::model::{ContextUsage, Provider, ProviderSnapshot, ResetAt, UsageWindow, WindowKind};
+use crate::providers::statusline::{parse_context, parse_model};
 use crate::providers::ProviderError;
 use serde_json::Value;
 
@@ -8,12 +8,18 @@ pub fn parse_statusline(
     value: &Value,
     fetched_at_unix: u64,
 ) -> std::result::Result<ProviderSnapshot, ProviderError> {
-    let context = parse_context(
+    let mut context = parse_context(
         value
             .get("context_window")
             .or_else(|| value.get("contextWindow")),
     )
     .unwrap_or(None);
+    apply_prompt_cache(
+        &mut context,
+        value
+            .get("prompt_cache")
+            .or_else(|| value.get("promptCache")),
+    );
     let model = parse_model(value);
     let Some(limits) = value.get("rate_limits") else {
         return Ok(
@@ -70,13 +76,71 @@ fn parse_window(
         .map_err(|error| ProviderError::UnsupportedResponse(error.to_string()))
 }
 
+/// Claude Code v2.1.251+ reports the live prefix expiry on statusLine stdin.
+/// Cold or missing expiry clears any previous countdown instead of guessing
+/// from a transcript bucket.
+pub(crate) fn apply_prompt_cache(context: &mut Option<ContextUsage>, prompt_cache: Option<&Value>) {
+    let Some(prompt_cache) = prompt_cache.filter(|value| !value.is_null()) else {
+        return;
+    };
+    let Some(object) = prompt_cache.as_object() else {
+        return;
+    };
+    let Some(cache) = context.as_mut().and_then(|context| context.cache.as_mut()) else {
+        return;
+    };
+    let warm = object.get("warm").and_then(Value::as_bool) != Some(false);
+    let expires_at = object.get("expires_at").and_then(parse_expires_at);
+    match (warm, expires_at) {
+        (true, Some(expires_at)) => {
+            cache.expires_at_unix = Some(expires_at);
+            cache.ttl_seconds = object
+                .get("ttl")
+                .and_then(Value::as_str)
+                .and_then(parse_prompt_cache_ttl);
+            if let Some(ttl_seconds) = cache.ttl_seconds {
+                cache.last_activity_unix = Some(expires_at.saturating_sub(ttl_seconds));
+            }
+        }
+        _ => {
+            cache.expires_at_unix = Some(0);
+            cache.ttl_seconds = None;
+            cache.last_activity_unix = None;
+        }
+    }
+}
+
+fn parse_prompt_cache_ttl(value: &str) -> Option<u64> {
+    match value.trim() {
+        "5m" => Some(5 * 60),
+        "1h" => Some(60 * 60),
+        _ => None,
+    }
+}
+
+fn parse_expires_at(value: &Value) -> Option<u64> {
+    if value.is_null() {
+        return None;
+    }
+    value
+        .as_u64()
+        .or_else(|| {
+            let number = value.as_f64()?;
+            (number.is_finite() && number >= 0.0).then_some(number.round() as u64)
+        })
+        .or_else(|| {
+            value
+                .as_str()
+                .and_then(ResetAt::parse)
+                .map(ResetAt::unix_seconds)
+        })
+}
+
 pub fn run_statusline(input: &[u8]) -> std::result::Result<ProviderSnapshot, ProviderError> {
     let value: Value = serde_json::from_slice(input).map_err(|_| {
         ProviderError::UnsupportedResponse("statusLine input is not JSON".to_string())
     })?;
-    let mut snapshot = parse_statusline(&value, CacheStore::now_unix())?;
-    enrich_cache_ttl(&mut snapshot, &value);
-    Ok(snapshot)
+    parse_statusline(&value, CacheStore::now_unix())
 }
 
 #[cfg(test)]
@@ -140,15 +204,8 @@ mod tests {
     }
 
     #[test]
-    fn estimates_claude_cache_ttl_from_a_bounded_transcript_tail() {
-        let transcript = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(
-            transcript.path(),
-            r#"{"type":"assistant","timestamp":"2026-08-22T10:00:00Z","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":80,"cache_creation_input_tokens":10,"cache_creation":{"ephemeral_1h_input_tokens":10,"ephemeral_5m_input_tokens":0}}}}"#,
-        )
-        .unwrap();
+    fn reads_prompt_cache_expiry_from_statusline() {
         let value = json!({
-            "transcript_path": transcript.path(),
             "context_window": {
                 "used_percentage": 23.5,
                 "current_usage": {
@@ -157,12 +214,71 @@ mod tests {
                     "cache_creation_input_tokens": 10
                 }
             },
-            "rate_limits": {"five_hour": {"used_percentage": 58.0}}
+            "prompt_cache": {
+                "warm": true,
+                "ttl": "1h",
+                "expires_at": 1_787_396_400
+            },
+            "rate_limits": {
+                "five_hour": {"used_percentage": 58.0}
+            }
         });
-        let snapshot = run_statusline(value.to_string().as_bytes()).unwrap();
+        let snapshot = parse_statusline(&value, 1).unwrap();
         let cache = snapshot.context.unwrap().cache.unwrap();
+        assert_eq!(cache.expires_at_unix, Some(1_787_396_400));
         assert_eq!(cache.ttl_seconds, Some(60 * 60));
         assert_eq!(cache.last_activity_unix, Some(1_787_392_800));
+        assert_eq!(cache.remaining_ttl_seconds(1_787_392_800), Some(3_600));
+    }
+
+    #[test]
+    fn cold_prompt_cache_clears_ttl() {
+        let value = json!({
+            "context_window": {
+                "used_percentage": 23.5,
+                "current_usage": {
+                    "input_tokens": 10,
+                    "cache_read_input_tokens": 80,
+                    "cache_creation_input_tokens": 0
+                }
+            },
+            "prompt_cache": {
+                "warm": false,
+                "ttl": "1h",
+                "expires_at": null
+            },
+            "rate_limits": {
+                "five_hour": {"used_percentage": 58.0}
+            }
+        });
+        let snapshot = parse_statusline(&value, 1).unwrap();
+        let cache = snapshot.context.unwrap().cache.unwrap();
+        assert_eq!(cache.expires_at_unix, Some(0));
+        assert!(cache.ttl_seconds.is_none());
+        assert_eq!(cache.remaining_ttl_seconds(1_787_392_800), Some(0));
+    }
+
+    #[test]
+    fn ignores_transcript_buckets_when_prompt_cache_is_absent() {
+        let value = json!({
+            "transcript_path": "/tmp/unused.jsonl",
+            "context_window": {
+                "used_percentage": 23.5,
+                "current_usage": {
+                    "input_tokens": 10,
+                    "cache_read_input_tokens": 80,
+                    "cache_creation_input_tokens": 10
+                }
+            },
+            "rate_limits": {
+                "five_hour": {"used_percentage": 58.0}
+            }
+        });
+        let snapshot = parse_statusline(&value, 1).unwrap();
+        let cache = snapshot.context.unwrap().cache.unwrap();
+        assert!(cache.expires_at_unix.is_none());
+        assert!(cache.ttl_seconds.is_none());
+        assert!(cache.last_activity_unix.is_none());
     }
 
     #[test]

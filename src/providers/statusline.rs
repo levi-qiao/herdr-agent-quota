@@ -1,11 +1,9 @@
-use crate::model::{CacheTotals, CacheUsage, ContextUsage, ProviderSnapshot, ResetAt};
+use crate::model::{CacheTotals, CacheUsage, ContextUsage, ProviderSnapshot};
 use crate::providers::ProviderError;
 use serde_json::Value;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
-
-const TRANSCRIPT_TAIL_BYTES: u64 = 16 * 1024;
 
 /// Read the provider's human-readable active model label from a statusLine
 /// payload. The display name is intentionally preferred over the model id so
@@ -86,33 +84,6 @@ fn token_count(object: &serde_json::Map<String, Value>, snake: &str, camel: &str
         .unwrap_or_default()
 }
 
-/// Add a best-effort Claude cache TTL estimate from the local transcript.
-///
-/// Claude's statusLine contract exposes cache counters but not an entry
-/// expiry timestamp. The transcript tail contains the latest assistant usage
-/// bucket and timestamp, so this can show an explicitly approximate countdown
-/// without scanning the full conversation or making a network request.
-pub fn enrich_cache_ttl(snapshot: &mut ProviderSnapshot, statusline: &Value) {
-    let Some(context) = snapshot.context.as_mut() else {
-        return;
-    };
-    let Some(cache) = context.cache.as_mut() else {
-        return;
-    };
-    let Some(path) = statusline.get("transcript_path").and_then(Value::as_str) else {
-        return;
-    };
-    let Some(tail) = read_transcript_tail(Path::new(path)) else {
-        return;
-    };
-    let Some((Some(ttl_seconds), Some(last_activity_unix))) = latest_cache_activity(&tail) else {
-        return;
-    };
-    *cache = cache
-        .clone()
-        .with_ttl_estimate(ttl_seconds, last_activity_unix);
-}
-
 /// Accumulate cache counters from the provider session transcript.
 ///
 /// StatusLine's `current_usage` is deliberately a latest-request view. The
@@ -143,7 +114,7 @@ pub fn enrich_cache_session(
     };
     // Keep the session boundary even when this payload has no transcript
     // path. That prevents a later statusLine update from inheriting another
-    // session's TTL estimate.
+    // session's cache totals.
     cache.session_id = Some(session_id.to_string());
     let Some(path) = statusline.get("transcript_path").and_then(Value::as_str) else {
         return;
@@ -155,8 +126,6 @@ pub fn enrich_cache_session(
         .map(|previous| previous.transcript_offset)
         .unwrap_or_default();
     let mut increment_totals: Option<CacheTotals> = None;
-    let mut latest_activity = None;
-    let mut latest_ttl = None;
     let Some((next_offset, transcript_reset)) = read_transcript_increment(
         Path::new(path),
         if matching_previous.is_some() {
@@ -186,12 +155,6 @@ pub fn enrich_cache_session(
             } else {
                 increment_totals = CacheTotals::from_token_counts(fresh, read, creation);
             }
-            if read > 0 || creation > 0 {
-                latest_activity = Some(entry.get("timestamp").and_then(parse_timestamp));
-                if let Some(ttl_seconds) = cache_ttl_seconds(usage) {
-                    latest_ttl = Some(ttl_seconds);
-                }
-            }
         },
     ) else {
         return;
@@ -216,28 +179,6 @@ pub fn enrich_cache_session(
 
     cache.session_totals = totals;
     cache.transcript_offset = next_offset;
-
-    if let Some(ttl_seconds) = latest_ttl {
-        cache.ttl_seconds = Some(ttl_seconds);
-    }
-    if let Some(Some(last_activity_unix)) = latest_activity {
-        cache.last_activity_unix = Some(last_activity_unix);
-    }
-}
-
-fn read_transcript_tail(path: &Path) -> Option<String> {
-    let mut file = File::open(path).ok()?;
-    let length = file.metadata().ok()?.len();
-    let start = length.saturating_sub(TRANSCRIPT_TAIL_BYTES);
-    file.seek(SeekFrom::Start(start)).ok()?;
-    let mut bytes = Vec::with_capacity((length - start) as usize);
-    file.read_to_end(&mut bytes).ok()?;
-    let text = String::from_utf8_lossy(&bytes);
-    if start == 0 {
-        return Some(text.into_owned());
-    }
-    text.split_once('\n')
-        .map(|(_, complete_lines)| complete_lines.to_string())
 }
 
 fn read_transcript_increment<F>(path: &Path, offset: u64, mut on_line: F) -> Option<(u64, bool)>
@@ -275,75 +216,6 @@ fn assistant_usage(entry: &Value) -> Option<&serde_json::Map<String, Value>> {
         .and_then(|message| message.get("usage"))
         .or_else(|| entry.get("usage"))
         .and_then(Value::as_object)
-}
-
-fn latest_cache_activity(text: &str) -> Option<(Option<u64>, Option<u64>)> {
-    let mut last_activity = None;
-    let mut ttl_seconds = None;
-    for line in text.lines().rev() {
-        let Ok(entry) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        let Some(usage) = assistant_usage(&entry) else {
-            continue;
-        };
-        let read = token_count(usage, "cache_read_input_tokens", "cacheReadInputTokens");
-        let creation = token_count(
-            usage,
-            "cache_creation_input_tokens",
-            "cacheCreationInputTokens",
-        );
-        if read == 0 && creation == 0 {
-            continue;
-        }
-        if last_activity.is_none() {
-            last_activity = entry.get("timestamp").and_then(parse_timestamp);
-        }
-        if ttl_seconds.is_none() {
-            ttl_seconds = cache_ttl_seconds(usage);
-        }
-        if ttl_seconds.is_some() && last_activity.is_some() {
-            return Some((ttl_seconds, last_activity));
-        }
-    }
-    if ttl_seconds.is_some() || last_activity.is_some() {
-        Some((ttl_seconds, last_activity))
-    } else {
-        None
-    }
-}
-
-fn cache_ttl_seconds(usage: &serde_json::Map<String, Value>) -> Option<u64> {
-    let creation = usage
-        .get("cache_creation")
-        .or_else(|| usage.get("cacheCreation"))?
-        .as_object()?;
-    if token_count(
-        creation,
-        "ephemeral_1h_input_tokens",
-        "ephemeral1hInputTokens",
-    ) > 0
-    {
-        return Some(60 * 60);
-    }
-    if token_count(
-        creation,
-        "ephemeral_5m_input_tokens",
-        "ephemeral5mInputTokens",
-    ) > 0
-    {
-        return Some(5 * 60);
-    }
-    None
-}
-
-fn parse_timestamp(value: &Value) -> Option<u64> {
-    value.as_u64().or_else(|| {
-        value
-            .as_str()
-            .and_then(ResetAt::parse)
-            .map(ResetAt::unix_seconds)
-    })
 }
 
 #[cfg(test)]
@@ -399,8 +271,8 @@ mod tests {
         assert_eq!(first_totals.fresh_input_tokens, 150);
         assert_eq!(first_totals.read_tokens, 1_250);
         assert_eq!(first_totals.creation_tokens, 100);
-        assert_eq!(first_cache.ttl_seconds, Some(60 * 60));
-        assert_eq!(first_cache.last_activity_unix, Some(1_787_392_860));
+        assert!(first_cache.ttl_seconds.is_none());
+        assert!(first_cache.last_activity_unix.is_none());
         assert!(first_cache.transcript_offset > 0);
 
         let third = br#"{"type":"assistant","timestamp":"2026-08-22T10:02:00Z","message":{"usage":{"input_tokens":20,"cache_read_input_tokens":180,"cache_creation_input_tokens":0}}}

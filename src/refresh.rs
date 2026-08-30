@@ -517,6 +517,14 @@ fn load_statusline_snapshot(cache: &CacheStore, provider: Provider) -> Result<Fe
         .and_then(|snapshot| snapshot.context)
         .and_then(|context| context.cache);
     enrich_cache_session(&mut snapshot, &value, previous_cache.as_ref());
+    if provider == Provider::Claude {
+        crate::providers::claude::apply_prompt_cache(
+            &mut snapshot.context,
+            value
+                .get("prompt_cache")
+                .or_else(|| value.get("promptCache")),
+        );
+    }
     let session_id = value
         .get("session_id")
         .or_else(|| value.get("sessionId"))

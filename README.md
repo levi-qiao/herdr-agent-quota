@@ -73,7 +73,7 @@ herdr plugin action invoke herdr-agent-quota.refresh
 
 | Harness | Subscription quota | Exact-session diagnostics | Attribution rule |
 | --- | --- | --- | --- |
-| Claude Code | 5h + 7d | model, context, cache, recorded 5m/1h TTL | Claude statusLine session |
+| Claude Code | 5h + 7d | model, context, cache, statusLine `prompt_cache` expiry | Claude statusLine session |
 | OpenAI Codex | 5h + 7d | model, context, cache, session summary | Canonical ChatGPT login; API keys are not subscription quota |
 | Grok CLI | 7d | model, context, cache | Canonical Grok login |
 | Agy / Antigravity | 5h + 7d | model, context, cache | Agy statusLine session and active model pool |
@@ -82,10 +82,10 @@ herdr plugin action invoke herdr-agent-quota.refresh
 
 Quota values are percentages remaining plus reset time. Context is percentage
 used. Cache is a session hit ratio where the upstream session format supports
-one. TTL is shown only when a recorded provider bucket makes it defensible:
-Claude and Pi/Anthropic 5-minute or 1-hour cache creation. Codex, Grok, Agy,
-OpenCode, and other Pi backends have no cache-entry expiry in their local
-contracts, so they keep cache hit rate and leave TTL blank.
+one. TTL is shown only when a recorded expiry is present: Claude Code
+`prompt_cache.expires_at` (v2.1.251+) and Pi/Anthropic `cacheWrite1h`. Codex,
+Grok, Agy, OpenCode, and other Pi backends have no cache-entry expiry in their
+local contracts, so they keep cache hit rate and leave TTL blank.
 
 Pi reads only the absolute JSONL path reported by Herdr under `~/.pi/agent` or
 `PI_CODING_AGENT_DIR`. It does not scan every session. API-key sessions are

@@ -638,6 +638,9 @@ fn merge_preserved_context(
                 if current_cache.last_activity_unix.is_none() {
                     current_cache.last_activity_unix = previous_cache.last_activity_unix;
                 }
+                if current_cache.expires_at_unix.is_none() {
+                    current_cache.expires_at_unix = previous_cache.expires_at_unix;
+                }
             }
         }
     }

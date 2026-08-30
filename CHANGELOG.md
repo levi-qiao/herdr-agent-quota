@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Claude cache TTL now comes from statusLine `prompt_cache.expires_at`
+  (Claude Code v2.1.251+). Transcript-tail guesses from
+  `ephemeral_5m`/`ephemeral_1h` buckets are gone. A cold or missing prefix
+  hides the countdown instead of keeping a stale estimate. Pi/Anthropic still
+  uses its recorded `cacheWrite1h` split.
+
 ### Fixed
 
 - Switching Codex ChatGPT accounts no longer keeps the previous login's 5h
@@ -18,11 +26,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Notes
 
-- Cache TTL is still published only from a recorded provider bucket: Claude
-  statusLine `cache_creation.ephemeral_5m/1h` and Pi/Anthropic `cacheWrite1h`.
-  Codex, Grok, Agy, OpenCode, and other Pi backends have no entry expiry in
-  their local contracts, so they keep cache hit rate and leave TTL blank
-  rather than guessing a one-hour countdown.
+- Cache TTL is published only from a recorded expiry: Claude Code
+  `prompt_cache.expires_at` and Pi/Anthropic `cacheWrite1h`. Codex, Grok, Agy,
+  OpenCode, and other Pi backends have no entry expiry in their local
+  contracts, so they keep cache hit rate and leave TTL blank rather than
+  guessing a one-hour countdown.
 
 ## [1.0.0] - 2026-08-29
 

@@ -356,6 +356,10 @@ pub struct CacheUsage {
     pub ttl_seconds: Option<u64>,
     #[serde(default)]
     pub last_activity_unix: Option<u64>,
+    /// Absolute expiry from Claude Code's `prompt_cache.expires_at`.
+    /// Preferred over `ttl_seconds` + `last_activity_unix` when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_unix: Option<u64>,
     /// Cumulative cache counters for the current provider session.
     ///
     /// `current_usage` is a latest-request view for Claude/Agy, so the
@@ -438,6 +442,7 @@ impl CacheUsage {
             hit_percent: read_tokens as f64 / total as f64 * 100.0,
             ttl_seconds: None,
             last_activity_unix: None,
+            expires_at_unix: None,
             session_totals: None,
             session_id: None,
             transcript_offset: 0,
@@ -451,6 +456,9 @@ impl CacheUsage {
     }
 
     pub fn remaining_ttl_seconds(&self, now_unix: u64) -> Option<u64> {
+        if let Some(expires_at) = self.expires_at_unix {
+            return Some(expires_at.saturating_sub(now_unix));
+        }
         let ttl = self.ttl_seconds?;
         let last_activity = self.last_activity_unix?;
         Some(last_activity.saturating_add(ttl).saturating_sub(now_unix))
@@ -891,6 +899,16 @@ mod tests {
             .with_ttl_estimate(300, 1_000);
         assert_eq!(cache.remaining_ttl_seconds(1_100), Some(200));
         assert_eq!(cache.remaining_ttl_seconds(1_301), Some(0));
+    }
+
+    #[test]
+    fn recorded_expiry_is_preferred_over_a_ttl_estimate() {
+        let mut cache = CacheUsage::from_token_counts(1, 1, 0)
+            .unwrap()
+            .with_ttl_estimate(300, 1_000);
+        cache.expires_at_unix = Some(1_500);
+        assert_eq!(cache.remaining_ttl_seconds(1_400), Some(100));
+        assert_eq!(cache.remaining_ttl_seconds(1_500), Some(0));
     }
 
     #[test]

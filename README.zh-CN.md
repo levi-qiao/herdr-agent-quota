@@ -69,7 +69,7 @@ herdr plugin action invoke herdr-agent-quota.refresh
 
 | Harness | 订阅额度 | 精确 session 信息 | 归属规则 |
 | --- | --- | --- | --- |
-| Claude Code | 5h + 7d | model、context、cache、已记录的 5m/1h TTL | Claude statusLine session |
+| Claude Code | 5h + 7d | model、context、cache、statusLine `prompt_cache` 过期时间 | Claude statusLine session |
 | OpenAI Codex | 5h + 7d | model、context、cache、session 摘要 | 规范 ChatGPT 登录；API key 不冒充订阅额度 |
 | Grok CLI | 7d | model、context、cache | 规范 Grok 登录 |
 | Agy / Antigravity | 5h + 7d | model、context、cache | Agy statusLine session 与当前模型池 |
@@ -77,9 +77,10 @@ herdr plugin action invoke herdr-agent-quota.refresh
 | Pi | 能安全匹配时复用现有 Codex 额度 | model、context、cache；Anthropic 已记录 TTL | 仅 account id 与规范 Codex 相同的 `openai-codex` OAuth |
 
 额度显示剩余百分比和重置时间；context 显示已用百分比；cache 在上游 session 格式可支持时
-显示命中率。TTL 只在 provider/session 记录了可信 bucket 时出现：Claude 和 Pi/Anthropic
-的 5 分钟或 1 小时缓存。Codex、Grok、Agy、OpenCode 和其他 Pi backend 的本地合同没有
-cache entry 过期时间，因此只保留命中率，不猜 TTL。
+显示命中率。TTL 只在有记录的过期时间时出现：Claude Code 的
+`prompt_cache.expires_at`（v2.1.251+）和 Pi/Anthropic 的 `cacheWrite1h`。
+Codex、Grok、Agy、OpenCode 和其他 Pi backend 的本地合同没有 cache entry 过期时间，
+因此只保留命中率，不猜 TTL。
 
 Pi 只读取 Herdr 报告的那个绝对 JSONL 路径，来源为 `~/.pi/agent` 或
 `PI_CODING_AGENT_DIR`，不会扫描所有 session。API key session 确认为 PAYG 并清除旧额度；
