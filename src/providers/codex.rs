@@ -1,7 +1,7 @@
 use crate::cache::CacheStore;
 use crate::model::{
-    CacheTotals, CacheUsage, ContextUsage, Provider, ProviderSnapshot, ResetAt, UsageWindow,
-    WindowKind,
+    sibling_quota_reset_in, CacheTotals, CacheUsage, ContextUsage, Provider, ProviderSnapshot,
+    ResetAt, UsageWindow, WindowKind,
 };
 use crate::providers::ProviderError;
 use anyhow::{Context, Result};
@@ -279,10 +279,15 @@ fn enrich_local_sessions(snapshot: &mut ProviderSnapshot, session_ids: &[String]
     let Some(home) = codex_home().ok() else {
         return;
     };
-    enrich_local_sessions_at(snapshot, &home, session_ids);
+    enrich_local_sessions_at(snapshot, &home, session_ids, auth_mtime_unix());
 }
 
-fn enrich_local_sessions_at(snapshot: &mut ProviderSnapshot, home: &Path, session_ids: &[String]) {
+fn enrich_local_sessions_at(
+    snapshot: &mut ProviderSnapshot,
+    home: &Path,
+    session_ids: &[String],
+    auth_mtime_unix: Option<u64>,
+) {
     if session_ids.is_empty() {
         return;
     }
@@ -304,7 +309,12 @@ fn enrich_local_sessions_at(snapshot: &mut ProviderSnapshot, home: &Path, sessio
             .ok()
             .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
             .map_or(0, |duration| duration.as_secs());
-        if newest_windows
+        if rollout_windows_can_fill_account_quota(
+            snapshot,
+            &observation.windows,
+            modified,
+            auth_mtime_unix,
+        ) && newest_windows
             .as_ref()
             .is_none_or(|(current, _)| modified >= *current)
         {
@@ -337,6 +347,25 @@ fn enrich_local_sessions_at(snapshot: &mut ProviderSnapshot, home: &Path, sessio
         }
         snapshot.context = Some(context);
     }
+}
+
+/// Account-level 5h/7d comes from `account/rateLimits/read`. A local rollout
+/// may fill a window the API omitted this tick, but only when that rollout
+/// still belongs to the signed-in account: written at or after the current
+/// `auth.json`, and with a weekly window that has not itself reset.
+fn rollout_windows_can_fill_account_quota(
+    snapshot: &ProviderSnapshot,
+    rollout_windows: &[UsageWindow],
+    rollout_mtime: u64,
+    auth_mtime_unix: Option<u64>,
+) -> bool {
+    if rollout_windows.is_empty() {
+        return false;
+    }
+    if auth_mtime_unix.is_some_and(|auth| rollout_mtime < auth) {
+        return false;
+    }
+    !sibling_quota_reset_in(&snapshot.windows, rollout_windows)
 }
 
 fn find_rollout_paths(home: &Path, session_ids: &[String]) -> BTreeMap<String, PathBuf> {
@@ -643,16 +672,20 @@ pub fn account_id_from_auth(path: &Path) -> Option<String> {
 
     #[derive(Deserialize)]
     struct TokenMetadata {
+        #[serde(default)]
         account_id: Option<String>,
+        #[serde(default, alias = "chatgptAccountId")]
+        chatgpt_account_id: Option<String>,
     }
 
     // Only materialize the stable account id. Token fields are ignored by the
     // streaming deserializer and never enter an owned Rust value.
     let metadata: AuthMetadata =
         serde_json::from_reader(BufReader::new(fs::File::open(path).ok()?)).ok()?;
-    metadata
-        .tokens?
+    let tokens = metadata.tokens?;
+    tokens
         .account_id
+        .or(tokens.chatgpt_account_id)
         .filter(|value| !value.is_empty())
 }
 
@@ -874,6 +907,7 @@ mod tests {
             &mut snapshot,
             directory.path(),
             &["session-1".to_string(), "other-session".to_string()],
+            None,
         );
         assert_eq!(snapshot.model.as_deref(), Some("gpt-5.6"));
         assert!(snapshot.session_contexts.contains_key("session-1"));
@@ -899,7 +933,12 @@ mod tests {
             1,
         )
         .unwrap();
-        enrich_local_sessions_at(&mut snapshot, directory.path(), &["session-1".to_string()]);
+        enrich_local_sessions_at(
+            &mut snapshot,
+            directory.path(),
+            &["session-1".to_string()],
+            None,
+        );
         assert_eq!(
             snapshot.window(WindowKind::FiveHour).unwrap().used_percent,
             12.0
@@ -930,11 +969,92 @@ mod tests {
             1,
         )
         .unwrap();
-        enrich_local_sessions_at(&mut snapshot, directory.path(), &["session-1".to_string()]);
+        enrich_local_sessions_at(
+            &mut snapshot,
+            directory.path(),
+            &["session-1".to_string()],
+            None,
+        );
         assert!(snapshot.window(WindowKind::FiveHour).is_none());
         assert_eq!(
             snapshot.window(WindowKind::Weekly).unwrap().used_percent,
             0.0
         );
+    }
+
+    #[test]
+    fn older_rollout_five_hour_window_is_not_used_after_auth_switch() {
+        let directory = tempfile::tempdir().unwrap();
+        let rollout_dir = directory.path().join("sessions/2026/08/27");
+        fs::create_dir_all(&rollout_dir).unwrap();
+        fs::write(
+            rollout_dir.join("rollout-session-1.jsonl"),
+            r#"{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":80.0,"window_minutes":300,"resets_at":1786795200},"secondary":{"used_percent":31.0,"window_minutes":10080,"resets_at":1787400000}},"info":{"last_token_usage":{"total_tokens":25000},"model_context_window":100000}}}
+"#,
+        )
+        .unwrap();
+        let mut snapshot = parse_rate_limits(
+            &json!({"result":{"rateLimits":{
+                "primary":{"usedPercent":12.0,"windowDurationMins":10080,"resetsAt":1787400000},
+                "secondary":null
+            }}}),
+            1,
+        )
+        .unwrap();
+        enrich_local_sessions_at(
+            &mut snapshot,
+            directory.path(),
+            &["session-1".to_string()],
+            Some(u64::MAX),
+        );
+        assert!(snapshot.window(WindowKind::FiveHour).is_none());
+        assert_eq!(
+            snapshot.window(WindowKind::Weekly).unwrap().used_percent,
+            12.0
+        );
+    }
+
+    #[test]
+    fn rollout_five_hour_window_is_not_used_when_weekly_reset_disagrees() {
+        let directory = tempfile::tempdir().unwrap();
+        let rollout_dir = directory.path().join("sessions/2026/08/27");
+        fs::create_dir_all(&rollout_dir).unwrap();
+        fs::write(
+            rollout_dir.join("rollout-session-1.jsonl"),
+            r#"{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":80.0,"window_minutes":300,"resets_at":1786795200},"secondary":{"used_percent":31.0,"window_minutes":10080,"resets_at":1787400000}},"info":{"last_token_usage":{"total_tokens":25000},"model_context_window":100000}}}
+"#,
+        )
+        .unwrap();
+        let mut snapshot = parse_rate_limits(
+            &json!({"result":{"rateLimits":{
+                "primary":{"usedPercent":12.0,"windowDurationMins":10080,"resetsAt":1787397000},
+                "secondary":null
+            }}}),
+            1,
+        )
+        .unwrap();
+        enrich_local_sessions_at(
+            &mut snapshot,
+            directory.path(),
+            &["session-1".to_string()],
+            None,
+        );
+        assert!(snapshot.window(WindowKind::FiveHour).is_none());
+        assert_eq!(
+            snapshot.window(WindowKind::Weekly).unwrap().used_percent,
+            12.0
+        );
+    }
+
+    #[test]
+    fn reads_codex_account_id_from_chatgpt_account_id_when_account_id_is_absent() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("auth.json");
+        fs::write(
+            &path,
+            r#"{"auth_mode":"chatgpt","tokens":{"chatgpt_account_id":"acc-2","access_token":"secret"}}"#,
+        )
+        .unwrap();
+        assert_eq!(account_id_from_auth(&path).as_deref(), Some("acc-2"));
     }
 }

@@ -594,8 +594,9 @@ impl ProviderSnapshot {
     /// A failed refresh must keep the last good value for the *current*
     /// account, not a previous login. After an account switch:
     /// - snapshots stamped with another `account_id` are unusable;
-    /// - legacy snapshots (no stamp) are unusable when the credential file is
-    ///   newer than `fetched_at_unix`, which is what `grok login` does.
+    /// - unstamped snapshots are unusable when the credential file is newer
+    ///   than `fetched_at_unix`, including Codex `auth.json` rewrites that do
+    ///   not expose an id.
     pub fn usable_for_account(
         &self,
         current_account_id: Option<&str>,
@@ -604,10 +605,9 @@ impl ProviderSnapshot {
         match (self.account_id.as_deref(), current_account_id) {
             (Some(saved), Some(current)) => saved == current,
             (Some(_), None) => false,
-            (None, Some(_)) => {
+            (None, Some(_)) | (None, None) => {
                 credentials_mtime_unix.is_none_or(|mtime| mtime <= self.fetched_at_unix)
             }
-            (None, None) => true,
         }
     }
 
@@ -696,11 +696,12 @@ fn same_quota_account(current: &ProviderSnapshot, previous: &ProviderSnapshot) -
         previous.account_id.as_deref(),
     ) {
         (Some(current_id), Some(previous_id)) => current_id == previous_id,
-        _ => true,
+        (None, None) => true,
+        _ => false,
     }
 }
 
-fn sibling_quota_reset_in(current: &[UsageWindow], previous: &[UsageWindow]) -> bool {
+pub(crate) fn sibling_quota_reset_in(current: &[UsageWindow], previous: &[UsageWindow]) -> bool {
     const USED_PERCENT_RESET_DROP: f64 = 5.0;
     [WindowKind::FiveHour, WindowKind::Weekly]
         .into_iter()
@@ -870,6 +871,8 @@ mod tests {
         assert!(!snapshot.usable_for_account(Some("account-b"), Some(150)));
         assert!(snapshot.usable_for_account(Some("account-b"), Some(100)));
         assert!(snapshot.usable_for_account(Some("account-b"), Some(50)));
+        assert!(!snapshot.usable_for_account(None, Some(150)));
+        assert!(snapshot.usable_for_account(None, Some(50)));
     }
 
     #[test]
@@ -1081,6 +1084,51 @@ mod tests {
             current.window(WindowKind::Weekly).unwrap().used_percent,
             66.0
         );
+    }
+
+    #[test]
+    fn omitted_five_hour_window_is_not_kept_for_a_different_account() {
+        let previous = ProviderSnapshot::new(
+            Provider::Codex,
+            vec![
+                quota_window(WindowKind::FiveHour, 80.0, 2_000),
+                quota_window(WindowKind::Weekly, 31.0, 10_000),
+            ],
+            1_000,
+        )
+        .with_account_id(Some("account-a".to_string()));
+        let mut current = ProviderSnapshot::new(
+            Provider::Codex,
+            vec![quota_window(WindowKind::Weekly, 12.0, 10_000)],
+            1_100,
+        )
+        .with_account_id(Some("account-b".to_string()));
+        current.merge_omitted_windows(&previous);
+        assert!(current.window(WindowKind::FiveHour).is_none());
+        assert_eq!(
+            current.window(WindowKind::Weekly).unwrap().used_percent,
+            12.0
+        );
+    }
+
+    #[test]
+    fn omitted_five_hour_window_is_not_kept_when_only_one_snapshot_has_an_account_id() {
+        let previous = ProviderSnapshot::new(
+            Provider::Codex,
+            vec![
+                quota_window(WindowKind::FiveHour, 80.0, 2_000),
+                quota_window(WindowKind::Weekly, 31.0, 10_000),
+            ],
+            1_000,
+        )
+        .with_account_id(Some("account-a".to_string()));
+        let mut current = ProviderSnapshot::new(
+            Provider::Codex,
+            vec![quota_window(WindowKind::Weekly, 31.0, 10_000)],
+            1_100,
+        );
+        current.merge_omitted_windows(&previous);
+        assert!(current.window(WindowKind::FiveHour).is_none());
     }
 
     #[test]

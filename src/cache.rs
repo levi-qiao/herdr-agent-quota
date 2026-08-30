@@ -79,11 +79,12 @@ impl CacheStore {
     /// Keep provider-local diagnostics when a successful quota refresh cannot
     /// read one of the session files for a moment. Quota windows from the
     /// latest fetch replace the cache; an omitted 5h/weekly window is restored
-    /// from the previous snapshot only when that window is still current.
-    /// Diagnostics are merged only for the same signed in account so a login
-    /// switch can never inherit another user's data.
+    /// from the previous snapshot only when that window is still current and
+    /// the signed-in account has not changed. A newer credential file drops
+    /// the previous login's windows even when neither snapshot has an
+    /// `account_id`.
     pub fn save_preserving_diagnostics(&self, mut snapshot: ProviderSnapshot) -> Result<()> {
-        self.save_preserving_diagnostics_for_sessions(&mut snapshot, &[])
+        self.save_preserving_diagnostics_for_sessions(&mut snapshot, &[], None)
     }
 
     /// Variant used by the refresh path, which knows the session ids currently
@@ -93,9 +94,11 @@ impl CacheStore {
         &self,
         snapshot: &mut ProviderSnapshot,
         session_ids: &[String],
+        credentials_mtime_unix: Option<u64>,
     ) -> Result<()> {
         if let Some(previous) = self.load(snapshot.provider).ok().flatten() {
-            let same_account = snapshot.account_id == previous.account_id;
+            let same_account =
+                previous.usable_for_account(snapshot.account_id.as_deref(), credentials_mtime_unix);
             if same_account {
                 snapshot.merge_omitted_windows(&previous);
                 if session_ids.is_empty() {
@@ -1027,7 +1030,11 @@ mod tests {
 
         let mut latest = snapshot();
         cache
-            .save_preserving_diagnostics_for_sessions(&mut latest, &["new-session".to_string()])
+            .save_preserving_diagnostics_for_sessions(
+                &mut latest,
+                &["new-session".to_string()],
+                None,
+            )
             .unwrap();
         let saved = cache.load(Provider::Grok).unwrap().unwrap();
         assert!(saved.context_for_session(Some("new-session")).is_none());
@@ -1053,6 +1060,89 @@ mod tests {
         let saved = cache.load(Provider::Grok).unwrap().unwrap();
         assert_eq!(saved.session_models.len(), MAX_STATUSLINE_SESSIONS);
         assert_eq!(saved.session_contexts.len(), MAX_STATUSLINE_SESSIONS);
+    }
+
+    fn codex_windows(five_hour: Option<f64>, weekly: f64, fetched_at: u64) -> ProviderSnapshot {
+        let mut windows = Vec::new();
+        if let Some(used) = five_hour {
+            windows.push(
+                UsageWindow::new(
+                    WindowKind::FiveHour,
+                    used,
+                    Some(ResetAt::from_unix_seconds(2_000)),
+                )
+                .unwrap(),
+            );
+        }
+        windows.push(
+            UsageWindow::new(
+                WindowKind::Weekly,
+                weekly,
+                Some(ResetAt::from_unix_seconds(10_000)),
+            )
+            .unwrap(),
+        );
+        ProviderSnapshot::new(Provider::Codex, windows, fetched_at)
+    }
+
+    #[test]
+    fn direct_provider_refresh_does_not_restore_five_hour_window_after_account_switch() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        cache
+            .save(
+                &codex_windows(Some(80.0), 31.0, 1_000)
+                    .with_account_id(Some("account-a".to_string())),
+            )
+            .unwrap();
+
+        let mut latest =
+            codex_windows(None, 12.0, 1_100).with_account_id(Some("account-b".to_string()));
+        cache
+            .save_preserving_diagnostics_for_sessions(&mut latest, &[], None)
+            .unwrap();
+        let saved = cache.load(Provider::Codex).unwrap().unwrap();
+        assert!(saved.window(WindowKind::FiveHour).is_none());
+        assert_eq!(saved.window(WindowKind::Weekly).unwrap().used_percent, 12.0);
+    }
+
+    #[test]
+    fn unstamped_refresh_does_not_restore_five_hour_window_after_newer_credentials() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        cache.save(&codex_windows(Some(80.0), 31.0, 1_000)).unwrap();
+
+        let mut latest = codex_windows(None, 12.0, 1_100);
+        cache
+            .save_preserving_diagnostics_for_sessions(&mut latest, &[], Some(1_050))
+            .unwrap();
+        let saved = cache.load(Provider::Codex).unwrap().unwrap();
+        assert!(saved.window(WindowKind::FiveHour).is_none());
+        assert_eq!(saved.window(WindowKind::Weekly).unwrap().used_percent, 12.0);
+    }
+
+    #[test]
+    fn same_account_still_restores_an_omitted_five_hour_window() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        cache
+            .save(
+                &codex_windows(Some(22.0), 65.0, 1_000)
+                    .with_account_id(Some("account-a".to_string())),
+            )
+            .unwrap();
+
+        let mut latest =
+            codex_windows(None, 66.0, 1_100).with_account_id(Some("account-a".to_string()));
+        cache
+            .save_preserving_diagnostics_for_sessions(&mut latest, &[], Some(900))
+            .unwrap();
+        let saved = cache.load(Provider::Codex).unwrap().unwrap();
+        assert_eq!(
+            saved.window(WindowKind::FiveHour).unwrap().used_percent,
+            22.0
+        );
+        assert_eq!(saved.window(WindowKind::Weekly).unwrap().used_percent, 66.0);
     }
 
     #[test]

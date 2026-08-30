@@ -83,8 +83,9 @@ herdr plugin action invoke herdr-agent-quota.refresh
 Quota values are percentages remaining plus reset time. Context is percentage
 used. Cache is a session hit ratio where the upstream session format supports
 one. TTL is shown only when a recorded provider bucket makes it defensible:
-Claude and Pi/Anthropic 5-minute or 1-hour cache creation. Codex and other Pi
-providers keep cache hit rate but leave TTL blank.
+Claude and Pi/Anthropic 5-minute or 1-hour cache creation. Codex, Grok, Agy,
+OpenCode, and other Pi backends have no cache-entry expiry in their local
+contracts, so they keep cache hit rate and leave TTL blank.
 
 Pi reads only the absolute JSONL path reported by Herdr under `~/.pi/agent` or
 `PI_CODING_AGENT_DIR`. It does not scan every session. API-key sessions are
@@ -150,6 +151,7 @@ The default watcher interval is 60 seconds and can be changed during install:
 | Pi model/context is old | Send one Pi turn; a model selection is confirmed after a successful assistant message. |
 | OpenCode has model/context but no quota | This is expected for Zen, PAYG, OAuth, or an unverified/missing Go key. |
 | A refresh fails | The last good same-account value is intentionally retained. |
+| Codex 5h is from a previous ChatGPT login | `codex login` rewrites `~/.codex/auth.json`; the next refresh should hide 5h when the new account has only 7d. Send one turn if the sidebar still looks stale. |
 
 ## Development
 

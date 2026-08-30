@@ -78,7 +78,8 @@ herdr plugin action invoke herdr-agent-quota.refresh
 
 额度显示剩余百分比和重置时间；context 显示已用百分比；cache 在上游 session 格式可支持时
 显示命中率。TTL 只在 provider/session 记录了可信 bucket 时出现：Claude 和 Pi/Anthropic
-的 5 分钟或 1 小时缓存。Codex 和其他 Pi provider 保留 cache 命中率，但不猜 TTL。
+的 5 分钟或 1 小时缓存。Codex、Grok、Agy、OpenCode 和其他 Pi backend 的本地合同没有
+cache entry 过期时间，因此只保留命中率，不猜 TTL。
 
 Pi 只读取 Herdr 报告的那个绝对 JSONL 路径，来源为 `~/.pi/agent` 或
 `PI_CODING_AGENT_DIR`，不会扫描所有 session。API key session 确认为 PAYG 并清除旧额度；
@@ -132,6 +133,7 @@ OpenCode 1.18.20 上验证；成功响应结构来自
 | Pi model/context 旧 | 发送一轮 Pi 消息；成功 assistant message 后才确认模型切换。 |
 | OpenCode 有 model/context 但无额度 | Zen、PAYG、OAuth 或缺少/未验证 Go key 时属于正常行为。 |
 | 刷新失败 | 插件会保留同一账户最后一次成功值。 |
+| Codex 的 5h 还是上一个 ChatGPT 账号的 | `codex login` 会重写 `~/.codex/auth.json`；下一次刷新应在新账号只有 7d 时立刻隐藏 5h。若侧栏仍旧，发一轮对话即可。 |
 
 ## 开发检查
 

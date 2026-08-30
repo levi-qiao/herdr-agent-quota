@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Switching Codex ChatGPT accounts no longer keeps the previous login's 5h
+  row. The live `account/rateLimits/read` result is the account-level source;
+  a local rollout may fill an omitted 5h window only when that file is at
+  least as new as `auth.json` and its weekly window still matches. A cache
+  from another account, or from before the current credential file, is not
+  merged back. Weekly-only accounts now hide 5h immediately instead of after
+  the next turn.
+
+### Notes
+
+- Cache TTL is still published only from a recorded provider bucket: Claude
+  statusLine `cache_creation.ephemeral_5m/1h` and Pi/Anthropic `cacheWrite1h`.
+  Codex, Grok, Agy, OpenCode, and other Pi backends have no entry expiry in
+  their local contracts, so they keep cache hit rate and leave TTL blank
+  rather than guessing a one-hour countdown.
+
 ## [1.0.0] - 2026-08-29
 
 ### Added

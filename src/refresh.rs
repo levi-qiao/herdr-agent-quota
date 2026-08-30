@@ -427,7 +427,12 @@ fn refresh_provider(
             if preserve_context {
                 cache.save_preserving_context_for_session(snapshot, session_id.as_deref())?;
             } else if matches!(provider, Provider::Codex | Provider::Grok) {
-                cache.save_preserving_diagnostics_for_sessions(&mut snapshot, &session_ids)?;
+                let (_, mtime) = current_account_gate(provider);
+                cache.save_preserving_diagnostics_for_sessions(
+                    &mut snapshot,
+                    &session_ids,
+                    mtime,
+                )?;
             } else {
                 cache.save(&snapshot)?;
             }
