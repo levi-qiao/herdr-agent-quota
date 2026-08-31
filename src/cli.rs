@@ -251,25 +251,35 @@ impl AgentSelection {
 
     /// Selection for a `configure` run.
     ///
-    /// Herdr plugin actions run a fixed command line, so the environment is
-    /// the only way an installer can narrow them. An explicit `--agent` always
-    /// wins; an unparsable variable is ignored rather than failing a config
-    /// write that the user asked for.
+    /// A Herdr plugin action runs a fixed command line in the *server's*
+    /// environment, so a variable exported around `herdr plugin action invoke`
+    /// never reaches it. The plugin config directory is the channel that does
+    /// work, and it is what `install.sh` writes; the environment is still
+    /// honoured first for a direct CLI run.
+    ///
+    /// Anything unparsable falls through to the next source and finally to
+    /// every supported agent, so `--uninstall` alone still removes everything.
     pub fn from_args_or_env(values: &[Self]) -> Vec<Harness> {
         if !values.is_empty() {
             return Self::resolve(values);
         }
-        let Some(raw) = std::env::var("HERDR_AGENT_QUOTA_AGENTS").ok() else {
-            return Self::SUPPORTED.to_vec();
-        };
+        [
+            std::env::var("HERDR_AGENT_QUOTA_AGENTS").ok(),
+            crate::prefs::read(crate::prefs::AGENTS),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|raw| Self::parse_list(&raw))
+        .unwrap_or_else(|| Self::SUPPORTED.to_vec())
+    }
+
+    /// A comma-separated selection, or `None` when it names nothing valid.
+    fn parse_list(raw: &str) -> Option<Vec<Harness>> {
         let parsed: Vec<Self> = raw
             .split(',')
             .filter_map(|name| Self::parse(name.trim()))
             .collect();
-        if parsed.is_empty() {
-            return Self::SUPPORTED.to_vec();
-        }
-        Self::resolve(&parsed)
+        (!parsed.is_empty()).then(|| Self::resolve(&parsed))
     }
 
     fn parse(name: &str) -> Option<Self> {
@@ -326,6 +336,36 @@ mod tests {
             AgentSelection::from_args_or_env(&[AgentSelection::Grok]),
             vec![Harness::Grok]
         );
+    }
+
+    /// The environment cannot reach a Herdr plugin action, so the config-dir
+    /// preference is the channel `install.sh` / `uninstall.sh` actually use.
+    /// A selection that fails to arrive means `--uninstall --agent grok`
+    /// removes every agent, so this path is load-bearing.
+    #[test]
+    fn a_config_directory_preference_narrows_the_selection() {
+        let directory = tempfile::tempdir().unwrap();
+        crate::prefs::testing::with_config_dir(directory.path(), || {
+            crate::prefs::write(crate::prefs::AGENTS, "grok,claude").unwrap();
+            assert_eq!(
+                AgentSelection::from_args_or_env(&[]),
+                vec![Harness::Claude, Harness::Grok]
+            );
+
+            // An explicit flag still wins over the stored preference.
+            assert_eq!(
+                AgentSelection::from_args_or_env(&[AgentSelection::Agy]),
+                vec![Harness::Agy]
+            );
+
+            // Junk falls through to every agent rather than to none, so a
+            // corrupt file can never silently skip an uninstall.
+            crate::prefs::write(crate::prefs::AGENTS, "nonsense").unwrap();
+            assert_eq!(
+                AgentSelection::from_args_or_env(&[]),
+                AgentSelection::SUPPORTED.to_vec()
+            );
+        });
     }
 
     #[test]

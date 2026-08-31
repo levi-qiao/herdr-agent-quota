@@ -7,9 +7,14 @@
 #
 # A full uninstall also drops the saved sidebar-layout and row-gap prefs.
 #
-# The configuration action is intentionally run before unlinking: Herdr owns
-# the plugin state directory used to restore Claude/Agy statusLine backups.
+# The restore action runs, and is waited for, before unlinking: Herdr owns the
+# plugin state directory holding the Claude/Agy statusLine backups, and
+# `herdr plugin action invoke` returns before the action has finished.
 set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/herdr-action.sh
+source "$ROOT/scripts/herdr-action.sh"
 
 AGENTS=""
 while (($# > 0)); do
@@ -30,18 +35,57 @@ while (($# > 0)); do
   esac
 done
 
-command -v herdr >/dev/null 2>&1 || {
-  printf 'error: Herdr is not installed or not on PATH\n' >&2
+die() {
+  printf 'error: %s\n' "$*" >&2
   exit 1
+}
+
+command -v herdr >/dev/null 2>&1 || die "Herdr is not installed or not on PATH"
+
+# Herdr runs the uninstall action with a fixed command line, in the server's own
+# environment, so `env AGENTS=... herdr plugin action invoke` is silently
+# ignored — and an ignored selection here means removing everything instead of
+# one agent. The selection therefore travels through the plugin config
+# directory, and is restored afterwards so that removing one agent never
+# narrows a later repair of the agents that are still installed.
+AGENTS_PREF=""
+AGENTS_PREF_SAVED=""
+AGENTS_PREF_EXISTED=0
+
+restore_agents_pref() {
+  [[ -z "$AGENTS_PREF" ]] && return 0
+  if ((AGENTS_PREF_EXISTED)); then
+    printf '%s\n' "$AGENTS_PREF_SAVED" > "$AGENTS_PREF"
+  else
+    rm -f "$AGENTS_PREF"
+  fi
+}
+
+select_agents() {
+  [[ -z "$AGENTS" ]] && return 0
+  local directory
+  directory="$(herdr plugin config-dir herdr-agent-quota)" \
+    || die "cannot resolve plugin config directory"
+  mkdir -p "$directory"
+  AGENTS_PREF="$directory/agents"
+  if [[ -f "$AGENTS_PREF" ]]; then
+    AGENTS_PREF_SAVED="$(cat "$AGENTS_PREF")"
+    AGENTS_PREF_EXISTED=1
+  fi
+  trap restore_agents_pref EXIT
+  printf '%s\n' "$AGENTS" > "$AGENTS_PREF"
 }
 
 if herdr plugin list 2>/dev/null | grep -q 'herdr-agent-quota'; then
   # An earlier interrupted uninstall may have disabled the plugin. Enable it
   # long enough for Herdr to provide the state directory to the restore action.
   herdr plugin enable herdr-agent-quota >/dev/null 2>&1 || true
+  select_agents
   printf '%s\n' '→ restoring plugin-owned configuration'
-  env ${AGENTS:+HERDR_AGENT_QUOTA_AGENTS="$AGENTS"} \
-    herdr plugin action invoke herdr-agent-quota.uninstall
+  # Waiting matters twice here: the selection file below must stay in place
+  # until the action has read it, and unlinking before the restore finishes
+  # can strand a statusLine entry pointing at a plugin that is gone.
+  invoke_action_and_wait uninstall || die "restore action failed; nothing was unlinked"
 
   # Removing one agent is not uninstalling the plugin; the rest still need it.
   if [[ -n "$AGENTS" && "$AGENTS" != "all" ]]; then

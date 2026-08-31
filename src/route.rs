@@ -43,7 +43,6 @@ pub fn resolve_with_identity(pane: &AgentPane) -> ResolvedPane {
                 codex::current_account_id,
             )
         }
-        Harness::Omp | Harness::Kimi => Resolution::Indeterminate,
     };
     ResolvedPane {
         resolution,

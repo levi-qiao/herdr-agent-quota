@@ -1,30 +1,30 @@
 use crate::model::{
-    format_percent, window_in, Provider, ProviderSnapshot, ResetAt, Severity, UsageWindow,
-    WindowKind,
+    format_percent, long_window, window_in, Provider, ProviderSnapshot, ResetAt, Severity,
+    UsageWindow, WindowKind,
 };
 
+/// Exactly the values a pane can be given.
+///
+/// Every field here is published by [`crate::herdr::desired_tokens`]. Nothing
+/// is rendered "in case the sidebar wants it later": an unpublished field
+/// still costs a name in Herdr's 16-token report budget, because that budget
+/// is spent clearing names the plugin no longer sends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetadataTokens {
-    pub quota_state: String,
-    pub quota_icon: String,
     pub quota_provider: String,
     pub quota_model: String,
     pub quota_provider_model: String,
-    pub quota_status: String,
+    /// One compact token per window (`5h 42% 4h07m`), severity chooses the hue.
     pub quota_5h: String,
-    pub quota_5h_label: String,
-    pub quota_5h_percent: String,
-    pub quota_5h_eta: String,
     pub quota_5h_severity: Option<Severity>,
     pub quota_week: String,
-    pub quota_week_label: String,
-    pub quota_week_percent: String,
-    pub quota_week_eta: String,
     pub quota_week_severity: Option<Severity>,
-    pub quota_summary: String,
     pub quota_context: String,
     pub quota_cache: String,
     pub quota_cache_ttl: String,
+    /// A lapsed prompt cache (`no cached`). Normal, unlike `quota_error`.
+    pub quota_cache_state: String,
+    /// The plugin could not speak for this pane at all.
     pub quota_error: Option<String>,
 }
 
@@ -79,91 +79,46 @@ impl MetadataTokens {
     ) -> Self {
         let quota_provider = snapshot.provider.display_name().to_string();
         let quota_model = model.unwrap_or_default().to_string();
-        let quota_5h = sidebar_window(windows, snapshot.provider, WindowKind::FiveHour, now_unix);
-        let five_hour = window_in(windows, WindowKind::FiveHour)
-            .map(|window| compact_window_parts(window, now_unix));
-        let weekly = window_in(windows, WindowKind::Weekly)
-            .map(|window| compact_window_parts(window, now_unix));
-        let five_hour_placeholder = five_hour
-            .is_none()
-            .then(|| missing_five_hour_label(snapshot.provider))
-            .flatten();
-        let severity = ProviderSnapshot::severity_for_windows(snapshot.provider, windows, now_unix);
+        let quota_5h = five_hour_slot(windows, snapshot.provider, now_unix);
         Self {
-            quota_state: severity.symbol().to_string(),
-            quota_icon: snapshot.provider.icon().to_string(),
             quota_provider_model: provider_model_label(&quota_provider, &quota_model),
             quota_provider,
             quota_model,
-            quota_status: severity.label().to_string(),
             quota_5h_severity: window_severity(windows, WindowKind::FiveHour, now_unix)
                 .or_else(|| missing_five_hour_severity(snapshot.provider, &quota_5h)),
-            quota_5h_label: five_hour
-                .as_ref()
-                .map(|parts| parts.label.clone())
-                .or_else(|| five_hour_placeholder.map(|_| "5h".to_string()))
-                .unwrap_or_default(),
-            quota_5h_percent: five_hour
-                .as_ref()
-                .map(|parts| parts.percent.clone())
-                .or_else(|| five_hour_placeholder.map(|_| "N/A".to_string()))
-                .unwrap_or_default(),
-            quota_5h_eta: five_hour
-                .as_ref()
-                .map(|parts| parts.eta.clone())
-                .unwrap_or_default(),
             quota_5h,
-            quota_week: sidebar_window(windows, snapshot.provider, WindowKind::Weekly, now_unix),
-            quota_week_label: weekly
-                .as_ref()
-                .map(|parts| parts.label.clone())
+            quota_week: long_window(windows)
+                .map(|window| compact_window_parts(window, now_unix).rendered())
                 .unwrap_or_default(),
-            quota_week_percent: weekly
-                .as_ref()
-                .map(|parts| parts.percent.clone())
-                .unwrap_or_default(),
-            quota_week_eta: weekly
-                .as_ref()
-                .map(|parts| parts.eta.clone())
-                .unwrap_or_default(),
-            quota_week_severity: window_severity(windows, WindowKind::Weekly, now_unix),
-            quota_summary: summary_from_windows(windows, now_unix, false),
+            quota_week_severity: long_window(windows)
+                .map(|window| Severity::for_window(window, now_unix)),
             quota_context: sidebar_context(context),
             quota_cache: sidebar_cache(context),
             quota_cache_ttl: sidebar_cache_ttl(context, now_unix),
-            quota_error: sidebar_cache_error(context, now_unix),
+            quota_cache_state: sidebar_cache_state(context, now_unix),
+            quota_error: None,
         }
     }
 
+    /// The plugin has a snapshot it must not show — currently only a snapshot
+    /// belonging to a login the user has since switched away from. Quota reads
+    /// `N/A` rather than a stale number, and `quota_error` says why.
     pub fn unavailable(provider: Provider, reason: impl Into<String>) -> Self {
         let quota_provider = provider.display_name().to_string();
         Self {
-            quota_state: Severity::Unknown.symbol().to_string(),
-            quota_icon: provider.icon().to_string(),
             quota_provider_model: quota_provider.clone(),
             quota_provider,
             quota_model: String::new(),
-            quota_status: Severity::Unknown.label().to_string(),
             quota_5h: missing_five_hour_label(provider)
                 .unwrap_or_default()
                 .to_string(),
-            quota_5h_label: missing_five_hour_label(provider)
-                .map(|_| "5h".to_string())
-                .unwrap_or_default(),
-            quota_5h_percent: missing_five_hour_label(provider)
-                .map(|_| "N/A".to_string())
-                .unwrap_or_default(),
-            quota_5h_eta: String::new(),
             quota_5h_severity: missing_five_hour_label(provider).map(|_| Severity::Unknown),
             quota_week: "7d N/A".to_string(),
-            quota_week_label: "7d".to_string(),
-            quota_week_percent: "N/A".to_string(),
-            quota_week_eta: String::new(),
             quota_week_severity: Some(Severity::Unknown),
-            quota_summary: "unavailable".to_string(),
             quota_context: String::new(),
             quota_cache: String::new(),
             quota_cache_ttl: String::new(),
+            quota_cache_state: String::new(),
             quota_error: Some(reason.into().chars().take(80).collect()),
         }
     }
@@ -179,10 +134,6 @@ fn provider_model_label(provider: &str, model: &str) -> String {
 
 fn window_severity(windows: &[UsageWindow], kind: WindowKind, now_unix: u64) -> Option<Severity> {
     window_in(windows, kind).map(|window| Severity::for_window(window, now_unix))
-}
-
-pub fn sidebar_summary(snapshot: &ProviderSnapshot, now_unix: u64) -> String {
-    summary_from_windows(&snapshot.windows, now_unix, false)
 }
 
 /// The dashboard has room for every window, including a monthly one. The
@@ -201,15 +152,6 @@ pub fn dashboard_summary(snapshot: &ProviderSnapshot, now_unix: u64) -> String {
     )
 }
 
-fn summary_from_windows(windows: &[UsageWindow], now_unix: u64, include_left: bool) -> String {
-    windows_summary(
-        windows,
-        &[WindowKind::FiveHour, WindowKind::Weekly],
-        now_unix,
-        include_left,
-    )
-}
-
 fn windows_summary(
     windows: &[UsageWindow],
     kinds: &[WindowKind],
@@ -224,21 +166,16 @@ fn windows_summary(
         .join(" · ")
 }
 
-fn sidebar_window(
-    windows: &[UsageWindow],
-    provider: Provider,
-    kind: WindowKind,
-    now_unix: u64,
-) -> String {
-    if let Some(window) = window_in(windows, kind) {
-        return format_compact_window(window, now_unix);
-    }
-    if kind == WindowKind::FiveHour {
-        return missing_five_hour_label(provider)
+/// The 5h slot: the window when the provider reported one, otherwise the
+/// provider's placeholder (Claude/Agy keep a visible `5h N/A`; the rest omit
+/// the row so the long window can fold onto context).
+fn five_hour_slot(windows: &[UsageWindow], provider: Provider, now_unix: u64) -> String {
+    match window_in(windows, WindowKind::FiveHour) {
+        Some(window) => compact_window_parts(window, now_unix).rendered(),
+        None => missing_five_hour_label(provider)
             .unwrap_or_default()
-            .to_string();
+            .to_string(),
     }
-    String::new()
 }
 
 fn missing_five_hour_label(provider: Provider) -> Option<&'static str> {
@@ -288,15 +225,22 @@ pub(crate) fn sidebar_cache_ttl(
         .unwrap_or_default()
 }
 
-fn sidebar_cache_error(
+/// A lapsed prompt cache is a normal state, not a failure.
+///
+/// It gets its own token so it is never confused with [`MetadataTokens::
+/// unavailable`]'s `quota_error`, which reports that the plugin could not
+/// speak for this pane at all. Both are amber, so sharing one token made
+/// "your prefix went cold" indistinguishable from "quota is broken".
+pub(crate) fn sidebar_cache_state(
     context: Option<&crate::model::ContextUsage>,
     now_unix: u64,
-) -> Option<String> {
+) -> String {
     context
         .and_then(|context| context.cache.as_ref())
         .and_then(|cache| cache.remaining_ttl_seconds(now_unix))
         .filter(|remaining| *remaining == 0)
         .map(|_| "no cached".to_string())
+        .unwrap_or_default()
 }
 
 fn format_window(window: &UsageWindow, now_unix: u64, include_left: bool) -> String {
@@ -316,6 +260,18 @@ struct WindowParts {
     eta: String,
 }
 
+impl WindowParts {
+    /// One space-separated token, because Herdr joins sibling tokens with
+    /// ` · `. The period label leads, so the value is self-describing however
+    /// the sidebar arranges it.
+    fn rendered(&self) -> String {
+        if self.eta.is_empty() {
+            return format!("{} {}", self.label, self.percent);
+        }
+        format!("{} {} {}", self.label, self.percent, self.eta)
+    }
+}
+
 fn compact_window_parts(window: &UsageWindow, now_unix: u64) -> WindowParts {
     WindowParts {
         label: window.kind.label().to_string(),
@@ -325,14 +281,6 @@ fn compact_window_parts(window: &UsageWindow, now_unix: u64) -> WindowParts {
             .map(|reset| format_reset_eta(reset, now_unix))
             .unwrap_or_default(),
     }
-}
-
-fn format_compact_window(window: &UsageWindow, now_unix: u64) -> String {
-    let parts = compact_window_parts(window, now_unix);
-    if parts.eta.is_empty() {
-        return format!("{} {}", parts.label, parts.percent);
-    }
-    format!("{} {} {}", parts.label, parts.percent, parts.eta)
 }
 
 fn format_reset_eta(reset_at: ResetAt, now_unix: u64) -> String {
@@ -383,7 +331,6 @@ mod tests {
         assert!(dashboard.contains("30d"), "{dashboard}");
 
         let sidebar = MetadataTokens::from_snapshot(&snapshot, 0);
-        assert!(!sidebar.quota_summary.contains("30d"), "{sidebar:?}");
         assert!(!sidebar.quota_week.contains("30d"), "{sidebar:?}");
         // No monthly token exists, so the value must not ride in on another.
         assert!(sidebar.quota_5h.contains("5h"));
@@ -394,6 +341,39 @@ mod tests {
 
     fn window(kind: WindowKind, used: f64, reset: u64) -> UsageWindow {
         UsageWindow::new(kind, used, Some(ResetAt::from_unix_seconds(reset))).unwrap()
+    }
+
+    /// A monthly-only plan (Grok billed monthly, a Go plan with no weekly
+    /// bucket) still gets a row, and it says `30d` — the label lives inside
+    /// the value, so the long-window slot can carry either period truthfully.
+    #[test]
+    fn a_monthly_only_plan_fills_the_long_window_slot_with_its_own_label() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Grok,
+            vec![window(WindowKind::Monthly, 30.0, 1_500_000)],
+            0,
+        );
+        let values = MetadataTokens::from_snapshot(&snapshot, 0);
+        assert_eq!(values.quota_week, "30d 70% 17d8h");
+        assert_eq!(values.quota_week_severity, Some(Severity::Normal));
+        assert_eq!(values.quota_5h, "");
+    }
+
+    /// Fallback only. A weekly window always wins the slot, because it is the
+    /// limit that binds first; a 30d number must never displace it.
+    #[test]
+    fn a_weekly_window_always_wins_the_long_window_slot() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::OpenCodeGo,
+            vec![
+                window(WindowKind::Weekly, 20.0, 183_600),
+                window(WindowKind::Monthly, 90.0, 1_500_000),
+            ],
+            0,
+        );
+        let values = MetadataTokens::from_snapshot(&snapshot, 0);
+        assert_eq!(values.quota_week, "7d 80% 2d3h");
+        assert!(!values.quota_week.contains("30d"));
     }
 
     #[test]
@@ -424,10 +404,6 @@ mod tests {
                 window(WindowKind::FiveHour, 58.0, 14_820),
             ],
             0,
-        );
-        assert_eq!(
-            sidebar_summary(&snapshot, 0),
-            "5h 42% reset 4h07m · 7d 73% reset 2d3h"
         );
         assert_eq!(
             dashboard_summary(&snapshot, 0),
@@ -479,12 +455,6 @@ mod tests {
         assert_eq!(values.quota_week, "7d 73% 2d3h");
         assert!(!values.quota_5h.contains('·'));
         assert!(!values.quota_week.contains('·'));
-        assert_eq!(values.quota_5h_label, "5h");
-        assert_eq!(values.quota_5h_percent, "42%");
-        assert_eq!(values.quota_5h_eta, "4h07m");
-        assert_eq!(values.quota_week_label, "7d");
-        assert_eq!(values.quota_week_percent, "73%");
-        assert_eq!(values.quota_week_eta, "2d3h");
     }
 
     #[test]
@@ -625,7 +595,10 @@ mod tests {
         ));
         let values = MetadataTokens::from_snapshot(&snapshot, 61);
         assert_eq!(values.quota_cache_ttl, "");
-        assert_eq!(values.quota_error.as_deref(), Some("no cached"));
+        assert_eq!(values.quota_cache_state, "no cached");
+        // A cold prefix is a normal state, not a plugin failure: it must not
+        // land in the token that reports "quota could not be read at all".
+        assert_eq!(values.quota_error, None);
     }
 
     #[test]

@@ -8,6 +8,11 @@ use serde_json::Value;
 const FIVE_HOUR_KEYS: [&str; 2] = ["gemini-5h", "3p-5h"];
 const WEEKLY_KEYS: [&str; 2] = ["gemini-weekly", "3p-weekly"];
 
+/// Spellings whose value is already a `0..=1` fraction.
+const FRACTION_KEYS: [&str; 2] = ["remaining_fraction", "remainingFraction"];
+/// Spellings whose value is a `0..=100` percentage.
+const PERCENT_KEYS: [&str; 2] = ["remaining_percent", "remainingPercentage"];
+
 const GEMINI_FIVE_HOUR_KEYS: [&str; 1] = ["gemini-5h"];
 const GEMINI_WEEKLY_KEYS: [&str; 1] = ["gemini-weekly"];
 const THIRD_PARTY_FIVE_HOUR_KEYS: [&str; 1] = ["3p-5h"];
@@ -153,19 +158,31 @@ fn parse_reset(value: &Value, fetched_at_unix: u64) -> Option<ResetAt> {
         })
 }
 
+/// Remaining allowance as a `0..=1` fraction.
+///
+/// The scale comes from the key, never from the value. Inferring it from the
+/// magnitude reads a `remaining_percent` of `1.0` as a full pool instead of a
+/// nearly exhausted one — the same 100x error, in the same dangerous
+/// direction, that [`crate::providers::opencode_go`] exists to avoid.
 fn parse_remaining(value: &Value) -> Option<f64> {
     let object = value.as_object()?;
-    let raw = object
-        .get("remaining_fraction")
-        .or_else(|| object.get("remainingFraction"))
-        .or_else(|| object.get("remaining_percent"))
-        .or_else(|| object.get("remainingPercentage"))
-        .and_then(Value::as_f64)?;
-    if !raw.is_finite() {
-        return None;
-    }
-    let fraction = if raw <= 1.0 { raw } else { raw / 100.0 };
-    Some(fraction.clamp(0.0, 1.0))
+    let (raw, per_unit) = FRACTION_KEYS
+        .iter()
+        .find_map(|key| {
+            object
+                .get(*key)
+                .and_then(Value::as_f64)
+                .map(|raw| (raw, 1.0))
+        })
+        .or_else(|| {
+            PERCENT_KEYS.iter().find_map(|key| {
+                object
+                    .get(*key)
+                    .and_then(Value::as_f64)
+                    .map(|raw| (raw, 100.0))
+            })
+        })?;
+    raw.is_finite().then(|| (raw / per_unit).clamp(0.0, 1.0))
 }
 
 pub fn run_statusline(input: &[u8]) -> std::result::Result<ProviderSnapshot, ProviderError> {
@@ -355,6 +372,56 @@ mod tests {
         );
         assert_remaining_pct(&snapshot, WindowKind::FiveHour, 52.0);
         assert_remaining_pct(&snapshot, WindowKind::Weekly, 84.0);
+    }
+
+    /// A percentage below 1 must not be mistaken for a fraction. Reading
+    /// `remaining_percent: 1.0` as "full" paints a nearly exhausted pool green.
+    #[test]
+    fn a_small_remaining_percent_is_not_rescaled_to_a_full_pool() {
+        for (key, raw, expected_remaining) in [
+            ("remaining_percent", 1.0, 1.0),
+            ("remaining_percent", 0.5, 0.5),
+            ("remainingPercentage", 5.0, 5.0),
+            ("remaining_fraction", 1.0, 100.0),
+            ("remainingFraction", 0.5, 50.0),
+        ] {
+            let value = json!({"quota": {"gemini-5h": {key: raw}}});
+            let snapshot = parse_statusline(&value, 0).unwrap();
+            assert_remaining_pct(&snapshot, WindowKind::FiveHour, expected_remaining);
+        }
+    }
+
+    #[test]
+    fn a_fraction_key_wins_over_a_percent_key_in_the_same_bucket() {
+        let value = json!({"quota": {"gemini-5h": {
+            "remaining_fraction": 0.25,
+            "remaining_percent": 25.0
+        }}});
+        let snapshot = parse_statusline(&value, 0).unwrap();
+        assert_remaining_pct(&snapshot, WindowKind::FiveHour, 25.0);
+    }
+
+    #[test]
+    fn out_of_range_and_non_finite_remaining_values_fail_closed() {
+        let clamped = parse_statusline(
+            &json!({"quota": {"gemini-5h": {"remaining_percent": 150.0}}}),
+            0,
+        )
+        .unwrap();
+        assert_remaining_pct(&clamped, WindowKind::FiveHour, 100.0);
+
+        let negative = parse_statusline(
+            &json!({"quota": {"gemini-5h": {"remaining_fraction": -1.0}}}),
+            0,
+        )
+        .unwrap();
+        assert_remaining_pct(&negative, WindowKind::FiveHour, 0.0);
+
+        assert!(parse_statusline(
+            &json!({"quota": {"gemini-5h": {"remaining_fraction": "lots"}}}),
+            0
+        )
+        .is_err());
     }
 
     fn assert_remaining_pct(snapshot: &ProviderSnapshot, kind: WindowKind, expected: f64) {

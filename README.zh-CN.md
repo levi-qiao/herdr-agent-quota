@@ -96,13 +96,16 @@ herdr plugin action invoke herdr-agent-quota.refresh
 | --- | --- | --- | --- |
 | Claude Code | 5h + 7d | model、context、cache、statusLine `prompt_cache` 过期时间 | Claude statusLine session |
 | OpenAI Codex | 5h + 7d | model、context、cache、估算 cache TTL、session 摘要 | 规范 ChatGPT 登录；API key 不冒充订阅额度 |
-| Grok CLI | 7d | model、context、cache | 规范 Grok 登录 |
+| Grok CLI | 7d；月付方案为 30d | model、context、cache | 规范 Grok 登录 |
 | Agy / Antigravity | 5h + 7d | model、context、cache | Agy statusLine session 与当前模型池 |
-| OpenCode | OpenCode Go 5h + 7d；dashboard 含 30d | 精确本地 session 的 model 与 context | 仅 `opencode-go` 和其匹配 key；其他 backend 不借用 Go 凭据 |
+| OpenCode | OpenCode Go 5h + 7d；dashboard 面板含 30d | 精确本地 session 的 model 与 context | 仅 `opencode-go` 和其匹配 key；其他 backend 不借用 Go 凭据 |
 | Pi | 能安全匹配时复用现有 Codex 额度 | model、context、cache；Anthropic 已记录 TTL、Codex 估算 TTL | 仅 account id 与规范 Codex 相同的 `openai-codex` OAuth |
 
-额度显示剩余百分比和重置时间；context 显示已用百分比；cache 在上游 session 格式可支持时
-显示命中率。有记录的过期时间优先：Claude Code 的
+额度显示剩余百分比和重置时间。侧边栏有一个 5h 窗口和一个长周期槽位：长周期槽位放
+周额度，若该方案没有周额度则放月额度。周期标签跟着数值走（`7d 69% 6d0h`、
+`30d 70% 17d8h`），所以月额度绝不会被显示成周额度；两者同时存在时永远是周额度占据
+该槽位。dashboard 面板会列出该方案的全部窗口，30d 与 7d 并列。context 显示已用百分
+比；cache 在上游 session 格式可支持时显示命中率。有记录的过期时间优先：Claude Code 的
 `prompt_cache.expires_at`（v2.1.251+）和 Pi/Anthropic 的 `cacheWrite1h`。
 Codex 本地既没有 TTL 也没有 expiry——rollout JSONL 只有 cache token 计数和请求
 时间戳——所以按 Responses API 文档中默认且当前唯一支持的
@@ -143,7 +146,9 @@ OpenCode 1.18.20 上验证；成功响应结构来自
   dim。选中态只许改卡片背景，不许改供应商 hue。
   每个 5h/7d 窗口是一个紧凑 token（`5h 0% 1h18m`），空格分隔。Herdr 会把
   同行 token 用 ` · ` 拼起来，所以窗口不能拆成标签/百分比/倒计时三块。
-  剩余百分比颜色：≥50% 绿，20–49% 琥珀，<20% 红。`no cached` 用同一套琥珀。
+  剩余百分比颜色：≥50% 绿，20–49% 琥珀，<20% 红。前缀缓存过期显示 `no cached`，
+  同样是琥珀，但用独立 token：它是正常状态，不会和「额度完全读不到」的错误共用
+  同一个 token。
   packed 布局里两个窗口之间仍会有一个 ` · `。
 - event 只用 `--source visible` 读取事件点名的 pane；启动、focus、refresh 和 watcher 不读 pane。
 - 只有 token 真正变化时才写 metadata，并始终遵守 Herdr 的 16-token 上限。

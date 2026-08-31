@@ -31,27 +31,13 @@ impl Provider {
     /// here on purpose; see the variant's note.
     pub const ALL: [Self; 4] = [Self::Codex, Self::Grok, Self::Claude, Self::Agy];
 
-    pub fn badge(self) -> &'static str {
-        match self {
-            Self::Codex => "[C]",
-            Self::Grok => "[X]",
-            Self::Claude => "[A]",
-            Self::Agy => "[G]",
-            Self::OpenCodeGo => "[O]",
-        }
-    }
-
-    /// Compact text marker for a narrow Herdr sidebar. Plugin v1 accepts text
-    /// tokens rather than provider SVGs, so the letters keep it recognizable.
-    pub fn icon(self) -> &'static str {
-        match self {
-            Self::Codex => "◈C",
-            Self::Grok => "✕G",
-            Self::Claude => "✦Cl",
-            Self::Agy => "△Ag",
-            Self::OpenCodeGo => "◇Go",
-        }
-    }
+    /// Collectors fetched only for a pane that resolved to them.
+    ///
+    /// They are never refreshed through the provider list, so the dashboard
+    /// shows one only once it has something cached — a permanent
+    /// "unavailable" row for a subscription the user does not have would be
+    /// noise, not information.
+    pub const SCOPED: [Self; 1] = [Self::OpenCodeGo];
 
     pub fn display_name(self) -> &'static str {
         match self {
@@ -74,14 +60,6 @@ impl Provider {
             Self::OpenCodeGo => "opencode-go.opencode-store",
         }
     }
-
-    /// Whether this provider has a five-hour quota window to display.
-    ///
-    /// Grok's credits contract has no 5h bucket, so the sidebar must not
-    /// invent a `5h N/A` row for it. Codex, Claude, and Agy all expose one.
-    pub fn exposes_five_hour_quota(self) -> bool {
-        !matches!(self, Self::Grok)
-    }
 }
 
 /// The agent drawing a Herdr pane. Distinct from [`Billing`]: harnesses without
@@ -95,8 +73,6 @@ pub enum Harness {
     Agy,
     OpenCode,
     Pi,
-    Omp,
-    Kimi,
 }
 
 impl Harness {
@@ -110,8 +86,6 @@ impl Harness {
             "agy" | "antigravity" | "antigravity-cli" => Some(Self::Agy),
             "opencode" => Some(Self::OpenCode),
             "pi" => Some(Self::Pi),
-            "omp" => Some(Self::Omp),
-            "kimi" => Some(Self::Kimi),
             _ => None,
         }
     }
@@ -124,7 +98,7 @@ impl Harness {
             Self::Grok => Some(Provider::Grok),
             Self::Claude => Some(Provider::Claude),
             Self::Agy => Some(Provider::Agy),
-            Self::OpenCode | Self::Pi | Self::Omp | Self::Kimi => None,
+            Self::OpenCode | Self::Pi => None,
         }
     }
 
@@ -651,10 +625,9 @@ impl ProviderSnapshot {
         now_unix: u64,
     ) -> Severity {
         let relevant = match provider {
-            Provider::Grok => window_in(windows, WindowKind::Weekly),
+            Provider::Grok => long_window(windows),
             Provider::Codex | Provider::Claude | Provider::Agy | Provider::OpenCodeGo => {
-                window_in(windows, WindowKind::FiveHour)
-                    .or_else(|| window_in(windows, WindowKind::Weekly))
+                window_in(windows, WindowKind::FiveHour).or_else(|| long_window(windows))
             }
         };
         relevant
@@ -665,6 +638,17 @@ impl ProviderSnapshot {
 
 pub(crate) fn window_in(windows: &[UsageWindow], kind: WindowKind) -> Option<&UsageWindow> {
     windows.iter().find(|window| window.kind == kind)
+}
+
+/// The recurring allowance shown in the sidebar's long-window slot.
+///
+/// Weekly is the usual shape. A plan billed monthly has no weekly bucket at
+/// all, so the same slot carries its 30d window instead; the period label
+/// travels inside the rendered value, so a monthly number is never displayed
+/// as `7d`. Monthly is strictly a fallback — when both exist the weekly one
+/// wins, because it is the limit that binds first.
+pub(crate) fn long_window(windows: &[UsageWindow]) -> Option<&UsageWindow> {
+    window_in(windows, WindowKind::Weekly).or_else(|| window_in(windows, WindowKind::Monthly))
 }
 
 /// Restore an omitted 5h/weekly window from a previous observation of the
@@ -730,30 +714,23 @@ pub(crate) fn sibling_quota_reset_in(current: &[UsageWindow], previous: &[UsageW
         })
 }
 
+/// Runway health for one quota window.
+///
+/// These are exactly the bands [`Self::for_window`] can produce — there is no
+/// variant the sidebar cannot reach, so every styled token this maps to is one
+/// a pane can actually be given.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Normal,
-    Caution,
     Warning,
     Danger,
     Unknown,
 }
 
 impl Severity {
-    pub fn symbol(self) -> &'static str {
-        match self {
-            Self::Normal => "●",
-            Self::Caution => "●",
-            Self::Warning => "▲",
-            Self::Danger => "!",
-            Self::Unknown => "?",
-        }
-    }
-
     pub fn label(self) -> &'static str {
         match self {
             Self::Normal => "OK",
-            Self::Caution => "OK",
             Self::Warning => "WARN",
             Self::Danger => "LOW",
             Self::Unknown => "N/A",
@@ -989,15 +966,22 @@ mod tests {
     fn provider_aliases_are_explicit() {
         assert_eq!("claude-code".parse::<Provider>().unwrap(), Provider::Claude);
         assert_eq!("antigravity".parse::<Provider>().unwrap(), Provider::Agy);
-        assert_eq!(Provider::Grok.badge(), "[X]");
-        assert_eq!(Provider::Codex.icon(), "◈C");
-        assert_eq!(Provider::Claude.icon(), "✦Cl");
-        assert!(Provider::Codex.exposes_five_hour_quota());
-        assert!(Provider::Claude.exposes_five_hour_quota());
-        assert!(!Provider::Grok.exposes_five_hour_quota());
         assert!("opencode".parse::<Provider>().is_err());
         assert!("OpenCode".parse::<Provider>().is_err());
         assert!("pi".parse::<Provider>().is_err());
+    }
+
+    /// `source` names the file a snapshot lives in, so a constructor that
+    /// overrides it makes the cache and the snapshot disagree about identity.
+    #[test]
+    fn every_snapshot_reports_the_source_of_its_own_cache_file() {
+        for provider in Provider::ALL.into_iter().chain(Provider::SCOPED) {
+            assert_eq!(
+                ProviderSnapshot::new(provider, vec![], 0).source,
+                provider.source(),
+                "{provider:?}"
+            );
+        }
     }
 
     #[test]

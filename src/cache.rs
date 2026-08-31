@@ -104,40 +104,30 @@ impl CacheStore {
                 previous.usable_for_account(snapshot.account_id.as_deref(), credentials_mtime_unix);
             if same_account {
                 snapshot.merge_omitted_windows(&previous);
+                // A refresh scoped to one pane's session still must not delete
+                // what it never looked at. An agent event names a single pane,
+                // so the fetch only enriches that session; every other pane's
+                // diagnostics are carried forward rather than dropped and then
+                // re-published as a cleared token on the next focus.
+                // `prune_session_diagnostics` below keeps the map bounded.
+                for (session_id, context) in previous.session_contexts {
+                    snapshot
+                        .session_contexts
+                        .entry(session_id)
+                        .or_insert(context);
+                }
+                for (session_id, model) in previous.session_models {
+                    snapshot.session_models.entry(session_id).or_insert(model);
+                }
+                // Provider-level values speak for a pane whose session Herdr
+                // could not identify, so they are only inherited by a refresh
+                // that spoke for every session too.
                 if session_ids.is_empty() {
                     if snapshot.context.is_none() {
                         snapshot.context = previous.context.clone();
                     }
                     if snapshot.model.is_none() {
                         snapshot.model = previous.model.clone();
-                    }
-                    if snapshot.session_contexts.is_empty() {
-                        for (session_id, context) in previous.session_contexts {
-                            snapshot
-                                .session_contexts
-                                .entry(session_id)
-                                .or_insert(context);
-                        }
-                    }
-                    if snapshot.session_models.is_empty() {
-                        for (session_id, model) in previous.session_models {
-                            snapshot.session_models.entry(session_id).or_insert(model);
-                        }
-                    }
-                } else {
-                    for session_id in session_ids {
-                        if let Some(context) = previous.session_contexts.get(session_id) {
-                            snapshot
-                                .session_contexts
-                                .entry(session_id.clone())
-                                .or_insert_with(|| context.clone());
-                        }
-                        if let Some(model) = previous.session_models.get(session_id) {
-                            snapshot
-                                .session_models
-                                .entry(session_id.clone())
-                                .or_insert_with(|| model.clone());
-                        }
                     }
                 }
             }
@@ -1097,6 +1087,51 @@ mod tests {
             .unwrap();
         let saved = cache.load(Provider::Grok).unwrap().unwrap();
         assert!(saved.context_for_session(Some("new-session")).is_none());
+    }
+
+    /// A Herdr agent event names one pane, so Grok's fetch enriches only that
+    /// session. The panes it did not look at must keep their context instead
+    /// of losing it and being republished as a cleared token — every such
+    /// write risks a visible repaint.
+    #[test]
+    fn a_single_pane_refresh_keeps_the_other_panes_diagnostics() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        let mut previous = snapshot();
+        for session_id in ["pane-a", "pane-b"] {
+            previous
+                .session_contexts
+                .insert(session_id.to_string(), ContextUsage::new(42.0).unwrap());
+            previous
+                .session_models
+                .insert(session_id.to_string(), "grok-4.6".to_string());
+        }
+        cache.save(&previous).unwrap();
+
+        let mut latest = snapshot();
+        latest
+            .session_contexts
+            .insert("pane-a".to_string(), ContextUsage::new(51.0).unwrap());
+        cache
+            .save_preserving_diagnostics_for_sessions(&mut latest, &["pane-a".to_string()], None)
+            .unwrap();
+
+        let saved = cache.load(Provider::Grok).unwrap().unwrap();
+        assert_eq!(
+            saved
+                .context_for_session(Some("pane-a"))
+                .map(|context| context.used_percent),
+            Some(51.0),
+            "the refreshed session must take the new value"
+        );
+        assert_eq!(
+            saved
+                .context_for_session(Some("pane-b"))
+                .map(|context| context.used_percent),
+            Some(42.0),
+            "an untouched session must keep its last known context"
+        );
+        assert_eq!(saved.session_models["pane-b"], "grok-4.6");
     }
 
     #[test]

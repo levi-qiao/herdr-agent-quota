@@ -137,10 +137,6 @@ fn parse_reset(value: &Value) -> Option<ResetAt> {
         .or_else(|| value.as_str().and_then(ResetAt::parse))
 }
 
-pub fn fetch() -> Result<ProviderSnapshot> {
-    fetch_for_sessions(&[])
-}
-
 /// Fetch quota and supplement it with local diagnostics for the sessions
 /// currently visible in Herdr. The empty slice is used by direct CLI calls;
 /// the refresh path supplies pane session ids so an older pane is not lost

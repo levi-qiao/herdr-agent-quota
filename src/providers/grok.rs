@@ -23,10 +23,6 @@ pub struct GrokCredentials {
     pub user_id: Option<String>,
 }
 
-pub fn fetch() -> Result<ProviderSnapshot> {
-    fetch_for_sessions(&[])
-}
-
 /// Fetch Grok billing and enrich only the visible pane sessions when Herdr
 /// provides their ids. Direct CLI refreshes pass an empty slice and use the
 /// bounded newest-session fallback instead.
@@ -192,16 +188,23 @@ pub fn parse_billing_response(
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if !period_type.contains("WEEKLY") {
+    // The billing period names the window; it is never assumed. A monthly pool
+    // is reported as 30d rather than discarded, but it must never be labelled
+    // 7d — that would understate how long the credits have to last.
+    let kind = if period_type.contains("WEEKLY") {
+        WindowKind::Weekly
+    } else if period_type.contains("MONTHLY") {
+        WindowKind::Monthly
+    } else {
         return Err(ProviderError::UnsupportedResponse(format!(
-            "current period is not weekly: {period_type}"
+            "unsupported credit period: {period_type}"
         )));
-    }
+    };
     let reset = period
         .get("end")
         .and_then(Value::as_str)
         .and_then(ResetAt::parse_rfc3339);
-    let window = UsageWindow::new(WindowKind::Weekly, usage, reset)
+    let window = UsageWindow::new(kind, usage, reset)
         .map_err(|error| ProviderError::UnsupportedResponse(error.to_string()))?;
     Ok(ProviderSnapshot::new(
         Provider::Grok,
@@ -647,14 +650,40 @@ mod tests {
     }
 
     #[test]
-    fn rejects_monthly_period_instead_of_calling_it_weekly() {
+    fn reads_a_monthly_period_as_thirty_days_never_as_a_week() {
         let value = json!({
             "config": {
                 "creditUsagePercent": 42.5,
-                "currentPeriod": {"type": "USAGE_PERIOD_TYPE_MONTHLY"}
+                "currentPeriod": {
+                    "type": "USAGE_PERIOD_TYPE_MONTHLY",
+                    "end": "2026-09-15T00:00:00Z"
+                }
             }
         });
-        assert!(parse_billing_response(&value, 1).is_err());
+        let snapshot = parse_billing_response(&value, 1).unwrap();
+        assert!(snapshot.window(WindowKind::Weekly).is_none());
+        let monthly = snapshot.window(WindowKind::Monthly).unwrap();
+        assert_eq!(monthly.remaining_percent, 57.5);
+        assert_eq!(
+            monthly.resets_at,
+            Some(ResetAt::from_unix_seconds(1_789_430_400))
+        );
+    }
+
+    #[test]
+    fn rejects_a_period_the_contract_does_not_name() {
+        for period_type in ["USAGE_PERIOD_TYPE_DAILY", "UNSPECIFIED", ""] {
+            let value = json!({
+                "config": {
+                    "creditUsagePercent": 42.5,
+                    "currentPeriod": {"type": period_type}
+                }
+            });
+            assert!(
+                parse_billing_response(&value, 1).is_err(),
+                "accepted {period_type}"
+            );
+        }
     }
 
     #[test]

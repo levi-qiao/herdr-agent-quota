@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Value};
 
-const QUOTA_ROW_MARKERS: [&str; 38] = [
+const QUOTA_ROW_MARKERS: [&str; 40] = [
     "$quota_badge",
     "$quota_state",
     "$quota_icon",
@@ -18,9 +18,11 @@ const QUOTA_ROW_MARKERS: [&str; 38] = [
     "$quota_context",
     "$quota_cache",
     "$quota_cache_ttl",
+    "$quota_cache_state",
     "$quota_error",
     "$quota_topic",
     "$quota_5h",
+    "$quota_5h_percent",
     "$quota_week",
     "$quota_header",
     "$quota_5h_label",
@@ -757,6 +759,12 @@ fn append_stacked_quota_rows(rows: &mut Array) {
         Some(false),
     )));
     rows.push(Value::Array(styled_row(
+        "$quota_cache_state",
+        Some(QUOTA_WARNING_COLOR),
+        Some(false),
+        Some(false),
+    )));
+    rows.push(Value::Array(styled_row(
         "$quota_error",
         Some(QUOTA_WARNING_COLOR),
         Some(false),
@@ -790,6 +798,12 @@ fn append_cache_row(rows: &mut Array) {
             Some(false),
         ),
         styled_token(
+            "$quota_cache_state",
+            Some(QUOTA_WARNING_COLOR),
+            Some(false),
+            Some(false),
+        ),
+        styled_token(
             "$quota_error",
             Some(QUOTA_WARNING_COLOR),
             Some(false),
@@ -801,9 +815,11 @@ fn append_cache_row(rows: &mut Array) {
 fn append_window_style_tokens(row: &mut Array, base: &str) {
     // One compact token per window (`5h 0% 1h18m`). Herdr joins sibling
     // tokens with ` · `, so splitting label/percent/eta cannot stay compact.
+    // Exactly the bands `Severity::for_window` can produce. There is no
+    // "caution" row: that variant was unreachable, so the token could never
+    // be filled and only ever consumed a slot.
     for (suffix, color) in [
         ("normal", QUOTA_SAFE_COLOR),
-        ("caution", QUOTA_SAFE_COLOR),
         ("warning", QUOTA_WARNING_COLOR),
         ("danger", QUOTA_DANGER_COLOR),
         ("unknown", MUTED_COLOR),

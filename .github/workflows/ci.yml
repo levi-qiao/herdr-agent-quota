@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    # A dependency advisory can land without anyone touching this repository.
+    - cron: "17 6 * * 1"
 
 permissions:
   contents: read
@@ -42,6 +45,18 @@ jobs:
 
       - name: Build release
         run: cargo build --release --locked
+
+  # This plugin reads credential stores and sends bearer tokens to provider
+  # billing endpoints, so a known-vulnerable dependency is a security issue,
+  # not a chore. The schedule catches advisories published after a merge.
+  audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit --deny warnings
 
   plugin-manifest:
     name: plugin manifest

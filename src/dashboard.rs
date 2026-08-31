@@ -19,22 +19,39 @@ pub fn run() -> Result<()> {
     result
 }
 
+/// Idle wait between frames. `poll` returns as soon as a key arrives, so this
+/// bounds only how long an unattended popup sleeps, never how fast it reacts.
+const IDLE_POLL: Duration = Duration::from_secs(1);
+
+/// Repaint only when the rendered frame actually changed.
+///
+/// The popup stays open for as long as the user leaves it there. Clearing and
+/// redrawing the whole screen several times a second flickers and re-reads
+/// every cached snapshot for nothing: the numbers only move when a refresh
+/// lands or a reset countdown ticks over a minute boundary.
 fn interactive(cache: &CacheStore) -> Result<()> {
+    let mut painted: Option<String> = None;
     loop {
-        print!(
-            "{}",
-            crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
-        );
-        print!("{}", crossterm::cursor::MoveTo(0, 0));
-        print_snapshot(cache)?;
-        print!("\r\nr refresh  q quit\r\n");
-        io::stdout().flush()?;
-        if event::poll(Duration::from_millis(250))? {
+        let frame = format!("{}\r\nr refresh  q quit\r\n", render_snapshot(cache)?);
+        if painted.as_deref() != Some(frame.as_str()) {
+            print!(
+                "{}{}{frame}",
+                crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+                crossterm::cursor::MoveTo(0, 0)
+            );
+            io::stdout().flush()?;
+            painted = Some(frame);
+        }
+        if event::poll(IDLE_POLL)? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                     KeyCode::Char('r') => {
                         crate::refresh::run(&Provider::ALL, true, false)?;
+                        // A forced refresh scrolls provider output over the
+                        // popup, so the next frame must repaint even if every
+                        // number came back identical.
+                        painted = None;
                     }
                     _ => {}
                 }
@@ -54,6 +71,15 @@ fn render_snapshot(cache: &CacheStore) -> Result<String> {
     for provider in Provider::ALL {
         let snapshot = cache.load(provider)?;
         output.push_str(&render_provider(provider, snapshot.as_ref(), now));
+        output.push_str("\r\n");
+    }
+    // The dashboard is the only surface with room for a scoped collector's
+    // full window set, including the 30d bucket the sidebar has no token for.
+    for provider in Provider::SCOPED {
+        let Some(snapshot) = cache.load(provider)? else {
+            continue;
+        };
+        output.push_str(&render_provider(provider, Some(&snapshot), now));
         output.push_str("\r\n");
     }
     Ok(output)
@@ -106,6 +132,39 @@ mod tests {
             rendered,
             "Claude WARN\r\n  5h 42% left reset 4h07m · 7d 73% left reset 2d3h"
         );
+    }
+
+    /// The sidebar has no monthly token, so the dashboard is where a Go plan's
+    /// 30d bucket has to surface. It appears only once something is cached.
+    #[test]
+    fn a_scoped_collector_appears_with_its_monthly_window_once_cached() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        assert!(!render_snapshot(&cache).unwrap().contains("OpenCode Go"));
+
+        cache
+            .save(&ProviderSnapshot::new(
+                Provider::OpenCodeGo,
+                vec![
+                    UsageWindow::new(
+                        WindowKind::FiveHour,
+                        10.0,
+                        Some(ResetAt::from_unix_seconds(3_600)),
+                    )
+                    .unwrap(),
+                    UsageWindow::new(
+                        WindowKind::Monthly,
+                        30.0,
+                        Some(ResetAt::from_unix_seconds(1_500_000)),
+                    )
+                    .unwrap(),
+                ],
+                0,
+            ))
+            .unwrap();
+        let rendered = render_snapshot(&cache).unwrap();
+        assert!(rendered.contains("OpenCode Go"), "{rendered}");
+        assert!(rendered.contains("30d 70% left"), "{rendered}");
     }
 
     #[test]

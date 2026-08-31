@@ -18,14 +18,18 @@
 # --row-gap 1 (default) leaves one blank row between agent panes; 0 packs them
 # flush. Herdr only accepts whole rows.
 #
-# Layout and gap are written to the plugin config directory before configure
-# runs, because Herdr plugin actions use a fixed command line.
+# Every option is written to the plugin config directory before configure runs.
+# Herdr executes a plugin action with a fixed command line in the server's own
+# environment, so exported variables never reach it; the config directory is
+# the only channel that does.
 #
 # The matching uninstall.sh first restores every configuration entry owned by
 # this plugin and only then unlinks it from Herdr.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/herdr-action.sh
+source "$ROOT/scripts/herdr-action.sh"
 WATCH_INTERVAL_SECONDS=""
 AGENTS=""
 SIDEBAR_LAYOUT=""
@@ -87,6 +91,10 @@ cargo build --release --locked --manifest-path "$ROOT/Cargo.toml"
 printf '%s\n' '→ linking and enabling the Herdr plugin'
 herdr plugin link "$ROOT" --enabled
 
+# Herdr runs a plugin action with a fixed command line, in the server's own
+# environment: variables exported around `herdr plugin action invoke` never
+# reach it. The plugin config directory is the only channel that does, so every
+# option travels through a file there rather than through `env`.
 write_plugin_pref() {
   local name="$1" value="$2"
   [[ -z "$value" ]] && return 0
@@ -97,14 +105,12 @@ write_plugin_pref() {
   printf '%s\n' "$value" > "$directory/$name"
 }
 
+write_plugin_pref agents "$AGENTS"
+write_plugin_pref watch-interval-seconds "$WATCH_INTERVAL_SECONDS"
 write_plugin_pref sidebar-layout "$SIDEBAR_LAYOUT"
 write_plugin_pref row-gap "$ROW_GAP"
 
 printf '%s\n' '→ installing reversible sidebar and provider collectors'
-env ${WATCH_INTERVAL_SECONDS:+HERDR_AGENT_QUOTA_WATCH_INTERVAL_SECONDS="$WATCH_INTERVAL_SECONDS"} \
-    ${AGENTS:+HERDR_AGENT_QUOTA_AGENTS="$AGENTS"} \
-    ${SIDEBAR_LAYOUT:+HERDR_AGENT_QUOTA_SIDEBAR_LAYOUT="$SIDEBAR_LAYOUT"} \
-    ${ROW_GAP:+HERDR_AGENT_QUOTA_ROW_GAP="$ROW_GAP"} \
-  herdr plugin action invoke herdr-agent-quota.configure
+invoke_action_and_wait configure || die "configuration action failed"
 
 printf '%s\n' 'Installed. Restart already-running agent sessions once so they load the refreshed hooks.'

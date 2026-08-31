@@ -7,43 +7,78 @@ use std::process::Command;
 
 const METADATA_TTL_MS: &str = "86400000";
 const MAX_METADATA_TOKENS: usize = 16;
-const METADATA_TOKEN_NAMES: [&str; 33] = [
-    "quota_state",
+/// Every name [`desired_tokens`] can produce, and nothing else.
+///
+/// This list is the comparison set for [`metadata_matches`] and the report set
+/// for [`metadata_report_names`]. A name that is listed but never produced is
+/// not free: it is compared on every refresh and it competes for Herdr's
+/// 16-token report budget. Add a name here only together with the field that
+/// fills it.
+const METADATA_TOKEN_NAMES: [&str; 21] = [
     "quota_provider",
     "quota_model",
     "quota_provider_model",
-    "quota_summary",
     "quota_context",
     "quota_cache",
     "quota_cache_ttl",
-    "quota_5h",
-    "quota_5h_label",
-    "quota_5h_eta",
+    "quota_cache_state",
     "quota_5h_normal",
-    "quota_5h_caution",
     "quota_5h_warning",
     "quota_5h_danger",
     "quota_5h_unknown",
-    "quota_week",
-    "quota_week_label",
-    "quota_week_eta",
     "quota_week_normal",
-    "quota_week_caution",
     "quota_week_warning",
     "quota_week_danger",
     "quota_week_unknown",
-    "quota_week_inline_label",
-    "quota_week_inline_eta",
     "quota_week_inline_normal",
-    "quota_week_inline_caution",
     "quota_week_inline_warning",
     "quota_week_inline_danger",
     "quota_week_inline_unknown",
     "quota_topic",
     "quota_error",
 ];
-const OBSOLETE_METADATA_TOKEN_NAMES: [&str; 2] = ["quota_icon", "quota_status"];
-const LEGACY_METADATA_TOKEN_NAMES: [&str; 2] = ["quota_badge", "quota_session"];
+/// Names a pane may still carry from an older build of this plugin. They are
+/// never produced again, so a report clears them until the pane is clean.
+const OBSOLETE_METADATA_TOKEN_NAMES: [&str; 15] = [
+    "quota_icon",
+    "quota_state",
+    "quota_status",
+    "quota_summary",
+    "quota_5h",
+    "quota_5h_label",
+    "quota_5h_percent",
+    "quota_5h_eta",
+    "quota_5h_caution",
+    "quota_week",
+    "quota_week_label",
+    "quota_week_percent",
+    "quota_week_eta",
+    "quota_week_caution",
+    "quota_week_inline_caution",
+];
+const LEGACY_METADATA_TOKEN_NAMES: [&str; 4] = [
+    "quota_badge",
+    "quota_session",
+    "quota_week_inline_label",
+    "quota_week_inline_eta",
+];
+/// Values that must reach the pane in the *same* report that changed them,
+/// even when the budget is tight: the identity, the live diagnostics, and the
+/// inline week variants, whose styling flips as soon as a 5h window appears.
+const ROWS_THAT_MUST_NOT_LAG: [&str; 12] = [
+    "quota_provider",
+    "quota_model",
+    "quota_provider_model",
+    "quota_topic",
+    "quota_context",
+    "quota_cache",
+    "quota_cache_ttl",
+    "quota_cache_state",
+    "quota_week_inline_normal",
+    "quota_week_inline_warning",
+    "quota_week_inline_danger",
+    "quota_week_inline_unknown",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentSession {
@@ -124,15 +159,6 @@ pub fn list_agent_state() -> Result<AgentState> {
         panes,
         working_providers: working_providers_from(&value),
     })
-}
-
-/// Return whether at least one pane for a provider is currently working.
-///
-/// This provider-specific helper only asks Herdr for agent metadata; it never
-/// reads terminal output. The global watcher uses [`list_agent_state`] so all
-/// providers share one inventory call per poll.
-pub fn provider_has_working_agent(provider: Provider) -> Result<bool> {
-    Ok(list_agent_state()?.working_providers.contains(&provider))
 }
 
 fn list_agent_value() -> Result<Value> {
@@ -306,33 +332,6 @@ fn collect_working_providers(value: &Value, providers: &mut Vec<Provider>) {
     }
 }
 
-/// Publish one provider-wide token set to every matching pane.
-///
-/// Kept as the compatibility entry point for callers that do not need
-/// session-specific model labels. The refresh path uses
-/// [`publish_pane_tokens`] so same-provider panes can differ.
-pub fn publish_tokens(
-    panes: &[AgentPane],
-    tokens: &[(Provider, MetadataTokens)],
-    sequence: u64,
-) -> Result<()> {
-    let pane_tokens = panes
-        .iter()
-        .filter_map(|pane| {
-            tokens
-                .iter()
-                .find(|(provider, _)| pane.harness.billing() == Some(*provider))
-                .map(|(_, values)| PaneTokens {
-                    pane_id: pane.pane_id.clone(),
-                    quota: PaneQuotaUpdate::Replace(Box::new(values.clone())),
-                    identity: None,
-                    context: None,
-                })
-        })
-        .collect::<Vec<_>>();
-    publish_pane_tokens(panes, &pane_tokens, sequence)
-}
-
 pub fn publish_pane_tokens(
     panes: &[AgentPane],
     tokens: &[PaneTokens],
@@ -434,6 +433,7 @@ fn desired_tokens(values: &MetadataTokens, topic: &str) -> BTreeMap<String, Stri
     insert_optional_token(&mut tokens, "quota_context", &values.quota_context);
     insert_optional_token(&mut tokens, "quota_cache", &values.quota_cache);
     insert_optional_token(&mut tokens, "quota_cache_ttl", &values.quota_cache_ttl);
+    insert_optional_token(&mut tokens, "quota_cache_state", &values.quota_cache_state);
     let week_base = week_style_base(&values.quota_5h);
     insert_severity_token(
         &mut tokens,
@@ -509,11 +509,21 @@ fn apply_context(tokens: &mut BTreeMap<String, String>, context: &ContextUsage, 
     } else {
         tokens.insert("quota_cache".to_string(), cache);
     }
-    let cache_ttl = crate::presentation::sidebar_cache_ttl(Some(context), now_unix);
-    if cache_ttl.is_empty() {
-        tokens.remove("quota_cache_ttl");
-    } else {
-        tokens.insert("quota_cache_ttl".to_string(), cache_ttl);
+    for (name, value) in [
+        (
+            "quota_cache_ttl",
+            crate::presentation::sidebar_cache_ttl(Some(context), now_unix),
+        ),
+        (
+            "quota_cache_state",
+            crate::presentation::sidebar_cache_state(Some(context), now_unix),
+        ),
+    ] {
+        if value.is_empty() {
+            tokens.remove(name);
+        } else {
+            tokens.insert(name.to_string(), value);
+        }
     }
 }
 
@@ -555,38 +565,15 @@ fn metadata_report_names(
     }
 
     // Herdr accepts at most sixteen token arguments. Reserve room for stale
-    // names first so an upgraded pane can actually clear them; unchanged
-    // cosmetic fields can be restored on the next bounded report.
+    // names first so an upgraded pane can actually clear them; an unchanged
+    // value is re-sent on the next bounded report instead.
     let active_capacity = MAX_METADATA_TOKENS.saturating_sub(cleanup_names.len());
-    for candidate in ["quota_summary", "quota_state", "quota_5h", "quota_week"] {
-        while names.len() > active_capacity {
-            let Some(index) = names.iter().position(|name| {
-                *name == candidate && pane.tokens.get(candidate) == desired.get(candidate)
-            }) else {
-                break;
-            };
-            names.remove(index);
-        }
-    }
     while names.len() > active_capacity {
         let Some(index) = names.iter().position(|name| {
+            // Dropping a name the pane still carries but no longer wants would
+            // leave that row on screen forever, so those are never given up.
             let must_clear = pane.tokens.contains_key(*name) && !desired.contains_key(*name);
-            !must_clear
-                && !matches!(
-                    *name,
-                    "quota_context"
-                        | "quota_model"
-                        | "quota_provider_model"
-                        | "quota_cache"
-                        | "quota_cache_ttl"
-                        | "quota_provider"
-                        | "quota_topic"
-                        | "quota_week_inline_normal"
-                        | "quota_week_inline_caution"
-                        | "quota_week_inline_warning"
-                        | "quota_week_inline_danger"
-                        | "quota_week_inline_unknown"
-                )
+            !must_clear && !ROWS_THAT_MUST_NOT_LAG.contains(name)
         }) else {
             break;
         };
@@ -622,9 +609,9 @@ fn insert_severity_token(
 
 fn severity_variant(severity: Option<crate::model::Severity>) -> &'static str {
     match severity.unwrap_or(crate::model::Severity::Unknown) {
+        crate::model::Severity::Normal => "normal",
         crate::model::Severity::Warning => "warning",
         crate::model::Severity::Danger => "danger",
-        crate::model::Severity::Normal | crate::model::Severity::Caution => "normal",
         crate::model::Severity::Unknown => "unknown",
     }
 }

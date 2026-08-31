@@ -22,7 +22,7 @@ fn integration_id(harness: Harness) -> Option<&'static str> {
         Harness::Grok => Some("grok"),
         Harness::OpenCode => Some("opencode"),
         Harness::Pi => Some("pi"),
-        Harness::Agy | Harness::Omp | Harness::Kimi => None,
+        Harness::Agy => None,
     }
 }
 

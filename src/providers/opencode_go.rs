@@ -22,7 +22,6 @@ use std::time::Duration;
 /// Official host and path. Credentials are only ever sent here; a redirect
 /// away from this host drops the request rather than following it.
 const USAGE_URL: &str = "https://opencode.ai/zen/go/v1/usage";
-const SOURCE: &str = "opencode-go-usage";
 
 /// `usage.rolling` is the five-hour bucket; the other two are optional.
 ///
@@ -88,9 +87,14 @@ pub fn parse_usage(value: &Value, now_unix: u64) -> Result<ProviderSnapshot, Pro
         }
     }
 
-    let mut snapshot = ProviderSnapshot::new(Provider::OpenCodeGo, windows, now_unix);
-    snapshot.source = SOURCE.to_string();
-    Ok(snapshot)
+    // `source` is the collector's cache identity for every other provider;
+    // overriding it here made this the one snapshot whose `source` did not
+    // match the file it lives in.
+    Ok(ProviderSnapshot::new(
+        Provider::OpenCodeGo,
+        windows,
+        now_unix,
+    ))
 }
 
 /// Percent from the API is a **used** percentage already scaled 0..=100.
@@ -165,7 +169,7 @@ mod tests {
     fn parses_the_deployed_rolling_weekly_monthly_shape() {
         let snapshot = parse_usage(&deployed_shape(), NOW).unwrap();
         assert_eq!(snapshot.provider, Provider::OpenCodeGo);
-        assert_eq!(snapshot.source, SOURCE);
+        assert_eq!(snapshot.source, Provider::OpenCodeGo.source());
         assert_eq!(
             window(&snapshot, WindowKind::FiveHour)
                 .unwrap()

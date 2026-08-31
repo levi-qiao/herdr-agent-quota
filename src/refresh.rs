@@ -724,11 +724,17 @@ mod tests {
         .with_account_id(Some("old-account".to_string()));
         let values =
             tokens_for_loaded_snapshot(Provider::Grok, Some(&snapshot), None, 1, None).unwrap();
-        assert_eq!(values.quota_summary, "unavailable");
+        assert_eq!(values.quota_week, "7d N/A");
+        assert_eq!(
+            values.quota_week_severity,
+            Some(crate::model::Severity::Unknown)
+        );
         assert_eq!(
             values.quota_error.as_deref(),
             Some("signed-in account changed")
         );
+        // A failure must not masquerade as a lapsed prompt cache.
+        assert_eq!(values.quota_cache_state, "");
     }
 
     #[test]

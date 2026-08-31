@@ -146,18 +146,16 @@ fn default_herdr_rows_become_plane_provider_usage_and_topic_lines() {
     let applied = add_quota_row(original).unwrap();
     assert!(applied.contains("$quota_provider_model"));
     assert!(applied.contains("bold = true"));
-    assert!(applied.contains("$quota_5h_normal"));
-    assert!(applied.contains("$quota_5h_caution"));
-    assert!(applied.contains("$quota_5h_warning"));
-    assert!(applied.contains("$quota_5h_danger"));
-    assert!(applied.contains("$quota_week_normal"));
-    assert!(applied.contains("$quota_week_caution"));
-    assert!(applied.contains("$quota_week_warning"));
-    assert!(applied.contains("$quota_week_danger"));
-    assert!(applied.contains("$quota_week_inline_normal"));
-    assert!(applied.contains("$quota_week_inline_caution"));
-    assert!(applied.contains("$quota_week_inline_warning"));
-    assert!(applied.contains("$quota_week_inline_danger"));
+    for base in ["$quota_5h", "$quota_week", "$quota_week_inline"] {
+        for band in ["normal", "warning", "danger", "unknown"] {
+            assert!(applied.contains(&format!("{base}_{band}")), "{base}_{band}");
+        }
+        // `Severity` has no caution band, so no token can ever fill this row.
+        assert!(
+            !applied.contains(&format!("{base}_caution")),
+            "{base}_caution is unreachable and must not be configured"
+        );
+    }
     assert!(!applied.contains("[\"$quota_summary\"]"));
     assert!(applied.contains("$quota_topic"));
     assert!(applied.contains("$quota_context"));
@@ -166,6 +164,7 @@ fn default_herdr_rows_become_plane_provider_usage_and_topic_lines() {
     assert!(applied.find("$quota_provider_model").unwrap() < applied.find("$quota_topic").unwrap());
     assert!(applied.contains("$quota_cache"));
     assert!(applied.contains("$quota_cache_ttl"));
+    assert!(applied.contains("$quota_cache_state"));
     assert!(!applied.contains("$quota_5h_label"));
     assert!(!applied.contains("$quota_5h_eta"));
     assert!(applied.contains("fg = \"#969eae\""));

@@ -83,6 +83,48 @@ fn claude_statusline_refreshes_rate_limits_with_the_configured_interval() {
     assert!(restored["statusLine"].get("refreshInterval").is_none());
 }
 
+/// `configure` rewrites the whole settings file, so it must hand the user's
+/// own keys back in the order they wrote them. Re-sorting a config file the
+/// plugin does not own is an unasked-for edit, and it shows up in their diffs.
+#[test]
+fn claude_install_keeps_the_users_own_settings_key_order() {
+    let home = tempfile::tempdir().unwrap();
+    let settings = home.path().join("settings.json");
+    let state = home.path().join("state");
+    std::fs::write(
+        &settings,
+        r#"{"zzzLast":1,"model":"opus","alwaysThinkingEnabled":true,"aaaFirst":2}"#,
+    )
+    .unwrap();
+
+    herdr_agent_quota::configure::claude::apply_at(
+        &settings,
+        &state,
+        std::path::Path::new("/usr/local/bin/herdr-agent-quota"),
+    )
+    .unwrap();
+
+    let written = std::fs::read_to_string(&settings).unwrap();
+    // Order the keys by where they actually landed in the rewritten file.
+    let mut order: Vec<(usize, &str)> = ["zzzLast", "model", "alwaysThinkingEnabled", "aaaFirst"]
+        .into_iter()
+        .map(|key| {
+            let at = written
+                .find(&format!("\"{key}\""))
+                .unwrap_or_else(|| panic!("configure dropped {key}:\n{written}"));
+            (at, key)
+        })
+        .collect();
+    order.sort_unstable();
+    let order: Vec<&str> = order.into_iter().map(|(_, key)| key).collect();
+    assert_eq!(
+        order,
+        vec!["zzzLast", "model", "alwaysThinkingEnabled", "aaaFirst"],
+        "configure re-sorted the user's settings file:\n{written}"
+    );
+    assert!(written.contains("claude-statusline"));
+}
+
 #[test]
 fn claude_preserves_a_user_owned_refresh_interval_on_first_install() {
     let directory = tempdir().unwrap();

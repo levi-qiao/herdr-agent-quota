@@ -6,6 +6,54 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Agy quota is no longer misread when a bucket reports `remaining_percent`
+  rather than `remaining_fraction`. The scale now comes from the key name; the
+  previous "below 1.0 means a fraction" heuristic rendered `remaining_percent:
+  1.0` — a nearly exhausted pool — as 100% remaining and coloured it green.
+- `./install.sh --agent`, `./uninstall.sh --agent`, and
+  `--watch-interval-seconds` now reach `configure`. Herdr runs a plugin action
+  with a fixed command line in the **server's** environment, so the variables
+  these scripts exported were silently dropped: `./uninstall.sh --agent grok`
+  removed every agent's configuration instead of Grok's. The selection now
+  travels through the plugin config directory, as the sidebar layout and row
+  gap already did, and `uninstall.sh` restores the previous value afterwards.
+- A single-pane agent event no longer discards the other panes' cached context
+  and model. The fetch only enriches the session the event named, and the save
+  path dropped every session it had not looked at, so a sibling pane's context
+  was cleared and then republished on the next refresh — one avoidable
+  metadata write, and one avoidable repaint, per cycle.
+- The dashboard pane now lists OpenCode Go, including the 30d window that the
+  sidebar has no token for. Both READMEs promised this; nothing rendered it.
+- `configure --apply` keeps the user's own key order in
+  `~/.claude/settings.json` instead of re-sorting the whole file.
+
+### Added
+
+- Grok plans billed monthly report a 30d window instead of failing to parse.
+  The sidebar's long-window slot carries the weekly allowance, or the monthly
+  one when a plan has no weekly bucket; the period label travels inside the
+  value (`30d 70% 17d8h`), and a weekly window always wins the slot when both
+  exist, so a monthly number is never displayed as a weekly one.
+- A lapsed prompt cache publishes `quota_cache_state` (`no cached`) instead of
+  sharing `quota_error` with real failures. Both render amber, so the two were
+  previously indistinguishable even though one is a normal state.
+- CI runs `cargo audit`, on pull requests and weekly.
+
+### Removed
+
+- `Severity::Caution` and its `quota_*_caution` sidebar tokens. The variant was
+  unreachable, so those rows could never be filled.
+- The `omp` and `kimi` harness names. Neither had a collector, a sidebar row,
+  or an integration; a detected pane produced no tokens at all, and a status
+  event still paid for one pane read to extract a topic that was then dropped.
+- `MetadataTokens` fields, and the metadata names behind them, that nothing
+  published: `quota_state`, `quota_icon`, `quota_status`, `quota_summary`, and
+  the per-window `_label` / `_percent` / `_eta` splits. They were compared on
+  every refresh and competed for Herdr's 16-token report budget. Panes still
+  carrying them are cleaned up on the next report.
+
 ## [1.1.0] - 2026-08-31
 
 ### Added

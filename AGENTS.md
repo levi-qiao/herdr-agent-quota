@@ -94,6 +94,27 @@ publishes without reading pane output, and exits after all agents settle. The
 interval defaults to 60 seconds and is bounded to 30 seconds–1 hour. Uninstall
 writes a stop marker so a detached watcher cannot survive a restore.
 
+## A plugin action cannot see the caller's environment
+
+Herdr runs `[[actions]]` with a fixed command line **in the server's own
+environment**. A variable exported around `herdr plugin action invoke` does not
+reach the action. Measured with a temporary `printenv` action: of 61 variables,
+the only Herdr-related ones present were `HERDR_PLUGIN_STATE_DIR` and
+`HERDR_PLUGIN_CONFIG_DIR`, both injected by Herdr; neither the probe marker nor
+`HERDR_AGENT_QUOTA_AGENTS` survived.
+
+So `src/prefs.rs` — small files under `HERDR_PLUGIN_CONFIG_DIR` — is the only
+channel an installer has for passing a choice to `configure`. Environment
+variables still work for a **direct CLI run** and are read first, but anything
+that must survive `install.sh` / `uninstall.sh` has to be written as a
+preference. This bit once: `./uninstall.sh --agent grok` passed the selection
+through `env`, it never arrived, and the default selection is *every* agent, so
+a partial uninstall removed everything.
+
+To re-check this on a new Herdr version, append a throwaway action running
+`printenv > /tmp/probe.txt`, reload with `herdr plugin disable && herdr plugin
+enable`, invoke it with a marker variable set, and read the file.
+
 ## Event payload shapes
 
 `HERDR_PLUGIN_EVENT_JSON` is nested and not uniform across events. `pane.focused`

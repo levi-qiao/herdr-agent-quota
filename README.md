@@ -100,13 +100,18 @@ herdr plugin action invoke herdr-agent-quota.refresh
 | --- | --- | --- | --- |
 | Claude Code | 5h + 7d | model, context, cache, statusLine `prompt_cache` expiry | Claude statusLine session |
 | OpenAI Codex | 5h + 7d | model, context, cache, estimated cache TTL, session summary | Canonical ChatGPT login; API keys are not subscription quota |
-| Grok CLI | 7d | model, context, cache | Canonical Grok login |
+| Grok CLI | 7d, or 30d on a monthly plan | model, context, cache | Canonical Grok login |
 | Agy / Antigravity | 5h + 7d | model, context, cache | Agy statusLine session and active model pool |
-| OpenCode | OpenCode Go 5h + 7d; 30d in dashboard | model and context for the exact local session | Go only for `opencode-go` with its matching key; other backends never borrow it |
+| OpenCode | OpenCode Go 5h + 7d; 30d in the dashboard pane | model and context for the exact local session | Go only for `opencode-go` with its matching key; other backends never borrow it |
 | Pi | Existing Codex quota when safely matched | model, context, cache; Anthropic recorded TTL, Codex estimated TTL | Only `openai-codex` OAuth with the same canonical Codex account id |
 
-Quota values are percentages remaining plus reset time. Context is percentage
-used. Cache is a session hit ratio where the upstream session format supports
+Quota values are percentages remaining plus reset time. The sidebar shows a 5h
+window and one longer window; the longer slot carries the weekly allowance, or
+the monthly one when a plan has no weekly bucket. The period label travels with
+the value (`7d 69% 6d0h`, `30d 70% 17d8h`), so a monthly number is never shown
+as a weekly one, and a weekly window always wins the slot when both exist. The
+dashboard pane lists every window a plan has, including 30d alongside 7d.
+Context is percentage used. Cache is a session hit ratio where the upstream session format supports
 one. TTL comes from a recorded expiry where one exists: Claude Code
 `prompt_cache.expires_at` (v2.1.251+) and Pi/Anthropic `cacheWrite1h`. Codex
 records neither a TTL nor an expiry - its rollout JSONL carries only the cache
@@ -158,7 +163,9 @@ numbers match would be very helpful. Issues and PRs are welcome.
   Each 5h/7d window is one compact token (`5h 0% 1h18m`), space-separated,
   because Herdr joins sibling tokens with ` · `. The remaining-percent color
   is green at 50%+, amber at 20–49%, and red below 20%. Packed still puts a
-  ` · ` between the two windows. `no cached` uses the same amber.
+  ` · ` between the two windows. A lapsed prompt cache shows `no cached` in
+  the same amber, in its own token: it is a normal state, and never shares a
+  token with the error raised when quota cannot be read at all.
 - Events read only their named pane with `--source visible`. Startup, focus,
   refresh, and the active-turn watcher never read pane output.
 - Metadata is written only when a token changed and remains under Herdr's

@@ -42,8 +42,18 @@ fn grok_fixture_requires_explicit_weekly_period() {
             .remaining_percent,
         57.5
     );
+    // A monthly pool is shown as 30d. The one thing it must never do is
+    // occupy the weekly window, which would understate the credits' lifetime.
     let monthly = fixture(include_str!("fixtures/grok/credits-monthly.json"));
-    assert!(grok::parse_billing_response(&monthly, 1).is_err());
+    let monthly = grok::parse_billing_response(&monthly, 1).unwrap();
+    assert!(monthly.window(WindowKind::Weekly).is_none());
+    assert_eq!(
+        monthly
+            .window(WindowKind::Monthly)
+            .unwrap()
+            .remaining_percent,
+        57.5
+    );
     let omitted = fixture(include_str!("fixtures/grok/credits-omitted-percent.json"));
     assert_eq!(
         grok::parse_billing_response(&omitted, 1)
