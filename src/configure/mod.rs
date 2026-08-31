@@ -6,7 +6,7 @@ mod integration;
 mod statusline;
 
 use crate::cache::CacheStore;
-use crate::cli::{AgentSelection, SidebarLayout, SidebarRowGap};
+use crate::cli::{AgentSelection, ConfigureOptions, PercentStyle, SidebarLayout, SidebarRowGap};
 use crate::model::Harness;
 use crate::prefs;
 use anyhow::{Context, Result};
@@ -29,9 +29,7 @@ pub fn run(
     apply: bool,
     uninstall: bool,
     agents: &[Harness],
-    watch_interval_seconds: Option<u64>,
-    sidebar_layout: Option<SidebarLayout>,
-    row_gap: Option<SidebarRowGap>,
+    options: ConfigureOptions,
 ) -> Result<()> {
     if apply || uninstall {
         std::env::var_os("HERDR_PLUGIN_STATE_DIR").context(
@@ -63,6 +61,7 @@ pub fn run(
             cache.clear_watch_interval()?;
             cache.clear_sidebar_layout()?;
             cache.clear_row_gap()?;
+            cache.clear_percent_style()?;
             for name in prefs::ALL {
                 prefs::clear(name)?;
             }
@@ -70,7 +69,8 @@ pub fn run(
     } else if apply {
         let cache = CacheStore::from_env()?;
         cache.clear_turn_watcher_stop()?;
-        let interval = watch_interval_seconds
+        let interval = options
+            .watch_interval_seconds
             .or_else(|| {
                 std::env::var("HERDR_AGENT_QUOTA_WATCH_INTERVAL_SECONDS")
                     .ok()
@@ -85,12 +85,18 @@ pub fn run(
         } else {
             cache.watch_interval_seconds()
         };
-        let layout = resolve_sidebar_layout(sidebar_layout, Some(&cache));
+        let layout = resolve_sidebar_layout(options.sidebar_layout, Some(&cache));
         cache.set_sidebar_layout(layout)?;
         prefs::write(prefs::SIDEBAR_LAYOUT, layout.as_str())?;
-        let gap = resolve_row_gap(row_gap, Some(&cache));
+        let gap = resolve_row_gap(options.row_gap, Some(&cache));
         cache.set_row_gap(gap)?;
         prefs::write(prefs::ROW_GAP, &gap.to_string())?;
+        // Rendering reads this at publish time, not install time, so the row
+        // layout is untouched: only the number inside a quota token changes.
+        let percent = resolve_percent_style(options.quota_percent, Some(&cache));
+        cache.set_percent_style(percent)?;
+        prefs::write(prefs::QUOTA_PERCENT, percent.as_str())?;
+        println!("Quota percentages show {} quota.", percent.suffix());
         herdr::apply(agents, layout, gap)?;
         if agents.contains(&Harness::Claude) {
             claude::apply_with_refresh_interval(interval)?;
@@ -104,9 +110,11 @@ pub fn run(
         integration::report_missing(agents);
     } else {
         let cache = CacheStore::from_env().ok();
-        let layout = resolve_sidebar_layout(sidebar_layout, cache.as_ref());
-        let gap = resolve_row_gap(row_gap, cache.as_ref());
+        let layout = resolve_sidebar_layout(options.sidebar_layout, cache.as_ref());
+        let gap = resolve_row_gap(options.row_gap, cache.as_ref());
+        let percent = resolve_percent_style(options.quota_percent, cache.as_ref());
         herdr::check(agents, layout, gap)?;
+        println!("Quota percentages show {} quota.", percent.suffix());
         if agents.contains(&Harness::Claude) {
             claude::check()?;
         }
@@ -130,6 +138,16 @@ fn resolve_sidebar_layout(
             prefs::read(prefs::SIDEBAR_LAYOUT).and_then(|value| SidebarLayout::parse(&value))
         })
         .or_else(|| cache.and_then(CacheStore::sidebar_layout))
+        .unwrap_or_default()
+}
+
+fn resolve_percent_style(
+    explicit: Option<PercentStyle>,
+    cache: Option<&CacheStore>,
+) -> PercentStyle {
+    PercentStyle::from_arg_or_env(explicit)
+        .or_else(|| prefs::read(prefs::QUOTA_PERCENT).and_then(|value| PercentStyle::parse(&value)))
+        .or_else(|| cache.and_then(CacheStore::percent_style))
         .unwrap_or_default()
 }
 

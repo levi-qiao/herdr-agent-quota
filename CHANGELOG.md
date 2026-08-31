@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Quota percentages can read as consumed instead of remaining. `--quota-percent
+  used` (on `./install.sh` and `herdr-agent-quota configure --apply`, or
+  `$HERDR_AGENT_QUOTA_PERCENT` for a direct CLI run) flips every 5h/7d/30d
+  number in the sidebar and the dashboard; `remaining` stays the default. The
+  sidebar token keeps its width — no `left`/`used` word rides along — and the
+  severity colour is still computed from the remaining quota, so red keeps
+  meaning "little runway". The choice is stored in the plugin state directory
+  as well as the config directory, because the Claude/Agy statusLine hooks are
+  launched by their harness with only `HERDR_PLUGIN_STATE_DIR` set.
+
 ### Fixed
 
 - Agy quota is no longer misread when a bucket reports `remaining_percent`

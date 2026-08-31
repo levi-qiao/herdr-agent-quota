@@ -20,9 +20,16 @@ pub const AGENTS: &str = "agents";
 pub const WATCH_INTERVAL_SECONDS: &str = "watch-interval-seconds";
 pub const SIDEBAR_LAYOUT: &str = "sidebar-layout";
 pub const ROW_GAP: &str = "row-gap";
+pub const QUOTA_PERCENT: &str = "quota-percent";
 
 /// Every preference a full uninstall must forget.
-pub const ALL: [&str; 4] = [AGENTS, WATCH_INTERVAL_SECONDS, SIDEBAR_LAYOUT, ROW_GAP];
+pub const ALL: [&str; 5] = [
+    AGENTS,
+    WATCH_INTERVAL_SECONDS,
+    SIDEBAR_LAYOUT,
+    ROW_GAP,
+    QUOTA_PERCENT,
+];
 
 fn directory() -> Option<PathBuf> {
     std::env::var_os("HERDR_PLUGIN_CONFIG_DIR").map(PathBuf::from)

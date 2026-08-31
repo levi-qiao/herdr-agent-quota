@@ -7,6 +7,7 @@
 #   ./install.sh --watch-interval-seconds 300
 #   ./install.sh --sidebar-layout stacked
 #   ./install.sh --row-gap 0
+#   ./install.sh --quota-percent used
 #
 # --agent installs only the agents you name (all, claude, codex, grok, agy,
 # opencode, pi). Anything you leave out gets no sidebar row, no statusLine entry
@@ -17,6 +18,9 @@
 #
 # --row-gap 1 (default) leaves one blank row between agent panes; 0 packs them
 # flush. Herdr only accepts whole rows.
+#
+# --quota-percent remaining (default) shows how much quota is left; used shows
+# how much has been consumed. The colour always follows what is left.
 #
 # Every option is written to the plugin config directory before configure runs.
 # Herdr executes a plugin action with a fixed command line in the server's own
@@ -34,6 +38,7 @@ WATCH_INTERVAL_SECONDS=""
 AGENTS=""
 SIDEBAR_LAYOUT=""
 ROW_GAP=""
+QUOTA_PERCENT=""
 
 while (($# > 0)); do
   case "$1" in
@@ -57,8 +62,13 @@ while (($# > 0)); do
       ROW_GAP="$2"
       shift 2
       ;;
+    --quota-percent)
+      (($# >= 2)) || { printf 'error: missing value for %s\n' "$1" >&2; exit 1; }
+      QUOTA_PERCENT="$2"
+      shift 2
+      ;;
     -h|--help)
-      sed -n '2,25p' "$0"
+      sed -n '2,29p' "$0"
       exit 0
       ;;
     *)
@@ -83,6 +93,10 @@ esac
 case "$ROW_GAP" in
   ""|0|1) ;;
   *) die "row-gap must be 0 or 1" ;;
+esac
+case "$QUOTA_PERCENT" in
+  ""|remaining|used) ;;
+  *) die "quota-percent must be remaining or used" ;;
 esac
 
 printf '%s\n' '→ building herdr-agent-quota'
@@ -109,6 +123,7 @@ write_plugin_pref agents "$AGENTS"
 write_plugin_pref watch-interval-seconds "$WATCH_INTERVAL_SECONDS"
 write_plugin_pref sidebar-layout "$SIDEBAR_LAYOUT"
 write_plugin_pref row-gap "$ROW_GAP"
+write_plugin_pref quota-percent "$QUOTA_PERCENT"
 
 printf '%s\n' '→ installing reversible sidebar and provider collectors'
 invoke_action_and_wait configure || die "configuration action failed"

@@ -1,4 +1,4 @@
-use crate::cli::{SidebarLayout, SidebarRowGap};
+use crate::cli::{PercentStyle, SidebarLayout, SidebarRowGap};
 use crate::model::{
     merge_omitted_window_list, BillingTarget, ContextUsage, Provider, ProviderSnapshot,
 };
@@ -18,6 +18,7 @@ const WATCH_INTERVAL_ENV: &str = "HERDR_AGENT_QUOTA_WATCH_INTERVAL_SECONDS";
 const WATCH_INTERVAL_FILE: &str = "watch-interval-seconds";
 const SIDEBAR_LAYOUT_FILE: &str = "sidebar-layout";
 const ROW_GAP_FILE: &str = "row-gap";
+const QUOTA_PERCENT_FILE: &str = "quota-percent";
 const MAX_STATUSLINE_SESSIONS: usize = 128;
 
 #[derive(Debug, Clone)]
@@ -438,6 +439,33 @@ impl CacheStore {
         }
     }
 
+    /// The percentage style every renderer reads.
+    ///
+    /// This one lives in the state directory rather than only in the plugin
+    /// config directory because the Claude/Agy statusLine hooks are launched
+    /// by their harness with just `HERDR_PLUGIN_STATE_DIR` set — the config
+    /// directory is not injected there, so a preference kept only in it would
+    /// be invisible to half the renderers.
+    pub fn percent_style(&self) -> Option<PercentStyle> {
+        fs::read_to_string(self.quota_percent_path())
+            .ok()
+            .as_deref()
+            .and_then(PercentStyle::parse)
+    }
+
+    pub fn set_percent_style(&self, style: PercentStyle) -> Result<()> {
+        self.ensure()?;
+        fs::write(self.quota_percent_path(), style.as_str()).context("write quota percent style")
+    }
+
+    pub fn clear_percent_style(&self) -> Result<()> {
+        match fs::remove_file(self.quota_percent_path()) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).context("remove quota percent style"),
+        }
+    }
+
     pub fn validate_watch_interval_seconds(seconds: u64) -> Result<u64> {
         Self::valid_watch_interval(seconds).with_context(|| {
             format!(
@@ -531,6 +559,10 @@ impl CacheStore {
 
     fn row_gap_path(&self) -> PathBuf {
         self.root.join(ROW_GAP_FILE)
+    }
+
+    fn quota_percent_path(&self) -> PathBuf {
+        self.root.join(QUOTA_PERCENT_FILE)
     }
 
     fn valid_watch_interval(seconds: u64) -> Option<u64> {

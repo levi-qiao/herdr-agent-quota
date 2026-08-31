@@ -1,4 +1,5 @@
 use crate::cache::CacheStore;
+use crate::cli::PercentStyle;
 use crate::model::{Provider, ProviderSnapshot};
 use crate::presentation::dashboard_summary;
 use anyhow::Result;
@@ -68,9 +69,10 @@ fn print_snapshot(cache: &CacheStore) -> Result<()> {
 fn render_snapshot(cache: &CacheStore) -> Result<String> {
     let mut output = String::from("Herdr Agent Quota\r\n=================\r\n");
     let now = CacheStore::now_unix();
+    let style = cache.percent_style().unwrap_or_default();
     for provider in Provider::ALL {
         let snapshot = cache.load(provider)?;
-        output.push_str(&render_provider(provider, snapshot.as_ref(), now));
+        output.push_str(&render_provider(provider, snapshot.as_ref(), now, style));
         output.push_str("\r\n");
     }
     // The dashboard is the only surface with room for a scoped collector's
@@ -79,7 +81,7 @@ fn render_snapshot(cache: &CacheStore) -> Result<String> {
         let Some(snapshot) = cache.load(provider)? else {
             continue;
         };
-        output.push_str(&render_provider(provider, Some(&snapshot), now));
+        output.push_str(&render_provider(provider, Some(&snapshot), now, style));
         output.push_str("\r\n");
     }
     Ok(output)
@@ -89,13 +91,14 @@ pub fn render_provider(
     provider: Provider,
     snapshot: Option<&ProviderSnapshot>,
     now_unix: u64,
+    style: PercentStyle,
 ) -> String {
     match snapshot {
         Some(snapshot) => format!(
             "{} {}\r\n  {}",
             provider.display_name(),
             snapshot.severity(now_unix).label(),
-            dashboard_summary(snapshot, now_unix)
+            dashboard_summary(snapshot, now_unix, style)
         ),
         None => format!("{} N/A\r\n  unavailable", provider.display_name()),
     }
@@ -127,7 +130,12 @@ mod tests {
             ],
             1,
         );
-        let rendered = render_provider(Provider::Claude, Some(&snapshot), 0);
+        let rendered = render_provider(
+            Provider::Claude,
+            Some(&snapshot),
+            0,
+            PercentStyle::default(),
+        );
         assert_eq!(
             rendered,
             "Claude WARN\r\n  5h 42% left reset 4h07m · 7d 73% left reset 2d3h"

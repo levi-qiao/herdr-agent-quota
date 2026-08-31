@@ -1,3 +1,4 @@
+use crate::cli::PercentStyle;
 use crate::model::{
     format_percent, long_window, window_in, Provider, ProviderSnapshot, ResetAt, Severity,
     UsageWindow, WindowKind,
@@ -30,13 +31,14 @@ pub struct MetadataTokens {
 
 impl MetadataTokens {
     pub fn from_snapshot(snapshot: &ProviderSnapshot, now_unix: u64) -> Self {
-        Self::from_snapshot_for_session(snapshot, now_unix, None)
+        Self::from_snapshot_for_session(snapshot, now_unix, None, PercentStyle::default())
     }
 
     pub fn from_snapshot_for_session(
         snapshot: &ProviderSnapshot,
         now_unix: u64,
         session_id: Option<&str>,
+        style: PercentStyle,
     ) -> Self {
         Self::from_snapshot_parts(
             snapshot,
@@ -44,6 +46,7 @@ impl MetadataTokens {
             snapshot.model_for_session(session_id),
             snapshot.context_for_session(session_id),
             snapshot.windows_for_session(session_id),
+            style,
         )
     }
 
@@ -59,6 +62,7 @@ impl MetadataTokens {
         snapshot: &ProviderSnapshot,
         now_unix: u64,
         session_id: Option<&str>,
+        style: PercentStyle,
     ) -> Self {
         let quota_model = match session_id {
             Some(session_id) => snapshot.model_for_session(Some(session_id)),
@@ -67,7 +71,7 @@ impl MetadataTokens {
         let context =
             session_id.and_then(|session_id| snapshot.context_for_session(Some(session_id)));
         let windows = snapshot.windows_for_session(session_id);
-        Self::from_snapshot_parts(snapshot, now_unix, quota_model, context, windows)
+        Self::from_snapshot_parts(snapshot, now_unix, quota_model, context, windows, style)
     }
 
     fn from_snapshot_parts(
@@ -76,10 +80,11 @@ impl MetadataTokens {
         model: Option<&str>,
         context: Option<&crate::model::ContextUsage>,
         windows: &[UsageWindow],
+        style: PercentStyle,
     ) -> Self {
         let quota_provider = snapshot.provider.display_name().to_string();
         let quota_model = model.unwrap_or_default().to_string();
-        let quota_5h = five_hour_slot(windows, snapshot.provider, now_unix);
+        let quota_5h = five_hour_slot(windows, snapshot.provider, now_unix, style);
         Self {
             quota_provider_model: provider_model_label(&quota_provider, &quota_model),
             quota_provider,
@@ -88,7 +93,7 @@ impl MetadataTokens {
                 .or_else(|| missing_five_hour_severity(snapshot.provider, &quota_5h)),
             quota_5h,
             quota_week: long_window(windows)
-                .map(|window| compact_window_parts(window, now_unix).rendered())
+                .map(|window| compact_window_parts(window, now_unix, style).rendered())
                 .unwrap_or_default(),
             quota_week_severity: long_window(windows)
                 .map(|window| Severity::for_window(window, now_unix)),
@@ -139,7 +144,11 @@ fn window_severity(windows: &[UsageWindow], kind: WindowKind, now_unix: u64) -> 
 /// The dashboard has room for every window, including a monthly one. The
 /// sidebar deliberately stays at 5h/7d: there is no monthly metadata token,
 /// and a 30d value must never be folded into a weekly one.
-pub fn dashboard_summary(snapshot: &ProviderSnapshot, now_unix: u64) -> String {
+pub fn dashboard_summary(
+    snapshot: &ProviderSnapshot,
+    now_unix: u64,
+    style: PercentStyle,
+) -> String {
     windows_summary(
         &snapshot.windows,
         &[
@@ -149,6 +158,7 @@ pub fn dashboard_summary(snapshot: &ProviderSnapshot, now_unix: u64) -> String {
         ],
         now_unix,
         true,
+        style,
     )
 }
 
@@ -156,12 +166,13 @@ fn windows_summary(
     windows: &[UsageWindow],
     kinds: &[WindowKind],
     now_unix: u64,
-    include_left: bool,
+    include_suffix: bool,
+    style: PercentStyle,
 ) -> String {
     kinds
         .iter()
         .filter_map(|kind| window_in(windows, *kind))
-        .map(|window| format_window(window, now_unix, include_left))
+        .map(|window| format_window(window, now_unix, include_suffix, style))
         .collect::<Vec<_>>()
         .join(" · ")
 }
@@ -169,9 +180,14 @@ fn windows_summary(
 /// The 5h slot: the window when the provider reported one, otherwise the
 /// provider's placeholder (Claude/Agy keep a visible `5h N/A`; the rest omit
 /// the row so the long window can fold onto context).
-fn five_hour_slot(windows: &[UsageWindow], provider: Provider, now_unix: u64) -> String {
+fn five_hour_slot(
+    windows: &[UsageWindow],
+    provider: Provider,
+    now_unix: u64,
+    style: PercentStyle,
+) -> String {
     match window_in(windows, WindowKind::FiveHour) {
-        Some(window) => compact_window_parts(window, now_unix).rendered(),
+        Some(window) => compact_window_parts(window, now_unix, style).rendered(),
         None => missing_five_hour_label(provider)
             .unwrap_or_default()
             .to_string(),
@@ -243,10 +259,19 @@ pub(crate) fn sidebar_cache_state(
         .unwrap_or_default()
 }
 
-fn format_window(window: &UsageWindow, now_unix: u64, include_left: bool) -> String {
-    let percent = format!("{}%", format_percent(window.remaining_percent));
-    let left = if include_left { " left" } else { "" };
-    let label = format!("{} {percent}{left}", window.kind.label());
+fn format_window(
+    window: &UsageWindow,
+    now_unix: u64,
+    include_suffix: bool,
+    style: PercentStyle,
+) -> String {
+    let percent = format!("{}%", format_percent(style.percent_of(window)));
+    let suffix = if include_suffix {
+        format!(" {}", style.suffix())
+    } else {
+        String::new()
+    };
+    let label = format!("{} {percent}{suffix}", window.kind.label());
     let Some(reset) = window.resets_at else {
         return label;
     };
@@ -272,10 +297,10 @@ impl WindowParts {
     }
 }
 
-fn compact_window_parts(window: &UsageWindow, now_unix: u64) -> WindowParts {
+fn compact_window_parts(window: &UsageWindow, now_unix: u64, style: PercentStyle) -> WindowParts {
     WindowParts {
         label: window.kind.label().to_string(),
-        percent: format!("{}%", format_percent(window.remaining_percent)),
+        percent: format!("{}%", format_percent(style.percent_of(window))),
         eta: window
             .resets_at
             .map(|reset| format_reset_eta(reset, now_unix))
@@ -327,7 +352,7 @@ mod tests {
             ],
             0,
         );
-        let dashboard = dashboard_summary(&snapshot, 0);
+        let dashboard = dashboard_summary(&snapshot, 0, PercentStyle::default());
         assert!(dashboard.contains("30d"), "{dashboard}");
 
         let sidebar = MetadataTokens::from_snapshot(&snapshot, 0);
@@ -406,17 +431,53 @@ mod tests {
             0,
         );
         assert_eq!(
-            dashboard_summary(&snapshot, 0),
+            dashboard_summary(&snapshot, 0, PercentStyle::default()),
             "5h 42% left reset 4h07m · 7d 73% left reset 2d3h"
         );
     }
 
     #[test]
     fn sidebar_windows_use_consistent_single_spacing() {
-        let five_hour = format_window(&window(WindowKind::FiveHour, 57.0, 14_820), 0, false);
-        let weekly = format_window(&window(WindowKind::Weekly, 75.0, 183_600), 0, false);
+        let five_hour = format_window(
+            &window(WindowKind::FiveHour, 57.0, 14_820),
+            0,
+            false,
+            PercentStyle::default(),
+        );
+        let weekly = format_window(
+            &window(WindowKind::Weekly, 75.0, 183_600),
+            0,
+            false,
+            PercentStyle::default(),
+        );
         assert_eq!(five_hour, "5h 43% reset 4h07m");
         assert_eq!(weekly, "7d 25% reset 2d3h");
+    }
+
+    /// The sidebar token keeps its width in both styles: no `left`/`used`
+    /// word rides along, because the sidebar truncates and the style is a
+    /// choice the user made for their own sidebar.
+    #[test]
+    fn the_used_style_flips_the_sidebar_number_but_not_its_width_or_colour() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![
+                window(WindowKind::FiveHour, 58.0, 14_820),
+                window(WindowKind::Weekly, 27.0, 183_600),
+            ],
+            0,
+        );
+        let remaining =
+            MetadataTokens::from_snapshot_for_session(&snapshot, 0, None, PercentStyle::Remaining);
+        assert_eq!(remaining.quota_5h, "5h 42% 4h07m");
+        assert_eq!(remaining.quota_week, "7d 73% 2d3h");
+
+        let used =
+            MetadataTokens::from_snapshot_for_session(&snapshot, 0, None, PercentStyle::Used);
+        assert_eq!(used.quota_5h, "5h 58% 4h07m");
+        assert_eq!(used.quota_week, "7d 27% 2d3h");
+        assert_eq!(used.quota_5h_severity, remaining.quota_5h_severity);
+        assert_eq!(used.quota_week_severity, remaining.quota_week_severity);
     }
 
     #[test]
@@ -481,13 +542,21 @@ mod tests {
             .session_models
             .insert("session-1".to_string(), "Sonnet".to_string());
 
-        let session_one =
-            MetadataTokens::from_snapshot_for_session(&snapshot, 0, Some("session-1"));
+        let session_one = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            Some("session-1"),
+            PercentStyle::default(),
+        );
         assert_eq!(session_one.quota_model, "Sonnet");
         assert_eq!(session_one.quota_provider_model, "Claude/Sonnet");
 
-        let session_two =
-            MetadataTokens::from_snapshot_for_session(&snapshot, 0, Some("session-2"));
+        let session_two = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            Some("session-2"),
+            PercentStyle::default(),
+        );
         assert_eq!(session_two.quota_model, "");
         assert_eq!(session_two.quota_provider_model, "Claude");
     }
@@ -501,12 +570,22 @@ mod tests {
                 .unwrap()
                 .with_cache(crate::model::CacheUsage::from_token_counts(200, 800, 100)),
         );
-        let values = MetadataTokens::from_snapshot_for_session(&snapshot, 0, Some("session-1"));
+        let values = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            Some("session-1"),
+            PercentStyle::default(),
+        );
         assert_eq!(values.quota_context, "context 43%");
         assert_eq!(values.quota_cache, "cache 72.7%");
         assert_eq!(
-            MetadataTokens::from_snapshot_for_session(&snapshot, 0, Some("session-2"))
-                .quota_context,
+            MetadataTokens::from_snapshot_for_session(
+                &snapshot,
+                0,
+                Some("session-2"),
+                PercentStyle::default()
+            )
+            .quota_context,
             ""
         );
     }
@@ -520,7 +599,8 @@ mod tests {
                     .unwrap()
                     .with_cache(crate::model::CacheUsage::from_token_counts(200, 800, 100)),
             ));
-        let values = MetadataTokens::from_snapshot_for_pane(&snapshot, 0, None);
+        let values =
+            MetadataTokens::from_snapshot_for_pane(&snapshot, 0, None, PercentStyle::default());
         assert_eq!(values.quota_provider_model, "Grok/grok-4.6");
         assert_eq!(values.quota_context, "");
         assert_eq!(values.quota_cache, "");
@@ -572,8 +652,12 @@ mod tests {
                 .with_cache(Some(cache)),
         );
 
-        let values =
-            MetadataTokens::from_snapshot_for_session(&snapshot, 1_000, Some("codex-session"));
+        let values = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            1_000,
+            Some("codex-session"),
+            PercentStyle::default(),
+        );
         assert_eq!(values.quota_cache, "cache 80.0%");
         assert_eq!(values.quota_cache_ttl, "ttl≈1h");
     }
@@ -645,7 +729,12 @@ mod tests {
             vec![window(WindowKind::Weekly, 31.0, 518_400)],
             0,
         );
-        let grok_pane = MetadataTokens::from_snapshot_for_pane(&grok, 0, Some("session-1"));
+        let grok_pane = MetadataTokens::from_snapshot_for_pane(
+            &grok,
+            0,
+            Some("session-1"),
+            PercentStyle::default(),
+        );
         assert_eq!(grok_pane.quota_week, "7d 69% 6d0h");
         assert_eq!(grok_pane.quota_5h, "");
 
@@ -657,7 +746,12 @@ mod tests {
             ],
             0,
         );
-        let codex_pane = MetadataTokens::from_snapshot_for_pane(&codex, 0, Some("session-1"));
+        let codex_pane = MetadataTokens::from_snapshot_for_pane(
+            &codex,
+            0,
+            Some("session-1"),
+            PercentStyle::default(),
+        );
         assert_eq!(codex_pane.quota_5h, "5h 60% 4h07m");
         assert_eq!(codex_pane.quota_week, "7d 69% 6d0h");
     }
@@ -684,15 +778,30 @@ mod tests {
             ],
         );
 
-        let work = MetadataTokens::from_snapshot_for_pane(&snapshot, 0, Some("work"));
+        let work = MetadataTokens::from_snapshot_for_pane(
+            &snapshot,
+            0,
+            Some("work"),
+            PercentStyle::default(),
+        );
         assert_eq!(work.quota_5h, "5h 82% 4h07m");
         assert_eq!(work.quota_week, "7d 90% 6d0h");
 
-        let personal = MetadataTokens::from_snapshot_for_pane(&snapshot, 0, Some("personal"));
+        let personal = MetadataTokens::from_snapshot_for_pane(
+            &snapshot,
+            0,
+            Some("personal"),
+            PercentStyle::default(),
+        );
         assert_eq!(personal.quota_5h, "5h 18% 4h07m");
         assert_eq!(personal.quota_week, "7d 10% 6d0h");
 
-        let unknown = MetadataTokens::from_snapshot_for_pane(&snapshot, 0, Some("other"));
+        let unknown = MetadataTokens::from_snapshot_for_pane(
+            &snapshot,
+            0,
+            Some("other"),
+            PercentStyle::default(),
+        );
         assert_eq!(unknown.quota_5h, "5h N/A");
         assert_eq!(unknown.quota_week, "");
     }

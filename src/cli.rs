@@ -78,6 +78,11 @@ pub enum Command {
         /// passes this through $HERDR_AGENT_QUOTA_SIDEBAR_LAYOUT.
         #[arg(long, value_enum)]
         sidebar_layout: Option<SidebarLayout>,
+        /// Whether quota percentages read as remaining (default) or used.
+        /// Herdr plugin actions run a fixed command line, so install.sh
+        /// passes this through $HERDR_AGENT_QUOTA_PERCENT.
+        #[arg(long, value_enum)]
+        quota_percent: Option<PercentStyle>,
         /// Blank rows between agent panes. `1` (default) separates them;
         /// `0` packs them flush. Herdr only accepts whole rows. install.sh
         /// writes this to the plugin config directory because plugin actions
@@ -139,6 +144,82 @@ pub enum SidebarLayout {
     Packed,
     /// One field per row (provider, model, cache, TTL, context, 5h, 7d).
     Stacked,
+}
+
+/// Every option `configure` accepts, from any of its channels.
+///
+/// They travel together because they are resolved together: a flag wins, then
+/// the environment, then the stored preference, then the last applied value.
+/// Grouping them keeps that resolution in one place as options are added.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ConfigureOptions {
+    pub watch_interval_seconds: Option<u64>,
+    pub sidebar_layout: Option<SidebarLayout>,
+    pub quota_percent: Option<PercentStyle>,
+    pub row_gap: Option<SidebarRowGap>,
+}
+
+/// Which side of a quota window a percentage reports.
+///
+/// The severity colour is always computed from the remaining quota, so a red
+/// token means "little left" in both styles; only the number flips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum PercentStyle {
+    /// `5h 42%` — how much of the window is still available.
+    #[default]
+    Remaining,
+    /// `5h 58%` — how much of the window has been consumed.
+    Used,
+}
+
+impl PercentStyle {
+    pub const ENV: &'static str = "HERDR_AGENT_QUOTA_PERCENT";
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Remaining => "remaining",
+            Self::Used => "used",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "remaining" | "left" => Some(Self::Remaining),
+            "used" => Some(Self::Used),
+            _ => None,
+        }
+    }
+
+    /// The percentage this style shows for a window that is `used` percent
+    /// consumed. Every window carries both numbers, so this is a choice of
+    /// field, not a second calculation that could drift.
+    pub fn percent_of(self, window: &crate::model::UsageWindow) -> f64 {
+        match self {
+            Self::Remaining => window.remaining_percent,
+            Self::Used => window.used_percent,
+        }
+    }
+
+    /// The word the dashboard puts after the number. The sidebar omits it:
+    /// a narrow sidebar truncates, and the style is the user's own choice.
+    pub fn suffix(self) -> &'static str {
+        match self {
+            Self::Remaining => "left",
+            Self::Used => "used",
+        }
+    }
+
+    /// Flag wins; otherwise the installer environment; otherwise unset, and
+    /// `configure` falls back to the stored preference.
+    pub fn from_arg_or_env(value: Option<Self>) -> Option<Self> {
+        if value.is_some() {
+            return value;
+        }
+        std::env::var(Self::ENV)
+            .ok()
+            .as_deref()
+            .and_then(Self::parse)
+    }
 }
 
 /// Blank terminal rows between expanded agent sidebar entries.
@@ -395,6 +476,23 @@ mod tests {
         assert_eq!(
             SidebarLayout::from_arg_or_env(Some(SidebarLayout::Stacked)),
             Some(SidebarLayout::Stacked)
+        );
+    }
+
+    #[test]
+    fn percent_style_parses_both_names_and_defaults_to_remaining() {
+        assert_eq!(PercentStyle::parse("used"), Some(PercentStyle::Used));
+        assert_eq!(
+            PercentStyle::parse("Remaining"),
+            Some(PercentStyle::Remaining)
+        );
+        // `left` is the word the dashboard prints, so accept it as an alias.
+        assert_eq!(PercentStyle::parse("left"), Some(PercentStyle::Remaining));
+        assert_eq!(PercentStyle::parse("nonsense"), None);
+        assert_eq!(PercentStyle::default(), PercentStyle::Remaining);
+        assert_eq!(
+            PercentStyle::from_arg_or_env(Some(PercentStyle::Used)),
+            Some(PercentStyle::Used)
         );
     }
 

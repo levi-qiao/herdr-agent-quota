@@ -155,6 +155,10 @@ numbers match would be very helpful. Issues and PRs are welcome.
 - Rows whose tokens are all empty collapse. Plugin-owned layouts use
   `row_gap = 1` (one blank row between panes). Pass `--row-gap 0` to pack them
   flush. Herdr only accepts whole rows; a user-owned `row_gap` is left alone.
+- Quota percentages read as remaining quota by default. `--quota-percent used`
+  flips every 5h/7d/30d number to what has been consumed instead; the sidebar
+  token keeps its width, and the color still follows what is left, so red
+  always means "little runway".
 - Provider/model, topic, cache/TTL, context, and limits appear only when known.
 - Tab names use primary text (`#eceef2`). The prompt is body text
   (`#c8cdd6`). Cache, TTL, and context stay muted (`#969eae`). Brand color is
@@ -171,15 +175,17 @@ numbers match would be very helpful. Issues and PRs are welcome.
 - Metadata is written only when a token changed and remains under Herdr's
   16-token limit.
 
-The default watcher interval is 60 seconds. Sidebar layout is `packed` and
-row gap is `1` unless you pass something else; both choices persist across a
-later repair:
+The default watcher interval is 60 seconds. Sidebar layout is `packed`, row gap
+is `1`, and percentages are `remaining` unless you pass something else; every
+choice persists across a later repair:
 
 ```sh
 ./install.sh --watch-interval-seconds 300
 ./install.sh --sidebar-layout stacked
 ./install.sh --row-gap 0
+./install.sh --quota-percent used
 herdr-agent-quota configure --apply --sidebar-layout packed --row-gap 1
+herdr-agent-quota configure --apply --quota-percent remaining
 ```
 
 ## Data and privacy

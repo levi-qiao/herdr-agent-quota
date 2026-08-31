@@ -140,6 +140,8 @@ OpenCode 1.18.20 上验证；成功响应结构来自
   5h、7d 各占一行。两种布局下空 token 都会折叠。
 - token 全空的行会折叠。插件自有布局默认 `row_gap = 1`（pane 之间一行空白）。
   `--row-gap 0` 贴紧。Herdr 只接受整行；用户自己写的 `row_gap` 不会被改。
+- 百分比默认显示**剩余**额度。`--quota-percent used` 把 5h/7d/30d 的数字换成
+  **已用**额度；侧栏 token 宽度不变，颜色依然按剩余量计算，红色永远表示快用完。
 - provider/model、topic、cache/TTL、context 和限额只在有可靠数据时显示。
 - tab 用主文字色（`#eceef2`）。prompt 用正文色（`#c8cdd6`）。cache、TTL、
   context 用 metadata 灰（`#969eae`）。品牌色只给供应商；模型用同色系的
@@ -154,13 +156,15 @@ OpenCode 1.18.20 上验证；成功响应结构来自
 - 只有 token 真正变化时才写 metadata，并始终遵守 Herdr 的 16-token 上限。
 
 默认 watcher 间隔为 60 秒，安装时可调整。侧栏布局默认 `packed`，间距默认 `1`，
-选择会写入插件状态，之后的 **Install / repair** 会沿用：
+百分比默认 `remaining`，选择会写入插件状态，之后的 **Install / repair** 会沿用：
 
 ```sh
 ./install.sh --watch-interval-seconds 300
 ./install.sh --sidebar-layout stacked
 ./install.sh --row-gap 0
+./install.sh --quota-percent used
 herdr-agent-quota configure --apply --sidebar-layout packed --row-gap 1
+herdr-agent-quota configure --apply --quota-percent remaining
 ```
 
 ## 数据与隐私

@@ -1,4 +1,5 @@
 use crate::cache::CacheStore;
+use crate::cli::PercentStyle;
 use crate::herdr::{
     current_focused_pane, list_agent_panes, list_agent_state, plugin_quota_present,
     publish_pane_tokens, refresh_pane_topic, AgentPane, PaneQuotaUpdate, PaneTokens,
@@ -221,9 +222,16 @@ fn handle_named_pane(cache: &CacheStore, pane: AgentPane, topic_pane: Option<&st
             refresh_selected(cache, &[provider], false, &panes)?;
         }
     }
-    let tokens = resolved_pane_tokens(cache, &mut panes[0], resolved, CacheStore::now_unix())?
-        .into_iter()
-        .collect::<Vec<_>>();
+    let style = cache.percent_style().unwrap_or_default();
+    let tokens = resolved_pane_tokens(
+        cache,
+        &mut panes[0],
+        resolved,
+        CacheStore::now_unix(),
+        style,
+    )?
+    .into_iter()
+    .collect::<Vec<_>>();
     publish_pane_tokens(&panes, &tokens, CacheStore::now_millis())
 }
 
@@ -232,6 +240,7 @@ fn resolved_pane_tokens(
     pane: &mut AgentPane,
     resolved: route::ResolvedPane,
     now: u64,
+    style: PercentStyle,
 ) -> Result<Option<PaneTokens>> {
     let route::ResolvedPane {
         resolution,
@@ -260,6 +269,7 @@ fn resolved_pane_tokens(
                     usable,
                     now,
                     pane.session.as_ref().and_then(|session| session.id()),
+                    style,
                 )
                 .map(|values| PaneQuotaUpdate::Replace(Box::new(values)))
             } else {
@@ -272,6 +282,7 @@ fn resolved_pane_tokens(
                     snapshot.as_ref(),
                     now,
                     pane.session.as_ref().and_then(|session| session.id()),
+                    style,
                 )
                 .map(|values| PaneQuotaUpdate::Replace(Box::new(values)))
             }
@@ -551,9 +562,10 @@ fn publish_resolved(
     }
     let mut tokens = Vec::new();
     let now = CacheStore::now_unix();
+    let style = cache.percent_style().unwrap_or_default();
     for pane in panes.iter_mut() {
         if let Some(pane_tokens) =
-            resolved_pane_tokens(cache, pane, route::resolve_with_identity(pane), now)?
+            resolved_pane_tokens(cache, pane, route::resolve_with_identity(pane), now, style)?
         {
             tokens.push(pane_tokens);
         }
@@ -654,8 +666,11 @@ fn tokens_for_provider(
     snapshot: Option<&crate::model::ProviderSnapshot>,
     now_unix: u64,
     session_id: Option<&str>,
+    style: PercentStyle,
 ) -> Option<MetadataTokens> {
-    snapshot.map(|snapshot| MetadataTokens::from_snapshot_for_pane(snapshot, now_unix, session_id))
+    snapshot.map(|snapshot| {
+        MetadataTokens::from_snapshot_for_pane(snapshot, now_unix, session_id, style)
+    })
 }
 
 fn tokens_for_loaded_snapshot(
@@ -664,9 +679,10 @@ fn tokens_for_loaded_snapshot(
     usable: Option<&ProviderSnapshot>,
     now_unix: u64,
     session_id: Option<&str>,
+    style: PercentStyle,
 ) -> Option<MetadataTokens> {
     match (usable, raw) {
-        (Some(snapshot), _) => tokens_for_provider(Some(snapshot), now_unix, session_id),
+        (Some(snapshot), _) => tokens_for_provider(Some(snapshot), now_unix, session_id, style),
         (None, Some(_)) => Some(MetadataTokens::unavailable(
             provider,
             "signed-in account changed",
@@ -710,7 +726,7 @@ mod tests {
 
     #[test]
     fn missing_snapshot_does_not_overwrite_sidebar_with_unavailable() {
-        let values = tokens_for_provider(None, 1, None);
+        let values = tokens_for_provider(None, 1, None, PercentStyle::default());
         assert!(values.is_none());
     }
 
@@ -722,8 +738,15 @@ mod tests {
             1,
         )
         .with_account_id(Some("old-account".to_string()));
-        let values =
-            tokens_for_loaded_snapshot(Provider::Grok, Some(&snapshot), None, 1, None).unwrap();
+        let values = tokens_for_loaded_snapshot(
+            Provider::Grok,
+            Some(&snapshot),
+            None,
+            1,
+            None,
+            PercentStyle::default(),
+        )
+        .unwrap();
         assert_eq!(values.quota_week, "7d N/A");
         assert_eq!(
             values.quota_week_severity,
