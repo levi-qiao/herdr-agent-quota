@@ -74,18 +74,25 @@ herdr plugin action invoke herdr-agent-quota.refresh
 | Harness | Subscription quota | Exact-session diagnostics | Attribution rule |
 | --- | --- | --- | --- |
 | Claude Code | 5h + 7d | model, context, cache, statusLine `prompt_cache` expiry | Claude statusLine session |
-| OpenAI Codex | 5h + 7d | model, context, cache, session summary | Canonical ChatGPT login; API keys are not subscription quota |
+| OpenAI Codex | 5h + 7d | model, context, cache, estimated cache TTL, session summary | Canonical ChatGPT login; API keys are not subscription quota |
 | Grok CLI | 7d | model, context, cache | Canonical Grok login |
 | Agy / Antigravity | 5h + 7d | model, context, cache | Agy statusLine session and active model pool |
 | OpenCode | OpenCode Go 5h + 7d; 30d in dashboard | model and context for the exact local session | Go only for `opencode-go` with its matching key; other backends never borrow it |
-| Pi | Existing Codex quota when safely matched | model, context, cache; Anthropic recorded TTL | Only `openai-codex` OAuth with the same canonical Codex account id |
+| Pi | Existing Codex quota when safely matched | model, context, cache; Anthropic recorded TTL, Codex estimated TTL | Only `openai-codex` OAuth with the same canonical Codex account id |
 
 Quota values are percentages remaining plus reset time. Context is percentage
 used. Cache is a session hit ratio where the upstream session format supports
-one. TTL is shown only when a recorded expiry is present: Claude Code
-`prompt_cache.expires_at` (v2.1.251+) and Pi/Anthropic `cacheWrite1h`. Codex,
-Grok, Agy, OpenCode, and other Pi backends have no cache-entry expiry in their
-local contracts, so they keep cache hit rate and leave TTL blank.
+one. TTL comes from a recorded expiry where one exists: Claude Code
+`prompt_cache.expires_at` (v2.1.251+) and Pi/Anthropic `cacheWrite1h`. Codex
+records neither a TTL nor an expiry - its rollout JSONL carries only the cache
+token counts and the request timestamp - so the sidebar estimates it as the
+30 minute `prompt_cache_options.ttl` that the Responses API documents as its
+default and only supported value, anchored to the last recorded request. It is
+labelled `ttl≈` like every other countdown and it is an estimate: a changed
+prefix, a compaction, or a changed tool/system definition can drop the hit rate
+before that timer runs out. Grok, Agy, OpenCode, and other Pi backends have no
+cache-entry expiry and no documented TTL in their local contracts, so they keep
+cache hit rate and leave TTL blank.
 
 Pi reads only the absolute JSONL path reported by Herdr under `~/.pi/agent` or
 `PI_CODING_AGENT_DIR`. It does not scan every session. API-key sessions are

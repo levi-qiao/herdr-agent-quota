@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Codex now publishes an estimated prompt cache TTL. The rollout JSONL records
+  no TTL and no expiry, so the countdown is the documented 30 minute
+  `prompt_cache_options.ttl` anchored to the timestamp of the last recorded
+  request. The same estimate covers Pi `openai-codex` sessions, anchored to the
+  latest assistant message with cache activity. `cache_write_input_tokens` is
+  not used as the anchor: ChatGPT-backed sessions report 0 there even while
+  cached reads are large.
+
 ### Changed
 
 - Claude cache TTL now comes from statusLine `prompt_cache.expires_at`
@@ -26,11 +36,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Notes
 
-- Cache TTL is published only from a recorded expiry: Claude Code
-  `prompt_cache.expires_at` and Pi/Anthropic `cacheWrite1h`. Codex, Grok, Agy,
-  OpenCode, and other Pi backends have no entry expiry in their local
-  contracts, so they keep cache hit rate and leave TTL blank rather than
-  guessing a one-hour countdown.
+- Recorded expiries still win where they exist: Claude Code
+  `prompt_cache.expires_at` and Pi/Anthropic `cacheWrite1h`. Codex is the one
+  place where a documented, model-independent TTL makes an estimate worth
+  publishing. Grok, Agy, OpenCode, and other Pi backends have neither an entry
+  expiry nor a documented TTL in their local contracts, so they keep cache hit
+  rate and leave TTL blank rather than guessing a one-hour countdown.
 
 ## [1.0.0] - 2026-08-29
 

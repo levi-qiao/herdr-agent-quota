@@ -451,9 +451,34 @@ fn usage_counters(usage: &Value) -> Option<UsageCounters> {
 }
 
 fn cache_activity(branch: &[&Value], provider_id: &str) -> Option<CacheActivity> {
-    if provider_id != "anthropic" {
-        return None;
+    match provider_id {
+        "anthropic" => anthropic_cache_activity(branch, provider_id),
+        // Codex records no TTL and no expiry, so the estimate is the
+        // documented 30 minute prompt cache lifetime anchored to the last
+        // request that touched the cache. Pi only reports `cacheRead` for this
+        // provider; `cacheWrite` stays 0 even on a warm session.
+        "openai-codex" => codex_cache_activity(branch, provider_id),
+        _ => None,
     }
+}
+
+fn codex_cache_activity(branch: &[&Value], provider_id: &str) -> Option<CacheActivity> {
+    let last_activity_unix = branch.iter().rev().find_map(|entry| {
+        if entry.pointer("/message/provider").and_then(Value::as_str) != Some(provider_id) {
+            return None;
+        }
+        let usage = assistant_usage(entry)?;
+        (usage.cache_read > 0 || usage.cache_write > 0)
+            .then(|| message_started_at(entry))
+            .flatten()
+    })?;
+    Some(CacheActivity {
+        ttl_seconds: crate::providers::codex::CODEX_PROMPT_CACHE_TTL_SECONDS,
+        last_activity_unix,
+    })
+}
+
+fn anthropic_cache_activity(branch: &[&Value], provider_id: &str) -> Option<CacheActivity> {
     let mut ttl_seconds = None;
     let mut last_activity_unix = None;
     for entry in branch.iter().rev() {
@@ -770,6 +795,25 @@ mod tests {
             cache_activity(&branch, "anthropic").unwrap().ttl_seconds,
             5 * 60
         );
+    }
+
+    #[test]
+    fn codex_cache_ttl_estimates_thirty_minutes_from_the_latest_cached_request() {
+        let entries = vec![
+            serde_json::json!({"type":"message","id":"first","parentId":null,"message":{"role":"assistant","provider":"openai-codex","model":"model-a","stopReason":"stop","timestamp":1_700_000_000_000_u64,"usage":{"cacheRead":0,"cacheWrite":0,"totalTokens":100}}}),
+            serde_json::json!({"type":"message","id":"cached","parentId":"first","message":{"role":"assistant","provider":"openai-codex","model":"model-a","stopReason":"stop","timestamp":1_700_000_060_000_u64,"usage":{"cacheRead":800,"cacheWrite":0,"totalTokens":900}}}),
+        ];
+        let branch = active_branch(&entries).unwrap();
+        let activity = cache_activity(&branch, "openai-codex").unwrap();
+        assert_eq!(
+            activity.ttl_seconds,
+            crate::providers::codex::CODEX_PROMPT_CACHE_TTL_SECONDS
+        );
+        assert_eq!(activity.last_activity_unix, 1_700_000_060);
+
+        let cold = vec![entries[0].clone()];
+        let branch = active_branch(&cold).unwrap();
+        assert!(cache_activity(&branch, "openai-codex").is_none());
     }
 
     #[test]

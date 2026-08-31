@@ -25,6 +25,16 @@ const WEEKLY_WINDOW_MINUTES: u64 = 7 * 24 * 60;
 const ROLLOUT_TAIL_BYTES: u64 = 256 * 1024;
 const ROLLOUT_HEAD_BYTES: u64 = 256 * 1024;
 const CODEX_CONTEXT_BASELINE_TOKENS: u64 = 12_000;
+/// Prompt cache lifetime assumed for a Codex request.
+///
+/// Codex never records a TTL or an expiry: the rollout JSONL only carries
+/// `cached_input_tokens` / `cache_write_input_tokens` and the request
+/// timestamp, and the `prompt_cache_options` the Responses API returns is
+/// dropped by the Codex SSE parser before it reaches disk. OpenAI documents
+/// `30m` as the default and currently only supported `prompt_cache_options.ttl`,
+/// so the sidebar anchors that TTL to the last recorded request. This is an
+/// estimate, not a server-reported expiry — the sidebar labels it `ttl≈`.
+pub(crate) const CODEX_PROMPT_CACHE_TTL_SECONDS: u64 = 30 * 60;
 
 pub fn parse_rate_limits(
     value: &Value,
@@ -504,7 +514,17 @@ fn parse_rollout_observation(text: &str, session_id: &str) -> Option<RolloutObse
                 cache.read_tokens,
                 cache.creation_tokens,
             );
-            cache.with_session_totals(totals, session_id, 0)
+            let cache = cache.with_session_totals(totals, session_id, 0);
+            // Every request refreshes the prefix cache, so the entry's own
+            // timestamp is the anchor. `cache_write_input_tokens` stays 0 on
+            // ChatGPT-backed sessions even while reads are large, so it cannot
+            // be used to pick the anchor.
+            match parse_rollout_timestamp(&entry) {
+                Some(requested_at) => {
+                    cache.with_ttl_estimate(CODEX_PROMPT_CACHE_TTL_SECONDS, requested_at)
+                }
+                None => cache,
+            }
         });
         let context_value = ContextUsage::new(used.clamp(0.0, 100.0))
             .ok()?
@@ -516,6 +536,14 @@ fn parse_rollout_observation(text: &str, session_id: &str) -> Option<RolloutObse
         context,
         windows,
     })
+}
+
+fn parse_rollout_timestamp(entry: &Value) -> Option<u64> {
+    entry
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(ResetAt::parse_rfc3339)
+        .map(ResetAt::unix_seconds)
 }
 
 fn parse_rollout_model(text: &str) -> Option<String> {
@@ -886,6 +914,36 @@ mod tests {
         assert_eq!(cache.creation_tokens, 100);
         assert_eq!(cache.session_id.as_deref(), Some("session-1"));
         assert_eq!(cache.session_totals.unwrap().hit_percent, 72.72727272727273);
+        assert_eq!(cache.ttl_seconds, Some(CODEX_PROMPT_CACHE_TTL_SECONDS));
+        assert_eq!(cache.last_activity_unix, Some(1_787_711_322));
+        assert_eq!(cache.expires_at_unix, None);
+    }
+
+    #[test]
+    fn rollout_cache_without_a_timestamp_has_no_ttl_estimate() {
+        let observation = parse_rollout_observation(
+            &format!(
+                "{}\n",
+                serde_json::to_string(&json!({
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "info": {
+                            "last_token_usage": {"total_tokens": 50_000},
+                            "total_token_usage": {
+                                "input_tokens": 1_000,
+                                "cached_input_tokens": 800
+                            },
+                            "model_context_window": 100_000
+                        }
+                    }
+                }))
+                .unwrap()
+            ),
+            "session-1",
+        )
+        .unwrap();
+        let cache = observation.context.unwrap().cache.unwrap();
         assert_eq!(cache.ttl_seconds, None);
         assert_eq!(cache.last_activity_unix, None);
     }
