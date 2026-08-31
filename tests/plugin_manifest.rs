@@ -43,3 +43,48 @@ fn settings_are_edited_in_a_pane_that_inherits_the_plugin_environment() {
     assert!(pane.contains(" settings\"]"), "{pane}");
     assert!(pane.contains("placement = \"popup\""), "{pane}");
 }
+
+/// The pane draws one row per option and cannot fold them, so the popup has to
+/// be tall enough for the whole list. A default popup is 24 rows; the list is
+/// longer than that, and an option below the fold is an option nobody finds.
+#[test]
+fn the_settings_popup_is_tall_enough_for_every_option() {
+    let manifest = include_str!("../herdr-plugin.toml");
+    let pane = manifest
+        .split("[[panes]]")
+        .find(|pane| pane.contains("id = \"settings\""))
+        .unwrap();
+    let height: usize = pane
+        .lines()
+        .find_map(|line| line.strip_prefix("height = "))
+        .expect("the settings popup declares a height")
+        .trim()
+        .parse()
+        .unwrap();
+    // Three section headers, seven choices, seven fields, six agents, and the
+    // six lines of chrome `render` reserves.
+    assert!(height >= 3 + 7 + 7 + 6 + 6, "height = {height}");
+}
+
+/// Herdr accepts a plugin-owned agent view only from `plugin:<manifest id>`
+/// and answers `plugin_not_found` for anything else, so the source the plugin
+/// sends and the id it is installed under have to be the same string.
+#[test]
+fn the_agent_view_source_matches_the_manifest_id() {
+    let manifest = include_str!("../herdr-plugin.toml");
+    let id = manifest
+        .lines()
+        .find_map(|line| line.strip_prefix("id = "))
+        .expect("the manifest declares an id")
+        .trim()
+        .trim_matches('"');
+    assert_eq!(id, "herdr-agent-quota");
+    let source = include_str!("../src/herdr.rs")
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("const AGENT_VIEW_SOURCE: &str = "))
+        .expect("the plugin declares an agent view source")
+        .trim()
+        .trim_end_matches(';')
+        .trim_matches('"');
+    assert_eq!(source, format!("plugin:{id}"));
+}

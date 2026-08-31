@@ -16,8 +16,9 @@ fn install_herdr_stub(state: &Path, agent_list: &str) -> (PathBuf, PathBuf) {
     fs::write(
         &executable,
         format!(
-            "#!/bin/sh\nif [ \"$1 $2\" = \"agent list\" ]; then\n  printf '%s\\n' '{}'\nelif [ \"$1 $2\" = \"pane read\" ]; then\n  printf '%s\\n' \"$*\" >> '{}'\nelif [ \"$1 $2\" = \"pane report-metadata\" ]; then\n  printf '%s\\n' \"$*\" >> '{}'\nfi\n",
+            "#!/bin/sh\nif [ \"$1 $2\" = \"agent list\" ]; then\n  printf '%s\\n' '{}'\nelif [ \"$1 $2\" = \"pane read\" ]; then\n  printf '%s\\n' \"$*\" >> '{}'\nelif [ \"$1 $2\" = \"pane report-metadata\" ]; then\n  printf '%s\\n' \"$*\" >> '{}'\nelif [ \"$1 $2\" = \"notification show\" ]; then\n  printf '%s\\n' \"$*\" >> '{}'\nfi\n",
             agent_list,
+            log.display(),
             log.display(),
             log.display()
         ),
@@ -1008,12 +1009,85 @@ fn focus_on_an_opencode_pane_does_not_refresh_collectors() {
     assert_no_original_four_collection(state.path(), &herdr_log, &codex_log);
 }
 
+/// The whole alert path, end to end: the threshold on disk, a snapshot below
+/// it, and the one `herdr notification show` it is allowed to produce.
+#[test]
+fn a_low_quota_notifies_once_and_re_arms_only_after_recovering() {
+    let state = tempdir().unwrap();
+    let (herdr_stub, herdr_log) = install_herdr_stub(
+        state.path(),
+        r#"{"result":{"agents":[{"agent":"claude","pane_id":"w1:p1","tokens":{}}]}}"#,
+    );
+    fs::create_dir_all(state.path()).unwrap();
+    fs::write(state.path().join("low-quota-alert"), "20%").unwrap();
+
+    let notifications = || {
+        fs::read_to_string(&herdr_log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.starts_with("notification show"))
+            .count()
+    };
+    let quota = |five_hour: f64, seven_day: f64| {
+        format!(
+            r#"{{"rate_limits":{{"five_hour":{{"used_percentage":{five_hour}}},"seven_day":{{"used_percentage":{seven_day}}}}}}}"#
+        )
+    };
+
+    // The statusLine collector only caches; publishing, and so warning, is the
+    // refresh that follows it.
+    let observe = |used_five_hour: f64, used_seven_day: f64| {
+        run_claude_collector(
+            state.path(),
+            &herdr_stub,
+            quota(used_five_hour, used_seven_day).as_bytes(),
+        );
+        run_claude_refresh(state.path(), &herdr_stub);
+    };
+
+    // 88% of the weekly window spent leaves 12, which is under the threshold.
+    observe(10.0, 88.0);
+    assert_eq!(notifications(), 1, "{:?}", fs::read_to_string(&herdr_log));
+
+    // Still low: nothing new to say.
+    observe(20.0, 91.0);
+    assert_eq!(notifications(), 1);
+
+    // Back above the threshold, then below it again: one more warning.
+    observe(10.0, 30.0);
+    assert_eq!(notifications(), 1);
+    observe(10.0, 95.0);
+    assert_eq!(notifications(), 2);
+}
+
+/// The default has to be silence: a plugin that starts notifying after an
+/// upgrade is a plugin people turn off.
+#[test]
+fn no_alert_threshold_means_no_notification_however_low_the_quota_is() {
+    let state = tempdir().unwrap();
+    let (herdr_stub, herdr_log) = install_herdr_stub(
+        state.path(),
+        r#"{"result":{"agents":[{"agent":"claude","pane_id":"w1:p1","tokens":{}}]}}"#,
+    );
+    run_claude_collector(
+        state.path(),
+        &herdr_stub,
+        br#"{"rate_limits":{"five_hour":{"used_percentage":100.0},"seven_day":{"used_percentage":100.0}}}"#,
+    );
+    run_claude_refresh(state.path(), &herdr_stub);
+    let log = fs::read_to_string(&herdr_log).unwrap_or_default();
+    assert!(!log.contains("notification show"), "{log}");
+}
+
+/// The pane's tokens are exactly what a previous publish left behind, sort key
+/// included: this asserts the steady state, where nothing has changed and so
+/// nothing may be written.
 #[test]
 fn claude_collector_does_not_republish_unchanged_quota() {
     let state = tempdir().unwrap();
     let (herdr_stub, herdr_log) = install_herdr_stub(
         state.path(),
-        r#"{"result":{"agents":[{"agent":"claude","pane_id":"w1:p1","tokens":{"quota_provider":"Claude","quota_provider_model":"Claude","quota_5h_warning":"5h 42%","quota_week_normal":"7d 73%"}}]}}"#,
+        r#"{"result":{"agents":[{"agent":"claude","pane_id":"w1:p1","tokens":{"quota_provider":"Claude","quota_provider_model":"Claude","quota_5h_warning":"5h 42%","quota_week_normal":"7d 73%","quota_headroom":"042"}}]}}"#,
     );
 
     let input = br#"{

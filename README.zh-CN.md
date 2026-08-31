@@ -97,6 +97,8 @@ Agent quota settings
     Row gap         <     1     > one blank row between panes
     Watch interval  <    1m     > polled while an agent is working
     Brand colors    <    on     > provider and model in agent hues
+    Agent order     <  default  > Herdr sorts the agent panel
+    Low quota alert <    off    > no notification
   ─ Fields ───
     [x] topic   [x] model   [x] cache   [x] ttl
     [x] context [x] 5h      [x] 7d
@@ -115,11 +117,22 @@ Agent quota settings
 Fields 是可选的额度字段。供应商名和 error token 永远显示：一行说不清自己属于哪个
 订阅、或者把"额度为什么读不到"藏起来，比不显示这行更糟。
 
+**Agent order** 选 `quota` 会把额度最少的 agent 排到 Herdr Agent 面板最上面。做法是
+交给 Herdr 一个声明式 agent view，按插件发布的隐藏 token `quota_headroom` 排序，所以
+排序依据就是侧边栏上能看到的那个数——5h 和 7d 里更紧的那个。Herdr 全局只保留一个这样
+的 view，打开它就会顶掉你自己的 `ui.agent_panel_sort`，改回 `default` 或者卸载插件都会
+把面板还回去。这个 view 不跨 Herdr 重启，插件的 startup 钩子会重新装上。
+
+**Low quota alert** 在某个供应商的剩余额度掉到所选百分比及以下时，按供应商通知一次。
+只要还低着就不再响，等额度回到阈值以上之后再掉下来才会再通知一次——窗口重置后重新用完
+会重新提醒。默认 `off`，不发任何通知。
+
 同样的选项也可以从命令行给：
 
 ```sh
 ./install.sh --fields topic,model,context,5h,7d
 ./install.sh --brand-colors off
+./install.sh --agent-order quota --low-quota-alert 10
 herdr-agent-quota configure --apply --fields all --brand-colors on
 ```
 

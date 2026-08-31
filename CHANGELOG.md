@@ -8,6 +8,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `--agent-order quota` sorts Herdr's Agent panel by the least quota left, so
+  the agent closest to its limit is at the top. It is a Herdr `agent.view.set`
+  owned by this plugin, sorted on a new `quota_headroom` token — the remaining
+  percentage of the tighter of the pane's 5h and 7d windows, zero-padded so
+  Herdr's ordering of the token text is also its numeric ordering. The token is
+  published for every pane whose quota is known, whether or not the order is
+  enabled, because nothing renders it: that makes changing the order a
+  Herdr-side toggle rather than a metadata write to every pane, and it costs no
+  extra writes, since the value only moves when a quota token beside it moves
+  anyway. Herdr keeps one Agent view, so this replaces the user's own
+  `ui.agent_panel_sort` until it is set back to `default`; a full uninstall
+  hands the panel back. The view does not survive a Herdr restart, so the
+  plugin's startup hook re-applies it — and only when it is this plugin's to
+  re-apply, leaving a view someone else owns alone.
+- `--low-quota-alert <percent>` shows one Herdr notification when a provider's
+  remaining quota falls to that percentage or below. One warning per provider,
+  not per pane; silent for as long as the quota stays low; re-armed only by
+  recovering above the threshold, so a window that resets and is spent again
+  warns again. A provider with no pane in a pass keeps its state, so closing
+  and reopening a pane is not a way to be warned twice. `off` is the default:
+  a plugin that starts notifying after an upgrade is a plugin people turn off.
+- A `startup` subcommand, now the plugin's startup hook. It restores the Herdr
+  state this plugin owns before running the refresh the hook used to run on its
+  own. Startup hooks run again after a server restart or a live handoff, which
+  is exactly when Herdr has dropped the Agent view.
 - An **Agent quota settings** popup pane. It edits the percentage style, the
   sidebar layout, the row gap, the watcher interval, the brand colours, the
   visible fields, and the installed agents, and applies them by re-invoking
@@ -40,6 +65,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   meaning "little runway". The choice is stored in the plugin state directory
   as well as the config directory, because the Claude/Agy statusLine hooks are
   launched by their harness with only `HERDR_PLUGIN_STATE_DIR` set.
+
+### Changed
+
+- The settings popup now opens 78x30 instead of Herdr's default half-size
+  popup. The pane draws one row per option and the list is longer than 24
+  rows, so the agents section used to open below the fold.
 
 ### Fixed
 

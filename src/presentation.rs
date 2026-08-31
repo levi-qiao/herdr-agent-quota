@@ -27,6 +27,13 @@ pub struct MetadataTokens {
     pub quota_cache_state: String,
     /// The plugin could not speak for this pane at all.
     pub quota_error: Option<String>,
+    /// Remaining quota in the tightest window this pane knows about, as a
+    /// whole percent. `None` when no window reported one.
+    ///
+    /// The tightest window rather than the 5h one: whichever limit the user
+    /// will hit first is the one worth sorting and warning on, and for a
+    /// weekly plan that is often the 7d window.
+    pub quota_headroom: Option<u8>,
 }
 
 impl MetadataTokens {
@@ -102,6 +109,7 @@ impl MetadataTokens {
             quota_cache_ttl: sidebar_cache_ttl(context, now_unix),
             quota_cache_state: sidebar_cache_state(context, now_unix),
             quota_error: None,
+            quota_headroom: headroom(windows),
         }
     }
 
@@ -125,8 +133,26 @@ impl MetadataTokens {
             quota_cache_ttl: String::new(),
             quota_cache_state: String::new(),
             quota_error: Some(reason.into().chars().take(80).collect()),
+            quota_headroom: None,
         }
     }
+}
+
+/// The least remaining quota across the two windows the sidebar shows.
+///
+/// Deliberately the same pair as the rendered tokens — the 5h window and
+/// whichever long window `long_window` picks — so a sort or an alert can
+/// always be explained by a number the user can see. A monthly window that
+/// the sidebar has no token for never drives either one.
+///
+/// Rounded down, so a window one point above a threshold is never rounded
+/// onto the wrong side of it.
+fn headroom(windows: &[UsageWindow]) -> Option<u8> {
+    window_in(windows, WindowKind::FiveHour)
+        .into_iter()
+        .chain(long_window(windows))
+        .map(|window| window.remaining_percent.clamp(0.0, 100.0).floor() as u8)
+        .min()
 }
 
 fn provider_model_label(provider: &str, model: &str) -> String {
@@ -340,6 +366,51 @@ fn format_ttl(seconds: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// The sort key and the alert both read this, and both have to be
+    /// explainable by a token the user can see, so a monthly window the
+    /// sidebar has no room for must not decide either.
+    #[test]
+    fn headroom_is_the_tightest_window_the_sidebar_actually_shows() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::OpenCodeGo,
+            vec![
+                window(WindowKind::FiveHour, 40.0, 3_600),
+                window(WindowKind::Weekly, 75.0, 183_600),
+                window(WindowKind::Monthly, 98.0, 1_500_000),
+            ],
+            0,
+        );
+        // 5h has 60 left, 7d has 25, 30d has 2 and is not shown.
+        let tokens = MetadataTokens::from_snapshot(&snapshot, 0);
+        assert_eq!(tokens.quota_headroom, Some(25));
+    }
+
+    #[test]
+    fn headroom_rounds_down_so_a_window_never_crosses_a_threshold_early() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![window(WindowKind::FiveHour, 89.5, 3_600)],
+            0,
+        );
+        assert_eq!(
+            MetadataTokens::from_snapshot(&snapshot, 0).quota_headroom,
+            Some(10)
+        );
+    }
+
+    #[test]
+    fn a_provider_with_no_window_reports_no_headroom() {
+        let snapshot = ProviderSnapshot::new(Provider::Grok, vec![], 0);
+        assert_eq!(
+            MetadataTokens::from_snapshot(&snapshot, 0).quota_headroom,
+            None
+        );
+        assert_eq!(
+            MetadataTokens::unavailable(Provider::Grok, "switched account").quota_headroom,
+            None
+        );
+    }
 
     #[test]
     fn a_monthly_window_reaches_the_dashboard_but_never_the_sidebar() {

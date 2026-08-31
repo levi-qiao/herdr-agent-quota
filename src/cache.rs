@@ -1,4 +1,6 @@
-use crate::cli::{BrandColors, FieldSet, PercentStyle, SidebarLayout, SidebarRowGap};
+use crate::cli::{
+    AgentOrder, BrandColors, FieldSet, LowQuotaAlert, PercentStyle, SidebarLayout, SidebarRowGap,
+};
 use crate::model::{
     merge_omitted_window_list, BillingTarget, ContextUsage, Provider, ProviderSnapshot,
 };
@@ -21,6 +23,11 @@ const ROW_GAP_FILE: &str = "row-gap";
 const QUOTA_PERCENT_FILE: &str = "quota-percent";
 const FIELDS_FILE: &str = "fields";
 const BRAND_COLORS_FILE: &str = "brand-colors";
+const AGENT_ORDER_FILE: &str = "agent-order";
+const LOW_QUOTA_ALERT_FILE: &str = "low-quota-alert";
+/// One line per provider that is currently below the alert threshold, so a
+/// crossing notifies once instead of on every refresh.
+const LOW_QUOTA_ALERTED_FILE: &str = "low-quota-alerted";
 const MAX_STATUSLINE_SESSIONS: usize = 128;
 
 #[derive(Debug, Clone)]
@@ -512,6 +519,78 @@ impl CacheStore {
         }
     }
 
+    pub fn agent_order(&self) -> Option<AgentOrder> {
+        fs::read_to_string(self.agent_order_path())
+            .ok()
+            .as_deref()
+            .and_then(AgentOrder::parse)
+    }
+
+    pub fn set_agent_order(&self, order: AgentOrder) -> Result<()> {
+        self.ensure()?;
+        fs::write(self.agent_order_path(), order.as_str()).context("write agent order")
+    }
+
+    pub fn clear_agent_order(&self) -> Result<()> {
+        match fs::remove_file(self.agent_order_path()) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).context("remove agent order"),
+        }
+    }
+
+    pub fn low_quota_alert(&self) -> Option<LowQuotaAlert> {
+        fs::read_to_string(self.low_quota_alert_path())
+            .ok()
+            .as_deref()
+            .and_then(LowQuotaAlert::parse)
+    }
+
+    pub fn set_low_quota_alert(&self, alert: LowQuotaAlert) -> Result<()> {
+        self.ensure()?;
+        fs::write(self.low_quota_alert_path(), alert.to_string()).context("write low quota alert")
+    }
+
+    pub fn clear_low_quota_alert(&self) -> Result<()> {
+        for path in [self.low_quota_alert_path(), self.low_quota_alerted_path()] {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error).context("remove low quota alert"),
+            }
+        }
+        Ok(())
+    }
+
+    /// Providers that have already been notified and have not recovered above
+    /// the threshold since.
+    ///
+    /// Kept as a set rather than a timestamp so a quota that stays low stays
+    /// quiet for as long as it stays low, however many refreshes pass, and
+    /// notifies again the moment it drops back after recovering.
+    pub fn low_quota_alerted(&self) -> Vec<String> {
+        fs::read_to_string(self.low_quota_alerted_path())
+            .unwrap_or_default()
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    pub fn set_low_quota_alerted(&self, sources: &[String]) -> Result<()> {
+        if sources.is_empty() {
+            return match fs::remove_file(self.low_quota_alerted_path()) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error).context("clear low quota alert state"),
+            };
+        }
+        self.ensure()?;
+        fs::write(self.low_quota_alerted_path(), sources.join("\n"))
+            .context("write low quota alert state")
+    }
+
     pub fn validate_watch_interval_seconds(seconds: u64) -> Result<u64> {
         Self::valid_watch_interval(seconds).with_context(|| {
             format!(
@@ -617,6 +696,18 @@ impl CacheStore {
 
     fn brand_colors_path(&self) -> PathBuf {
         self.root.join(BRAND_COLORS_FILE)
+    }
+
+    fn agent_order_path(&self) -> PathBuf {
+        self.root.join(AGENT_ORDER_FILE)
+    }
+
+    fn low_quota_alert_path(&self) -> PathBuf {
+        self.root.join(LOW_QUOTA_ALERT_FILE)
+    }
+
+    fn low_quota_alerted_path(&self) -> PathBuf {
+        self.root.join(LOW_QUOTA_ALERTED_FILE)
     }
 
     fn valid_watch_interval(seconds: u64) -> Option<u64> {

@@ -9,7 +9,7 @@ platforms = ["macos", "linux"]
 command = ["cargo", "build", "--release"]
 
 [[startup]]
-command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-quota\" refresh --provider all"]
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-quota\" startup --provider all"]
 
 [[actions]]
 id = "refresh"
@@ -52,3 +52,8 @@ id = "settings"
 title = "Agent quota settings"
 command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-quota\" settings"]
 placement = "popup"
+# Every option on screen at once. The default half-size popup is 24 rows and
+# the list needs 29, so without this the agents section opens below the fold.
+# Herdr clamps to the terminal, and the pane still scrolls when it has to.
+width = 78
+height = 30

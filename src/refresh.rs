@@ -1,5 +1,5 @@
 use crate::cache::CacheStore;
-use crate::cli::PercentStyle;
+use crate::cli::{LowQuotaAlert, PercentStyle};
 use crate::herdr::{
     current_focused_pane, list_agent_panes, list_agent_state, plugin_quota_present,
     publish_pane_tokens, refresh_pane_topic, AgentPane, PaneQuotaUpdate, PaneTokens,
@@ -13,6 +13,7 @@ use crate::route;
 use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -33,6 +34,21 @@ pub struct ProviderOutcome {
 
 pub fn run(providers: &[Provider], force: bool, json: bool) -> Result<()> {
     run_internal(providers, force, json, None)
+}
+
+/// Restore the Herdr state this plugin owns, then refresh once.
+///
+/// Only the agent order is restored, and only when it is this plugin's to
+/// restore: a `default` order owns no Herdr view, so startup has nothing to
+/// put back and must not spend a socket call saying so.
+pub fn startup(providers: &[Provider]) -> Result<()> {
+    if let Ok(cache) = CacheStore::from_env() {
+        let order = crate::configure::resolved_agent_order(None, Some(&cache));
+        if order.is_quota() {
+            crate::configure::apply_agent_order(order);
+        }
+    }
+    run(providers, false, false)
 }
 
 /// Refresh selected providers until their agents leave the working state.
@@ -232,6 +248,12 @@ fn handle_named_pane(cache: &CacheStore, pane: AgentPane, topic_pane: Option<&st
     )?
     .into_iter()
     .collect::<Vec<_>>();
+    // Event and focus see one pane, not the whole inventory, which is exactly
+    // what the alert needs: the entry is keyed by provider, and a provider
+    // with no pane in the pass keeps whatever state it had. Warning here is
+    // what makes the alert land at the end of the turn that spent the quota
+    // rather than at the next poll.
+    notify_low_quota(cache, &tokens);
     publish_pane_tokens(&panes, &tokens, CacheStore::now_millis())
 }
 
@@ -570,7 +592,90 @@ fn publish_resolved(
             tokens.push(pane_tokens);
         }
     }
+    notify_low_quota(cache, &tokens);
     publish_pane_tokens(panes, &tokens, CacheStore::now_millis())
+}
+
+/// The lowest headroom each provider is showing in this pass.
+///
+/// Keyed by the provider's display name because that is both what a pane
+/// reports and what a notification has to say. Several panes on one provider
+/// collapse to one entry, so three Claude panes are one warning.
+fn lowest_headroom_by_provider(tokens: &[PaneTokens]) -> BTreeMap<String, u8> {
+    let mut lowest = BTreeMap::new();
+    for pane in tokens {
+        let PaneQuotaUpdate::Replace(values) = &pane.quota else {
+            continue;
+        };
+        let Some(headroom) = values.quota_headroom else {
+            continue;
+        };
+        lowest
+            .entry(values.quota_provider.clone())
+            .and_modify(|current: &mut u8| *current = (*current).min(headroom))
+            .or_insert(headroom);
+    }
+    lowest
+}
+
+/// Warn once per provider that has fallen to the alert threshold.
+///
+/// A provider stays quiet for as long as it stays low, and is re-armed only by
+/// recovering above the threshold — a quota that resets and is spent again
+/// warns again. Providers with no pane in this pass keep whatever state they
+/// had, so closing and reopening a pane is not a way to be warned twice.
+fn notify_low_quota(cache: &CacheStore, tokens: &[PaneTokens]) {
+    let alert = cache.low_quota_alert().unwrap_or_default();
+    if alert.is_off() {
+        return;
+    }
+    let lowest = lowest_headroom_by_provider(tokens);
+    let previous = cache.low_quota_alerted();
+    let (warn, alerted) = low_quota_transitions(alert, &lowest, &previous);
+    for provider in &warn {
+        let headroom = lowest.get(provider).copied().unwrap_or_default();
+        let _ = crate::herdr::notify(
+            &format!("{provider} quota is low"),
+            &format!("{headroom}% left in the window closest to its limit."),
+        );
+    }
+    // Publishing happens on every event path. Rewriting an unchanged set every
+    // time would be disk churn for nothing.
+    if alerted != previous {
+        let _ = cache.set_low_quota_alerted(&alerted);
+    }
+}
+
+/// Which providers to warn about now, and the state to remember afterwards.
+///
+/// Split out from the notification itself so the rule can be tested without a
+/// cache or a Herdr: a provider is warned about on the way down and not again
+/// until it has been seen above the threshold.
+fn low_quota_transitions(
+    alert: LowQuotaAlert,
+    lowest: &BTreeMap<String, u8>,
+    previous: &[String],
+) -> (Vec<String>, Vec<String>) {
+    // A provider with no pane in this pass keeps the state it had. Otherwise
+    // closing a pane would re-arm the warning and reopening it would repeat.
+    let mut alerted: Vec<String> = previous
+        .iter()
+        .filter(|provider| !lowest.contains_key(*provider))
+        .cloned()
+        .collect();
+    let mut warn = Vec::new();
+    for (provider, headroom) in lowest {
+        if !alert.triggers(*headroom) {
+            continue;
+        }
+        alerted.push(provider.clone());
+        if !previous.contains(provider) {
+            warn.push(provider.clone());
+        }
+    }
+    alerted.sort();
+    alerted.dedup();
+    (warn, alerted)
 }
 
 fn event_json() -> Option<Value> {
@@ -696,6 +801,79 @@ mod tests {
     use super::*;
     use crate::model::{ProviderSnapshot, UsageWindow, WindowKind};
     use tempfile::tempdir;
+
+    fn low(pairs: &[(&str, u8)]) -> BTreeMap<String, u8> {
+        pairs
+            .iter()
+            .map(|(provider, headroom)| ((*provider).to_string(), *headroom))
+            .collect()
+    }
+
+    #[test]
+    fn a_provider_below_the_threshold_is_warned_about_once_until_it_recovers() {
+        let alert = LowQuotaAlert::parse("10").unwrap();
+        let (warn, state) = low_quota_transitions(alert, &low(&[("Claude", 8)]), &[]);
+        assert_eq!(warn, vec!["Claude".to_string()]);
+        assert_eq!(state, vec!["Claude".to_string()]);
+
+        // Still low: remembered, and silent.
+        let (warn, state) = low_quota_transitions(alert, &low(&[("Claude", 3)]), &state);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(state, vec!["Claude".to_string()]);
+
+        // Recovered above the threshold: re-armed.
+        let (warn, state) = low_quota_transitions(alert, &low(&[("Claude", 40)]), &state);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert!(state.is_empty(), "{state:?}");
+
+        let (warn, _) = low_quota_transitions(alert, &low(&[("Claude", 9)]), &state);
+        assert_eq!(warn, vec!["Claude".to_string()]);
+    }
+
+    /// Closing the last pane of a provider must not re-arm its warning: the
+    /// quota did not recover, the window into it just went away.
+    #[test]
+    fn a_provider_with_no_pane_in_this_pass_keeps_its_state() {
+        let alert = LowQuotaAlert::parse("20").unwrap();
+        let previous = vec!["Codex".to_string()];
+        let (warn, state) = low_quota_transitions(alert, &low(&[("Claude", 90)]), &previous);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(state, previous);
+    }
+
+    #[test]
+    fn the_threshold_is_inclusive_and_off_never_warns() {
+        let alert = LowQuotaAlert::parse("10").unwrap();
+        let (warn, _) = low_quota_transitions(alert, &low(&[("Grok", 10)]), &[]);
+        assert_eq!(warn, vec!["Grok".to_string()]);
+        let (warn, _) = low_quota_transitions(alert, &low(&[("Grok", 11)]), &[]);
+        assert!(warn.is_empty(), "{warn:?}");
+        let (warn, _) = low_quota_transitions(LowQuotaAlert::OFF, &low(&[("Grok", 0)]), &[]);
+        assert!(warn.is_empty(), "{warn:?}");
+    }
+
+    /// Several panes on one provider are one quota, so they are one warning,
+    /// reported at the lowest headroom any of them saw.
+    #[test]
+    fn panes_sharing_a_provider_collapse_to_one_entry() {
+        let tokens = |provider: &str, headroom: Option<u8>| {
+            let mut values = MetadataTokens::unavailable(Provider::Claude, "test");
+            values.quota_provider = provider.to_string();
+            values.quota_headroom = headroom;
+            PaneTokens {
+                pane_id: format!("w1:{provider}{headroom:?}"),
+                quota: PaneQuotaUpdate::Replace(Box::new(values)),
+                identity: None,
+                context: None,
+            }
+        };
+        let lowest = lowest_headroom_by_provider(&[
+            tokens("Claude", Some(40)),
+            tokens("Claude", Some(12)),
+            tokens("Codex", None),
+        ]);
+        assert_eq!(lowest, low(&[("Claude", 12)]));
+    }
 
     #[test]
     fn replaced_watch_binary_is_detected() {

@@ -13,7 +13,8 @@
 
 use crate::cache::CacheStore;
 use crate::cli::{
-    AgentSelection, BrandColors, FieldSet, PercentStyle, SidebarField, SidebarLayout, SidebarRowGap,
+    AgentOrder, AgentSelection, BrandColors, FieldSet, LowQuotaAlert, PercentStyle, SidebarField,
+    SidebarLayout, SidebarRowGap,
 };
 use crate::model::Harness;
 use crate::prefs;
@@ -44,6 +45,8 @@ enum Choice {
     RowGap,
     Interval,
     Brand,
+    Order,
+    Alert,
 }
 
 impl Choice {
@@ -54,6 +57,8 @@ impl Choice {
             Self::RowGap => "Row gap",
             Self::Interval => "Watch interval",
             Self::Brand => "Brand colors",
+            Self::Order => "Agent order",
+            Self::Alert => "Low quota alert",
         }
     }
 }
@@ -66,6 +71,8 @@ fn rows() -> Vec<Row> {
         Row::Choice(Choice::RowGap),
         Row::Choice(Choice::Interval),
         Row::Choice(Choice::Brand),
+        Row::Choice(Choice::Order),
+        Row::Choice(Choice::Alert),
         Row::Header("Fields"),
     ];
     rows.extend(SidebarField::ALL.into_iter().map(Row::Field));
@@ -82,6 +89,8 @@ pub struct Settings {
     gap: SidebarRowGap,
     interval_seconds: u64,
     brand: BrandColors,
+    order: AgentOrder,
+    alert: LowQuotaAlert,
     fields: FieldSet,
     /// Indexed by [`AgentSelection::SUPPORTED`], so the whole struct stays
     /// `Copy` and comparing a draft to what is applied is one `==`.
@@ -105,6 +114,8 @@ impl Settings {
                 .map(CacheStore::watch_interval_seconds)
                 .unwrap_or(crate::cache::DEFAULT_WATCH_INTERVAL_SECONDS),
             brand: crate::configure::resolved_brand_colors(None, cache),
+            order: crate::configure::resolved_agent_order(None, cache),
+            alert: crate::configure::resolved_low_quota_alert(None, cache),
             fields: crate::configure::resolved_fields(None, cache),
             agents,
         }
@@ -117,6 +128,8 @@ impl Settings {
             Choice::RowGap => self.gap.to_string(),
             Choice::Interval => format_interval(self.interval_seconds),
             Choice::Brand => self.brand.as_str().to_string(),
+            Choice::Order => self.order.as_str().to_string(),
+            Choice::Alert => self.alert.to_string(),
         }
     }
 
@@ -138,6 +151,14 @@ impl Settings {
             Choice::Brand => match self.brand {
                 BrandColors::On => "provider and model in agent hues",
                 BrandColors::Off => "severity colors only",
+            },
+            Choice::Order => match self.order {
+                AgentOrder::Default => "Herdr sorts the agent panel",
+                AgentOrder::Quota => "least quota left at the top",
+            },
+            Choice::Alert => match self.alert.is_off() {
+                true => "no notification",
+                false => "notify once per provider on the way down",
             },
         }
     }
@@ -191,6 +212,21 @@ impl Settings {
                     BrandColors::Off => BrandColors::On,
                 }
             }
+            Row::Choice(Choice::Order) => {
+                self.order = match self.order {
+                    AgentOrder::Default => AgentOrder::Quota,
+                    AgentOrder::Quota => AgentOrder::Default,
+                }
+            }
+            Row::Choice(Choice::Alert) => {
+                let current = LowQuotaAlert::CHOICES
+                    .iter()
+                    .position(|value| *value == self.alert)
+                    .unwrap_or(0);
+                let count = LowQuotaAlert::CHOICES.len() as i8;
+                let next = (current as i8 + step).rem_euclid(count);
+                self.alert = LowQuotaAlert::CHOICES[next as usize];
+            }
             Row::Choice(Choice::Interval) => {
                 let current = INTERVALS
                     .iter()
@@ -233,6 +269,10 @@ impl Settings {
             self.brand.as_str().to_string(),
             "--fields".to_string(),
             self.fields.as_list(),
+            "--agent-order".to_string(),
+            self.order.as_str().to_string(),
+            "--low-quota-alert".to_string(),
+            self.alert.to_string(),
         ];
         arguments.push("--watch-interval-seconds".to_string());
         arguments.push(self.interval_seconds.to_string());
@@ -575,6 +615,8 @@ mod tests {
             gap: SidebarRowGap::SEPARATED,
             interval_seconds: 60,
             brand: BrandColors::On,
+            order: AgentOrder::Default,
+            alert: LowQuotaAlert::OFF,
             fields: FieldSet::all(),
             agents: [true; AgentSelection::SUPPORTED.len()],
         }
@@ -664,6 +706,10 @@ mod tests {
                 "on",
                 "--fields",
                 "model,cache,ttl,context,5h,7d",
+                "--agent-order",
+                "default",
+                "--low-quota-alert",
+                "off",
                 "--watch-interval-seconds",
                 "60",
             ]

@@ -101,6 +101,8 @@ Agent quota settings
     Row gap         <     1     > one blank row between panes
     Watch interval  <    1m     > polled while an agent is working
     Brand colors    <    on     > provider and model in agent hues
+    Agent order     <  default  > Herdr sorts the agent panel
+    Low quota alert <    off    > no notification
   ─ Fields ───
     [x] topic   [x] model   [x] cache   [x] ttl
     [x] context [x] 5h      [x] 7d
@@ -123,11 +125,27 @@ Fields are the optional quota values. The provider name and the error token are
 always shown: a row that cannot say which subscription it belongs to, or that
 hides the reason quota is missing, is worse than no row.
 
+**Agent order** `quota` puts the agent with the least quota left at the top of
+Herdr's Agent panel. It works by handing Herdr a declarative agent view sorted
+by a hidden `quota_headroom` token this plugin publishes, so the ordering
+follows the same number the sidebar shows — the tighter of the 5h and 7d
+windows. Herdr keeps one such view, so turning this on replaces your own
+`ui.agent_panel_sort` policy until you set it back to `default`; uninstalling
+hands the panel back too. The view does not survive a Herdr restart, and the
+plugin's startup hook puts it back.
+
+**Low quota alert** notifies once, per provider, when its remaining quota falls
+to the chosen percentage or below. It stays quiet for as long as the quota
+stays low and warns again only after the quota has recovered above the
+threshold — a window that resets and is spent again warns again. `off` is the
+default and never notifies.
+
 The same choices from the command line:
 
 ```sh
 ./install.sh --fields topic,model,context,5h,7d
 ./install.sh --brand-colors off
+./install.sh --agent-order quota --low-quota-alert 10
 herdr-agent-quota configure --apply --fields all --brand-colors on
 ```
 

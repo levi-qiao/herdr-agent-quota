@@ -7,8 +7,8 @@ mod statusline;
 
 use crate::cache::CacheStore;
 use crate::cli::{
-    AgentSelection, BrandColors, ConfigureOptions, FieldSet, PercentStyle, SidebarLayout,
-    SidebarRowGap,
+    AgentOrder, AgentSelection, BrandColors, ConfigureOptions, FieldSet, LowQuotaAlert,
+    PercentStyle, SidebarLayout, SidebarRowGap,
 };
 use crate::model::Harness;
 use crate::prefs;
@@ -65,12 +65,18 @@ pub fn run(
         let brand = resolved_brand_colors(None, Some(&cache));
         herdr::uninstall(agents, full, fields, brand)?;
         if full {
+            // Herdr keeps this view until something clears it, so an uninstall
+            // that skipped it would leave the panel sorted by a token this
+            // plugin no longer publishes.
+            apply_agent_order(AgentOrder::Default);
             cache.clear_watch_interval()?;
             cache.clear_sidebar_layout()?;
             cache.clear_row_gap()?;
             cache.clear_percent_style()?;
             cache.clear_fields()?;
             cache.clear_brand_colors()?;
+            cache.clear_agent_order()?;
+            cache.clear_low_quota_alert()?;
             for name in prefs::ALL {
                 prefs::clear(name)?;
             }
@@ -112,7 +118,25 @@ pub fn run(
         let brand = resolved_brand_colors(options.brand_colors, Some(&cache));
         cache.set_brand_colors(brand)?;
         prefs::write(prefs::BRAND_COLORS, brand.as_str())?;
+        let alert = resolved_low_quota_alert(options.low_quota_alert, Some(&cache));
+        // A new threshold has never warned about anything yet. Without this,
+        // lowering it would stay silent for a provider already warned about at
+        // the old one.
+        if cache.low_quota_alert() != Some(alert) {
+            cache.set_low_quota_alerted(&[])?;
+        }
+        cache.set_low_quota_alert(alert)?;
+        prefs::write(prefs::LOW_QUOTA_ALERT, &alert.to_string())?;
         herdr::apply(agents, layout, gap, fields, brand)?;
+        // Not gated on a full run, unlike the watcher: the Agent panel order
+        // is a choice that arrives on this command line, and the settings pane
+        // sends it alongside whatever agent selection the user happens to
+        // have. Gating it would silently drop the setting for anyone not
+        // running every supported agent.
+        let order = resolved_agent_order(options.agent_order, Some(&cache));
+        cache.set_agent_order(order)?;
+        prefs::write(prefs::AGENT_ORDER, order.as_str())?;
+        apply_agent_order(order);
         if agents.contains(&Harness::Claude) {
             claude::apply_with_refresh_interval(interval)?;
         }
@@ -130,8 +154,12 @@ pub fn run(
         let percent = resolved_percent_style(options.quota_percent, cache.as_ref());
         let fields = resolved_fields(options.fields, cache.as_ref());
         let brand = resolved_brand_colors(options.brand_colors, cache.as_ref());
+        let order = resolved_agent_order(options.agent_order, cache.as_ref());
+        let alert = resolved_low_quota_alert(options.low_quota_alert, cache.as_ref());
         herdr::check(agents, layout, gap, fields, brand)?;
         println!("Quota percentages show {} quota.", percent.suffix());
+        println!("Agent panel order: {}.", order.as_str());
+        println!("Low quota alert: {alert}.");
         if agents.contains(&Harness::Claude) {
             claude::check()?;
         }
@@ -183,6 +211,44 @@ pub(crate) fn resolved_brand_colors(
         .or_else(|| prefs::read(prefs::BRAND_COLORS).and_then(|value| BrandColors::parse(&value)))
         .or_else(|| cache.and_then(CacheStore::brand_colors))
         .unwrap_or_default()
+}
+
+pub(crate) fn resolved_agent_order(
+    explicit: Option<AgentOrder>,
+    cache: Option<&CacheStore>,
+) -> AgentOrder {
+    AgentOrder::from_arg_or_env(explicit)
+        .or_else(|| prefs::read(prefs::AGENT_ORDER).and_then(|value| AgentOrder::parse(&value)))
+        .or_else(|| cache.and_then(CacheStore::agent_order))
+        .unwrap_or_default()
+}
+
+pub(crate) fn resolved_low_quota_alert(
+    explicit: Option<LowQuotaAlert>,
+    cache: Option<&CacheStore>,
+) -> LowQuotaAlert {
+    LowQuotaAlert::from_arg_or_env(explicit)
+        .or_else(|| {
+            prefs::read(prefs::LOW_QUOTA_ALERT).and_then(|value| LowQuotaAlert::parse(&value))
+        })
+        .or_else(|| cache.and_then(CacheStore::low_quota_alert))
+        .unwrap_or_default()
+}
+
+/// Hand Herdr the Agent view the user asked for, or give the panel back.
+///
+/// Never fatal. The rows and collectors are already written by the time this
+/// runs, and a panel that kept its old ordering is a cosmetic disagreement —
+/// failing the whole `--apply` over it would be worse than reporting it.
+pub(crate) fn apply_agent_order(order: AgentOrder) {
+    let result = if order.is_quota() {
+        crate::herdr::set_quota_agent_view()
+    } else {
+        crate::herdr::clear_quota_agent_view()
+    };
+    if let Err(error) = result {
+        println!("Could not set the Herdr agent order: {error}");
+    }
 }
 
 pub(crate) fn resolved_row_gap(

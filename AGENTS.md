@@ -79,10 +79,16 @@ Concretely, this means:
 
 | Entry point | Fired by | Allowed to read panes? |
 |---|---|---|
-| `refresh` | startup, manual action | No |
+| `startup` | Herdr's `[[startup]]` hook | No |
+| `refresh` | manual action, `startup` | No |
 | `event` | `pane.agent_detected`, `pane.agent_status_changed` | Only the pane named in `HERDR_PLUGIN_EVENT_JSON` |
 | `focus` | `pane.focused` | No |
 | `watch` | detached from a working status event | No (agent metadata only) |
+
+`startup` exists because Herdr drops plugin-owned Agent views when the server
+exits, and startup hooks run again after a restart or a live handoff. It
+restores what this plugin owns and then does exactly what `refresh` does. Put
+anything that must survive a Herdr restart there, not in `refresh`.
 
 `pane.agent_status_changed` fires **twice per turn** (idle→working on submit,
 working→idle on completion). Anything `event` does, the user pays for twice
@@ -93,6 +99,47 @@ once per configured interval, refreshes every working provider in that pass,
 publishes without reading pane output, and exits after all agents settle. The
 interval defaults to 60 seconds and is bounded to 30 seconds–1 hour. Uninstall
 writes a stop marker so a detached watcher cannot survive a restore.
+
+## Herdr state this plugin owns outside a pane
+
+Two things reach past the pane metadata, and both are global to the Herdr
+session rather than scoped to a pane. Neither is on by default.
+
+**The Agent view** (`agent.view.set`, `src/herdr.rs`). Herdr keeps exactly
+one, and setting it replaces the user's own `ui.agent_panel_sort`. Rules:
+
+1. **Always scope a clear to `plugin:herdr-agent-quota`.** An unscoped
+   `agent.view.clear` would drop a view another plugin owns. `startup` goes
+   further and does not call clear at all when the order is `default` — there
+   is nothing of ours to restore, and silence is the only way to be sure a
+   foreign view survives.
+2. **Re-apply it from `startup`, never from `refresh`.** `refresh` runs on
+   every event path; the view only needs putting back when the server restarted.
+3. It is the only thing in the plugin that speaks the raw socket protocol
+   (`HERDR_SOCKET_PATH`), because `agent.view.*` has no CLI subcommand in
+   Herdr 0.8. One request, one reply, one connection — nothing subscribes, so
+   the `events.subscribe` replay and focus-storm problems do not apply.
+
+**`quota_headroom`** is the token that view sorts on: the remaining percent of
+the tighter of the pane's 5h and 7d windows, zero-padded to three digits so
+Herdr's ordering of the text is its numeric ordering. Two properties are load
+bearing:
+
+- It is published **unconditionally**, not only when the order is enabled. No
+  sidebar row renders it, so it costs no screen space; publishing it always is
+  what makes toggling the order a Herdr-side change instead of a metadata write
+  to every pane, and it adds no writes, because it only moves when a quota
+  token beside it moves anyway.
+- It is scoped to the two windows the sidebar actually **shows**. A monthly
+  window has no sidebar token, so letting it decide the sort or an alert would
+  produce an ordering the user cannot explain from the screen.
+
+**Low quota notifications** fire from both publish paths (`publish_resolved`
+and `handle_named_pane`) so a warning lands at the end of the turn that spent
+the quota. The state is a set of provider names, not a timestamp: a provider
+stays quiet while it stays low and is re-armed only by recovering above the
+threshold. A provider with **no pane in the pass keeps its entry** — dropping
+it would make closing and reopening a pane a way to be warned twice.
 
 ## A plugin action cannot see the caller's environment
 

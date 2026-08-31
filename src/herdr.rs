@@ -14,7 +14,7 @@ const MAX_METADATA_TOKENS: usize = 16;
 /// not free: it is compared on every refresh and it competes for Herdr's
 /// 16-token report budget. Add a name here only together with the field that
 /// fills it.
-const METADATA_TOKEN_NAMES: [&str; 21] = [
+const METADATA_TOKEN_NAMES: [&str; 22] = [
     "quota_provider",
     "quota_model",
     "quota_provider_model",
@@ -36,7 +36,19 @@ const METADATA_TOKEN_NAMES: [&str; 21] = [
     "quota_week_inline_unknown",
     "quota_topic",
     "quota_error",
+    HEADROOM_TOKEN,
 ];
+/// Sort key for Herdr's Agent view: remaining quota as a zero-padded percent
+/// (`007`), so Herdr's ordering of the token values is also their numeric
+/// ordering.
+///
+/// Published for every pane whose quota is known, whether or not the user
+/// chose `--agent-order quota`, because it never renders: no sidebar row
+/// references it. Publishing it unconditionally is what makes changing the
+/// order a Herdr-side toggle instead of a metadata write to every pane, and it
+/// costs no extra writes — the value only moves when a quota token beside it
+/// moves anyway.
+pub(crate) const HEADROOM_TOKEN: &str = "quota_headroom";
 /// Names a pane may still carry from an older build of this plugin. They are
 /// never produced again, so a report clears them until the pane is clean.
 const OBSOLETE_METADATA_TOKEN_NAMES: [&str; 15] = [
@@ -139,6 +151,99 @@ pub struct PaneTokens {
     pub quota: PaneQuotaUpdate,
     pub identity: Option<PaneIdentity>,
     pub context: Option<ContextUsage>,
+}
+
+/// Show one Herdr notification.
+///
+/// Failure is reported to the caller but is never worth aborting a publish
+/// for: a missed toast costs the user nothing that the sidebar does not
+/// already show.
+pub fn notify(title: &str, body: &str) -> Result<()> {
+    let executable = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
+    let output = Command::new(&executable)
+        .args(["notification", "show", title, "--body", body])
+        .args(["--sound", "request"])
+        .output()
+        .context("show Herdr notification")?;
+    if !output.status.success() {
+        anyhow::bail!("Herdr notification failed with {}", output.status);
+    }
+    Ok(())
+}
+
+/// Source that owns this plugin's Herdr Agent view. Herdr requires the
+/// `plugin:<id>` form and rejects a set whose plugin is missing or disabled.
+const AGENT_VIEW_SOURCE: &str = "plugin:herdr-agent-quota";
+/// A socket request must not outlive the event hook that sent it. Herdr
+/// answers these in microseconds; anything near this is a hung server, and a
+/// sidebar sort is never worth blocking a turn for.
+const SOCKET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Ask Herdr to order its Agent panel by the least quota left.
+///
+/// Herdr keeps one Agent view and this replaces it, so it is only ever called
+/// for a user who chose `--agent-order quota`. The view does not survive a
+/// server restart, which is why the startup hook re-applies it.
+pub fn set_quota_agent_view() -> Result<()> {
+    socket_request(&serde_json::json!({
+        "id": "agent-quota:view-set",
+        "method": "agent.view.set",
+        "params": {
+            "source": AGENT_VIEW_SOURCE,
+            "label": crate::cli::AgentOrder::LABEL,
+            "sort": [{"field": {"token": HEADROOM_TOKEN}, "order": "asc"}],
+        },
+    }))
+    .map(|_| ())
+}
+
+/// Give the Agent panel back to Herdr's own ordering.
+///
+/// Scoped to this plugin's source: a view someone else owns must survive.
+pub fn clear_quota_agent_view() -> Result<()> {
+    socket_request(&serde_json::json!({
+        "id": "agent-quota:view-clear",
+        "method": "agent.view.clear",
+        "params": {"source": AGENT_VIEW_SOURCE},
+    }))
+    .map(|_| ())
+}
+
+/// One request, one reply, one connection.
+///
+/// `agent.view.*` has no CLI subcommand in Herdr 0.8, so this is the only
+/// place the plugin speaks the raw socket protocol. Nothing here subscribes,
+/// so no stream is ever held open — the replay and focus-storm problems that
+/// come with `events.subscribe` do not apply.
+///
+/// Outside Herdr there is no socket and this is a no-op, exactly like
+/// [`crate::prefs::write`], so a direct CLI run still works.
+fn socket_request(payload: &Value) -> Result<Option<Value>> {
+    use std::io::{BufRead, BufReader, Write};
+
+    let Some(path) = std::env::var_os("HERDR_SOCKET_PATH") else {
+        return Ok(None);
+    };
+    let stream = std::os::unix::net::UnixStream::connect(&path)
+        .with_context(|| format!("connect to Herdr at {}", path.to_string_lossy()))?;
+    stream.set_read_timeout(Some(SOCKET_TIMEOUT))?;
+    stream.set_write_timeout(Some(SOCKET_TIMEOUT))?;
+    let mut writer = &stream;
+    writeln!(writer, "{payload}").context("send Herdr socket request")?;
+    writer.flush().context("flush Herdr socket request")?;
+    let mut line = String::new();
+    BufReader::new(&stream)
+        .read_line(&mut line)
+        .context("read Herdr socket reply")?;
+    let reply: Value = serde_json::from_str(&line).context("parse Herdr socket reply")?;
+    if let Some(error) = reply.get("error") {
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("Herdr rejected the request");
+        anyhow::bail!("{message}");
+    }
+    Ok(Some(reply))
 }
 
 pub fn list_agent_panes() -> Result<Vec<AgentPane>> {
@@ -451,6 +556,9 @@ fn desired_tokens(values: &MetadataTokens, topic: &str) -> BTreeMap<String, Stri
     if let Some(error) = &values.quota_error {
         tokens.insert("quota_error".to_string(), error.clone());
     }
+    if let Some(headroom) = values.quota_headroom {
+        tokens.insert(HEADROOM_TOKEN.to_string(), format!("{headroom:03}"));
+    }
     tokens
 }
 
@@ -707,6 +815,34 @@ mod tests {
         CacheUsage, ContextUsage, ProviderSnapshot, ResetAt, UsageWindow, WindowKind,
     };
     use serde_json::json;
+
+    /// Herdr orders an Agent view by the token's own value, so the padding is
+    /// the whole contract: `007` must sort before `042`, and `100` last.
+    #[test]
+    fn the_headroom_token_is_padded_so_its_text_order_is_its_numeric_order() {
+        let token = |headroom: Option<u8>| {
+            let mut values = MetadataTokens::unavailable(Provider::Claude, "test");
+            values.quota_headroom = headroom;
+            desired_tokens(&values, "").get(HEADROOM_TOKEN).cloned()
+        };
+        assert_eq!(token(Some(7)).as_deref(), Some("007"));
+        assert_eq!(token(Some(42)).as_deref(), Some("042"));
+        assert_eq!(token(Some(100)).as_deref(), Some("100"));
+        assert_eq!(token(None), None);
+
+        let mut sorted = ["100", "007", "042", "000"];
+        sorted.sort_unstable();
+        assert_eq!(sorted, ["000", "007", "042", "100"]);
+    }
+
+    /// The comparison set and the report set are the same list, so a token
+    /// that is published but not listed silently stops being compared and
+    /// every refresh becomes a write.
+    #[test]
+    fn the_headroom_token_is_listed_among_the_names_that_are_compared() {
+        assert!(METADATA_TOKEN_NAMES.contains(&HEADROOM_TOKEN));
+        assert!(!OBSOLETE_METADATA_TOKEN_NAMES.contains(&HEADROOM_TOKEN));
+    }
 
     #[test]
     fn discovers_canonical_agent_panes_from_nested_json() {
