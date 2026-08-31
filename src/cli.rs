@@ -90,6 +90,8 @@ pub enum Command {
         #[arg(long, value_parser = parse_row_gap)]
         row_gap: Option<SidebarRowGap>,
     },
+    /// Render the settings pane shown in the Herdr popup pane.
+    Settings,
     /// Claude statusLine hook. Claude Code invokes this; not for manual use.
     ClaudeStatusline,
     /// Agy statusLine hook. Antigravity invokes this; not for manual use.

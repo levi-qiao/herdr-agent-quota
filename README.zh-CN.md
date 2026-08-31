@@ -83,6 +83,24 @@ herdr-agent-quota configure --apply --agent claude,codex,pi
 可选值：`all`、`claude`、`codex`、`grok`、`agy`、`opencode`、`pi`。
 安装器不会替换用户自己维护的侧栏 rows 或 statusLine hook。
 
+### 不重装也能改设置
+
+打开 **Agent quota settings** 插件 pane。可以改百分比口径、侧栏布局、行间距和
+watcher 间隔；按 `a` 应用时，它跑的就是 "Install / repair" 那条 `configure
+--apply`，然后 reload Herdr 配置。
+
+```
+> * Percentages     <    used    >  how much quota is spent
+    Sidebar layout  <  stacked   >  every field on its own row
+    Row gap         <     1      >  one blank row between panes
+    Watch interval  <     1m     >  polled while an agent is working
+
+  ↑↓ field   ←→ value   a apply   q quit
+```
+
+`*` 表示改了还没应用。agent 选择只展示、不可编辑：去掉一个 agent 必须真正卸载它的
+collector，仍然走 `./install.sh --agent` 和 `./uninstall.sh --agent`。
+
 手动刷新或卸载：
 
 ```sh

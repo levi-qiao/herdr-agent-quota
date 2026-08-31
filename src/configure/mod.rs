@@ -85,15 +85,15 @@ pub fn run(
         } else {
             cache.watch_interval_seconds()
         };
-        let layout = resolve_sidebar_layout(options.sidebar_layout, Some(&cache));
+        let layout = resolved_sidebar_layout(options.sidebar_layout, Some(&cache));
         cache.set_sidebar_layout(layout)?;
         prefs::write(prefs::SIDEBAR_LAYOUT, layout.as_str())?;
-        let gap = resolve_row_gap(options.row_gap, Some(&cache));
+        let gap = resolved_row_gap(options.row_gap, Some(&cache));
         cache.set_row_gap(gap)?;
         prefs::write(prefs::ROW_GAP, &gap.to_string())?;
         // Rendering reads this at publish time, not install time, so the row
         // layout is untouched: only the number inside a quota token changes.
-        let percent = resolve_percent_style(options.quota_percent, Some(&cache));
+        let percent = resolved_percent_style(options.quota_percent, Some(&cache));
         cache.set_percent_style(percent)?;
         prefs::write(prefs::QUOTA_PERCENT, percent.as_str())?;
         println!("Quota percentages show {} quota.", percent.suffix());
@@ -110,9 +110,9 @@ pub fn run(
         integration::report_missing(agents);
     } else {
         let cache = CacheStore::from_env().ok();
-        let layout = resolve_sidebar_layout(options.sidebar_layout, cache.as_ref());
-        let gap = resolve_row_gap(options.row_gap, cache.as_ref());
-        let percent = resolve_percent_style(options.quota_percent, cache.as_ref());
+        let layout = resolved_sidebar_layout(options.sidebar_layout, cache.as_ref());
+        let gap = resolved_row_gap(options.row_gap, cache.as_ref());
+        let percent = resolved_percent_style(options.quota_percent, cache.as_ref());
         herdr::check(agents, layout, gap)?;
         println!("Quota percentages show {} quota.", percent.suffix());
         if agents.contains(&Harness::Claude) {
@@ -129,7 +129,7 @@ pub fn run(
     Ok(())
 }
 
-fn resolve_sidebar_layout(
+pub(crate) fn resolved_sidebar_layout(
     explicit: Option<SidebarLayout>,
     cache: Option<&CacheStore>,
 ) -> SidebarLayout {
@@ -141,7 +141,7 @@ fn resolve_sidebar_layout(
         .unwrap_or_default()
 }
 
-fn resolve_percent_style(
+pub(crate) fn resolved_percent_style(
     explicit: Option<PercentStyle>,
     cache: Option<&CacheStore>,
 ) -> PercentStyle {
@@ -151,7 +151,10 @@ fn resolve_percent_style(
         .unwrap_or_default()
 }
 
-fn resolve_row_gap(explicit: Option<SidebarRowGap>, cache: Option<&CacheStore>) -> SidebarRowGap {
+pub(crate) fn resolved_row_gap(
+    explicit: Option<SidebarRowGap>,
+    cache: Option<&CacheStore>,
+) -> SidebarRowGap {
     SidebarRowGap::from_arg_or_env(explicit)
         .or_else(|| prefs::read(prefs::ROW_GAP).and_then(|value| SidebarRowGap::parse(&value)))
         .or_else(|| cache.and_then(CacheStore::row_gap))

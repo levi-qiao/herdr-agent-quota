@@ -46,3 +46,9 @@ id = "dashboard"
 title = "Agent quota"
 command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-quota\" dashboard"]
 placement = "popup"
+
+[[panes]]
+id = "settings"
+title = "Agent quota settings"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-quota\" settings"]
+placement = "popup"

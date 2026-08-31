@@ -87,6 +87,26 @@ herdr-agent-quota configure --apply --agent claude,codex,pi
 Accepted values are `all`, `claude`, `codex`, `grok`, `agy`, `opencode`, and
 `pi`. The installer never replaces user-owned sidebar rows or statusLine hooks.
 
+### Change settings without reinstalling
+
+Open the **Agent quota settings** plugin pane. It edits the percentage style,
+the sidebar layout, the row gap, and the watcher interval, then applies them by
+running the same `configure --apply` the "Install / repair" action runs, and
+reloads Herdr's configuration.
+
+```
+> * Percentages     <    used    >  how much quota is spent
+    Sidebar layout  <  stacked   >  every field on its own row
+    Row gap         <     1      >  one blank row between panes
+    Watch interval  <     1m     >  polled while an agent is working
+
+  ↑↓ field   ←→ value   a apply   q quit
+```
+
+`*` marks an edit that has not been applied. The agent selection is shown but
+not editable there: removing an agent has to uninstall its collector, so it
+stays with `./install.sh --agent` and `./uninstall.sh --agent`.
+
 Refresh or uninstall:
 
 ```sh

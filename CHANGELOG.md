@@ -8,6 +8,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- An **Agent quota settings** popup pane. It edits the percentage style, the
+  sidebar layout, the row gap, and the watcher interval, and applies them by
+  re-invoking `configure --apply` with every value named explicitly, then
+  reloading Herdr's configuration — the same path the "Install / repair"
+  action takes, so there is still one writer for the sidebar rows and the
+  statusLine entries. Herdr injects `HERDR_PLUGIN_STATE_DIR`,
+  `HERDR_PLUGIN_CONFIG_DIR`, and `HERDR_BIN_PATH` into a pane, which is what
+  makes this possible; it was verified with a throwaway `printenv` pane. The
+  agent selection is shown but not editable: removing an agent has to
+  uninstall its collector, and a mis-key in a popup must not take a statusLine
+  entry with it.
 - Quota percentages can read as consumed instead of remaining. `--quota-percent
   used` (on `./install.sh` and `herdr-agent-quota configure --apply`, or
   `$HERDR_AGENT_QUOTA_PERCENT` for a direct CLI run) flips every 5h/7d/30d

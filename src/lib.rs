@@ -13,3 +13,4 @@ pub mod pi;
 pub mod providers;
 pub mod refresh;
 pub mod route;
+pub mod settings;
