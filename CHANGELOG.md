@@ -9,16 +9,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - An **Agent quota settings** popup pane. It edits the percentage style, the
-  sidebar layout, the row gap, and the watcher interval, and applies them by
-  re-invoking `configure --apply` with every value named explicitly, then
-  reloading Herdr's configuration — the same path the "Install / repair"
+  sidebar layout, the row gap, the watcher interval, the brand colours, the
+  visible fields, and the installed agents, and applies them by re-invoking
+  `configure` with every value named explicitly, then reloading Herdr's
+  configuration and forcing one refresh — the same path the "Install / repair"
   action takes, so there is still one writer for the sidebar rows and the
   statusLine entries. Herdr injects `HERDR_PLUGIN_STATE_DIR`,
   `HERDR_PLUGIN_CONFIG_DIR`, and `HERDR_BIN_PATH` into a pane, which is what
-  makes this possible; it was verified with a throwaway `printenv` pane. The
-  agent selection is shown but not editable: removing an agent has to
-  uninstall its collector, and a mis-key in a popup must not take a statusLine
-  entry with it.
+  makes this possible; it was verified with a throwaway `printenv` pane.
+  Unchecking an agent uninstalls that agent's collector and restores its own
+  statusLine, so it asks for a second keypress first, and the last agent
+  cannot be unchecked.
+- `--fields` chooses which quota fields the sidebar shows: `all` (default),
+  `none`, or a comma-separated list of `topic`, `model`, `cache`, `ttl`,
+  `context`, `5h`, `7d`. The provider name and the error token are not
+  optional — a row that cannot say which subscription it belongs to, or that
+  hides why quota is missing, is worse than no row. Hiding the model degrades
+  the packed identity token from `$quota_provider_model` to `$quota_provider`
+  rather than leaving the row nameless.
+- `--brand-colors off` drops the per-agent hues on provider and model. Severity
+  colours are unaffected: they are information, not decoration. With the hues
+  off the plugin writes no `rows_by_agent` entries at all, rather than copies
+  of the shared rows.
 - Quota percentages can read as consumed instead of remaining. `--quota-percent
   used` (on `./install.sh` and `herdr-agent-quota configure --apply`, or
   `$HERDR_AGENT_QUOTA_PERCENT` for a direct CLI run) flips every 5h/7d/30d

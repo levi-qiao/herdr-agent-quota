@@ -85,21 +85,43 @@ herdr-agent-quota configure --apply --agent claude,codex,pi
 
 ### 不重装也能改设置
 
-打开 **Agent quota settings** 插件 pane。可以改百分比口径、侧栏布局、行间距和
-watcher 间隔；按 `a` 应用时，它跑的就是 "Install / repair" 那条 `configure
---apply`，然后 reload Herdr 配置。
+打开 **Agent quota settings** 插件 pane。安装参数能设的东西这里都能改，包括装哪些
+agent：
 
 ```
-> * Percentages     <    used    >  how much quota is spent
-    Sidebar layout  <  stacked   >  every field on its own row
-    Row gap         <     1      >  one blank row between panes
-    Watch interval  <     1m     >  polled while an agent is working
+Agent quota settings
+====================
+  ─ Display ───
+>   Percentages     <   used    > how much quota is spent
+    Sidebar layout  <  packed   > cache·ttl and 5h·7d share a row
+    Row gap         <     1     > one blank row between panes
+    Watch interval  <    1m     > polled while an agent is working
+    Brand colors    <    on     > provider and model in agent hues
+  ─ Fields ───
+    [x] topic   [x] model   [x] cache   [x] ttl
+    [x] context [x] 5h      [x] 7d
+  ─ Agents ───
+    [x] claude  [x] codex   [x] grok    …
 
-  ↑↓ field   ←→ value   a apply   q quit
+  ↑↓ row  ←→/space value  a apply  q quit
 ```
 
-`*` 表示改了还没应用。agent 选择只展示、不可编辑：去掉一个 agent 必须真正卸载它的
-collector，仍然走 `./install.sh --agent` 和 `./uninstall.sh --agent`。
+`*` 表示改了还没应用。按 `a` 跑的就是 "Install / repair" 那条 `configure --apply`，
+然后 reload Herdr 配置，再强制刷新一次——新的行和行里的数字会一起立刻生效。
+
+取消勾选某个 agent 等于**卸载**它的 collector 并还原它自己的 statusLine，所以需要
+再按一次 `a` 确认。最后一个 agent 不能取消。
+
+Fields 是可选的额度字段。供应商名和 error token 永远显示：一行说不清自己属于哪个
+订阅、或者把"额度为什么读不到"藏起来，比不显示这行更糟。
+
+同样的选项也可以从命令行给：
+
+```sh
+./install.sh --fields topic,model,context,5h,7d
+./install.sh --brand-colors off
+herdr-agent-quota configure --apply --fields all --brand-colors on
+```
 
 手动刷新或卸载：
 
@@ -158,6 +180,8 @@ OpenCode 1.18.20 上验证；成功响应结构来自
   5h、7d 各占一行。两种布局下空 token 都会折叠。
 - token 全空的行会折叠。插件自有布局默认 `row_gap = 1`（pane 之间一行空白）。
   `--row-gap 0` 贴紧。Herdr 只接受整行；用户自己写的 `row_gap` 不会被改。
+- 除了供应商名和 error token，其他额度字段都能用 `--fields` 关掉；
+  `--brand-colors off` 去掉每个 agent 的品牌色，严重度颜色保留。
 - 百分比默认显示**剩余**额度。`--quota-percent used` 把 5h/7d/30d 的数字换成
   **已用**额度；侧栏 token 宽度不变，颜色依然按剩余量计算，红色永远表示快用完。
 - provider/model、topic、cache/TTL、context 和限额只在有可靠数据时显示。

@@ -89,23 +89,47 @@ Accepted values are `all`, `claude`, `codex`, `grok`, `agy`, `opencode`, and
 
 ### Change settings without reinstalling
 
-Open the **Agent quota settings** plugin pane. It edits the percentage style,
-the sidebar layout, the row gap, and the watcher interval, then applies them by
-running the same `configure --apply` the "Install / repair" action runs, and
-reloads Herdr's configuration.
+Open the **Agent quota settings** plugin pane. Everything the installer flags
+set can be changed there, including which agents are installed:
 
 ```
-> * Percentages     <    used    >  how much quota is spent
-    Sidebar layout  <  stacked   >  every field on its own row
-    Row gap         <     1      >  one blank row between panes
-    Watch interval  <     1m     >  polled while an agent is working
+Agent quota settings
+====================
+  ─ Display ───
+>   Percentages     <   used    > how much quota is spent
+    Sidebar layout  <  packed   > cache·ttl and 5h·7d share a row
+    Row gap         <     1     > one blank row between panes
+    Watch interval  <    1m     > polled while an agent is working
+    Brand colors    <    on     > provider and model in agent hues
+  ─ Fields ───
+    [x] topic   [x] model   [x] cache   [x] ttl
+    [x] context [x] 5h      [x] 7d
+  ─ Agents ───
+    [x] claude  [x] codex   [x] grok    …
 
-  ↑↓ field   ←→ value   a apply   q quit
+  ↑↓ row  ←→/space value  a apply  q quit
 ```
 
-`*` marks an edit that has not been applied. The agent selection is shown but
-not editable there: removing an agent has to uninstall its collector, so it
-stays with `./install.sh --agent` and `./uninstall.sh --agent`.
+`*` marks an edit that has not been applied. `a` runs the same
+`configure --apply` the "Install / repair" action runs, reloads Herdr's
+configuration, and forces one refresh, so the new rows and the values inside
+them both appear immediately.
+
+Unchecking an agent **uninstalls** that agent's collector and gives its own
+statusLine entry back, so it asks for a second `a` before doing it. The last
+agent cannot be unchecked.
+
+Fields are the optional quota values. The provider name and the error token are
+always shown: a row that cannot say which subscription it belongs to, or that
+hides the reason quota is missing, is worse than no row.
+
+The same choices from the command line:
+
+```sh
+./install.sh --fields topic,model,context,5h,7d
+./install.sh --brand-colors off
+herdr-agent-quota configure --apply --fields all --brand-colors on
+```
 
 Refresh or uninstall:
 
@@ -175,6 +199,9 @@ numbers match would be very helpful. Issues and PRs are welcome.
 - Rows whose tokens are all empty collapse. Plugin-owned layouts use
   `row_gap = 1` (one blank row between panes). Pass `--row-gap 0` to pack them
   flush. Herdr only accepts whole rows; a user-owned `row_gap` is left alone.
+- Every quota field except the provider name and the error token can be turned
+  off with `--fields`, and `--brand-colors off` drops the per-agent hues while
+  keeping the severity colors.
 - Quota percentages read as remaining quota by default. `--quota-percent used`
   flips every 5h/7d/30d number to what has been consumed instead; the sidebar
   token keeps its width, and the color still follows what is left, so red

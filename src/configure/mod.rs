@@ -6,7 +6,10 @@ mod integration;
 mod statusline;
 
 use crate::cache::CacheStore;
-use crate::cli::{AgentSelection, ConfigureOptions, PercentStyle, SidebarLayout, SidebarRowGap};
+use crate::cli::{
+    AgentSelection, BrandColors, ConfigureOptions, FieldSet, PercentStyle, SidebarLayout,
+    SidebarRowGap,
+};
 use crate::model::Harness;
 use crate::prefs;
 use anyhow::{Context, Result};
@@ -56,12 +59,18 @@ pub fn run(
         if agents.contains(&Harness::Claude) {
             claude::uninstall()?;
         }
-        herdr::uninstall(agents, full)?;
+        // The rows on disk were written from these settings, so uninstall
+        // needs them to recognise its own work and restore the backup.
+        let fields = resolved_fields(None, Some(&cache));
+        let brand = resolved_brand_colors(None, Some(&cache));
+        herdr::uninstall(agents, full, fields, brand)?;
         if full {
             cache.clear_watch_interval()?;
             cache.clear_sidebar_layout()?;
             cache.clear_row_gap()?;
             cache.clear_percent_style()?;
+            cache.clear_fields()?;
+            cache.clear_brand_colors()?;
             for name in prefs::ALL {
                 prefs::clear(name)?;
             }
@@ -97,7 +106,13 @@ pub fn run(
         cache.set_percent_style(percent)?;
         prefs::write(prefs::QUOTA_PERCENT, percent.as_str())?;
         println!("Quota percentages show {} quota.", percent.suffix());
-        herdr::apply(agents, layout, gap)?;
+        let fields = resolved_fields(options.fields, Some(&cache));
+        cache.set_fields(fields)?;
+        prefs::write(prefs::FIELDS, &fields.as_list())?;
+        let brand = resolved_brand_colors(options.brand_colors, Some(&cache));
+        cache.set_brand_colors(brand)?;
+        prefs::write(prefs::BRAND_COLORS, brand.as_str())?;
+        herdr::apply(agents, layout, gap, fields, brand)?;
         if agents.contains(&Harness::Claude) {
             claude::apply_with_refresh_interval(interval)?;
         }
@@ -113,7 +128,9 @@ pub fn run(
         let layout = resolved_sidebar_layout(options.sidebar_layout, cache.as_ref());
         let gap = resolved_row_gap(options.row_gap, cache.as_ref());
         let percent = resolved_percent_style(options.quota_percent, cache.as_ref());
-        herdr::check(agents, layout, gap)?;
+        let fields = resolved_fields(options.fields, cache.as_ref());
+        let brand = resolved_brand_colors(options.brand_colors, cache.as_ref());
+        herdr::check(agents, layout, gap, fields, brand)?;
         println!("Quota percentages show {} quota.", percent.suffix());
         if agents.contains(&Harness::Claude) {
             claude::check()?;
@@ -148,6 +165,23 @@ pub(crate) fn resolved_percent_style(
     PercentStyle::from_arg_or_env(explicit)
         .or_else(|| prefs::read(prefs::QUOTA_PERCENT).and_then(|value| PercentStyle::parse(&value)))
         .or_else(|| cache.and_then(CacheStore::percent_style))
+        .unwrap_or_default()
+}
+
+pub(crate) fn resolved_fields(explicit: Option<FieldSet>, cache: Option<&CacheStore>) -> FieldSet {
+    FieldSet::from_arg_or_env(explicit)
+        .or_else(|| prefs::read(prefs::FIELDS).and_then(|value| FieldSet::parse(&value)))
+        .or_else(|| cache.and_then(CacheStore::fields))
+        .unwrap_or_default()
+}
+
+pub(crate) fn resolved_brand_colors(
+    explicit: Option<BrandColors>,
+    cache: Option<&CacheStore>,
+) -> BrandColors {
+    BrandColors::from_arg_or_env(explicit)
+        .or_else(|| prefs::read(prefs::BRAND_COLORS).and_then(|value| BrandColors::parse(&value)))
+        .or_else(|| cache.and_then(CacheStore::brand_colors))
         .unwrap_or_default()
 }
 

@@ -1,4 +1,4 @@
-use crate::cli::{PercentStyle, SidebarLayout, SidebarRowGap};
+use crate::cli::{BrandColors, FieldSet, PercentStyle, SidebarLayout, SidebarRowGap};
 use crate::model::{
     merge_omitted_window_list, BillingTarget, ContextUsage, Provider, ProviderSnapshot,
 };
@@ -19,6 +19,8 @@ const WATCH_INTERVAL_FILE: &str = "watch-interval-seconds";
 const SIDEBAR_LAYOUT_FILE: &str = "sidebar-layout";
 const ROW_GAP_FILE: &str = "row-gap";
 const QUOTA_PERCENT_FILE: &str = "quota-percent";
+const FIELDS_FILE: &str = "fields";
+const BRAND_COLORS_FILE: &str = "brand-colors";
 const MAX_STATUSLINE_SESSIONS: usize = 128;
 
 #[derive(Debug, Clone)]
@@ -466,6 +468,50 @@ impl CacheStore {
         }
     }
 
+    /// The sidebar settings that shaped the rows currently on disk.
+    ///
+    /// Uninstall needs them to recognise its own work, and the settings pane
+    /// needs them to open on what is actually installed.
+    pub fn fields(&self) -> Option<FieldSet> {
+        fs::read_to_string(self.fields_path())
+            .ok()
+            .as_deref()
+            .and_then(FieldSet::parse)
+    }
+
+    pub fn set_fields(&self, fields: FieldSet) -> Result<()> {
+        self.ensure()?;
+        fs::write(self.fields_path(), fields.as_list()).context("write sidebar fields")
+    }
+
+    pub fn clear_fields(&self) -> Result<()> {
+        match fs::remove_file(self.fields_path()) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).context("remove sidebar fields"),
+        }
+    }
+
+    pub fn brand_colors(&self) -> Option<BrandColors> {
+        fs::read_to_string(self.brand_colors_path())
+            .ok()
+            .as_deref()
+            .and_then(BrandColors::parse)
+    }
+
+    pub fn set_brand_colors(&self, colors: BrandColors) -> Result<()> {
+        self.ensure()?;
+        fs::write(self.brand_colors_path(), colors.as_str()).context("write brand colors")
+    }
+
+    pub fn clear_brand_colors(&self) -> Result<()> {
+        match fs::remove_file(self.brand_colors_path()) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).context("remove brand colors"),
+        }
+    }
+
     pub fn validate_watch_interval_seconds(seconds: u64) -> Result<u64> {
         Self::valid_watch_interval(seconds).with_context(|| {
             format!(
@@ -563,6 +609,14 @@ impl CacheStore {
 
     fn quota_percent_path(&self) -> PathBuf {
         self.root.join(QUOTA_PERCENT_FILE)
+    }
+
+    fn fields_path(&self) -> PathBuf {
+        self.root.join(FIELDS_FILE)
+    }
+
+    fn brand_colors_path(&self) -> PathBuf {
+        self.root.join(BRAND_COLORS_FILE)
     }
 
     fn valid_watch_interval(seconds: u64) -> Option<u64> {

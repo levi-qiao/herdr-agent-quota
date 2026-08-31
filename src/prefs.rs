@@ -21,14 +21,18 @@ pub const WATCH_INTERVAL_SECONDS: &str = "watch-interval-seconds";
 pub const SIDEBAR_LAYOUT: &str = "sidebar-layout";
 pub const ROW_GAP: &str = "row-gap";
 pub const QUOTA_PERCENT: &str = "quota-percent";
+pub const FIELDS: &str = "fields";
+pub const BRAND_COLORS: &str = "brand-colors";
 
 /// Every preference a full uninstall must forget.
-pub const ALL: [&str; 5] = [
+pub const ALL: [&str; 7] = [
     AGENTS,
     WATCH_INTERVAL_SECONDS,
     SIDEBAR_LAYOUT,
     ROW_GAP,
     QUOTA_PERCENT,
+    FIELDS,
+    BRAND_COLORS,
 ];
 
 fn directory() -> Option<PathBuf> {

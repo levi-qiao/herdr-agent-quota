@@ -27,6 +27,8 @@ fn main() -> Result<()> {
             sidebar_layout,
             quota_percent,
             row_gap,
+            fields,
+            brand_colors,
         } => herdr_agent_quota::configure::run(
             check,
             apply,
@@ -37,6 +39,8 @@ fn main() -> Result<()> {
                 sidebar_layout,
                 quota_percent,
                 row_gap,
+                fields,
+                brand_colors,
             },
         ),
         Command::ClaudeStatusline => herdr_agent_quota::configure::claude::run_statusline_hook(),

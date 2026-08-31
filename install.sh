@@ -8,6 +8,8 @@
 #   ./install.sh --sidebar-layout stacked
 #   ./install.sh --row-gap 0
 #   ./install.sh --quota-percent used
+#   ./install.sh --fields topic,model,context,5h,7d
+#   ./install.sh --brand-colors off
 #
 # --agent installs only the agents you name (all, claude, codex, grok, agy,
 # opencode, pi). Anything you leave out gets no sidebar row, no statusLine entry
@@ -21,6 +23,15 @@
 #
 # --quota-percent remaining (default) shows how much quota is left; used shows
 # how much has been consumed. The colour always follows what is left.
+#
+# --fields picks the quota fields the sidebar shows: all (default), none, or a
+# comma-separated list of topic, model, cache, ttl, context, 5h, 7d. The
+# provider and the error token are always shown.
+#
+# --brand-colors on (default) tints provider and model with each agent's hue;
+# off leaves them in the sidebar's own text colour. Severity colours stay.
+#
+# Everything here can also be changed later in the Agent quota settings pane.
 #
 # Every option is written to the plugin config directory before configure runs.
 # Herdr executes a plugin action with a fixed command line in the server's own
@@ -39,6 +50,8 @@ AGENTS=""
 SIDEBAR_LAYOUT=""
 ROW_GAP=""
 QUOTA_PERCENT=""
+FIELDS=""
+BRAND_COLORS=""
 
 while (($# > 0)); do
   case "$1" in
@@ -67,8 +80,18 @@ while (($# > 0)); do
       QUOTA_PERCENT="$2"
       shift 2
       ;;
+    --fields)
+      (($# >= 2)) || { printf 'error: missing value for %s\n' "$1" >&2; exit 1; }
+      FIELDS="$2"
+      shift 2
+      ;;
+    --brand-colors)
+      (($# >= 2)) || { printf 'error: missing value for %s\n' "$1" >&2; exit 1; }
+      BRAND_COLORS="$2"
+      shift 2
+      ;;
     -h|--help)
-      sed -n '2,29p' "$0"
+      sed -n '2,42p' "$0"
       exit 0
       ;;
     *)
@@ -98,6 +121,11 @@ case "$QUOTA_PERCENT" in
   ""|remaining|used) ;;
   *) die "quota-percent must be remaining or used" ;;
 esac
+case "$BRAND_COLORS" in
+  ""|on|off) ;;
+  *) die "brand-colors must be on or off" ;;
+esac
+# The field list is validated by configure, which owns the field names.
 
 printf '%s\n' '→ building herdr-agent-quota'
 cargo build --release --locked --manifest-path "$ROOT/Cargo.toml"
@@ -124,6 +152,8 @@ write_plugin_pref watch-interval-seconds "$WATCH_INTERVAL_SECONDS"
 write_plugin_pref sidebar-layout "$SIDEBAR_LAYOUT"
 write_plugin_pref row-gap "$ROW_GAP"
 write_plugin_pref quota-percent "$QUOTA_PERCENT"
+write_plugin_pref fields "$FIELDS"
+write_plugin_pref brand-colors "$BRAND_COLORS"
 
 printf '%s\n' '→ installing reversible sidebar and provider collectors'
 invoke_action_and_wait configure || die "configuration action failed"

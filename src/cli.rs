@@ -83,6 +83,15 @@ pub enum Command {
         /// passes this through $HERDR_AGENT_QUOTA_PERCENT.
         #[arg(long, value_enum)]
         quota_percent: Option<PercentStyle>,
+        /// Quota fields the sidebar shows: all (default), none, or a
+        /// comma-separated list of topic, model, cache, ttl, context, 5h, 7d.
+        /// Provider and the error token are always shown.
+        #[arg(long, value_parser = parse_field_set)]
+        fields: Option<FieldSet>,
+        /// Whether provider and model carry each agent's brand hue. Severity
+        /// colours are unaffected.
+        #[arg(long, value_enum)]
+        brand_colors: Option<BrandColors>,
         /// Blank rows between agent panes. `1` (default) separates them;
         /// `0` packs them flush. Herdr only accepts whole rows. install.sh
         /// writes this to the plugin config directory because plugin actions
@@ -148,6 +157,202 @@ pub enum SidebarLayout {
     Stacked,
 }
 
+/// A quota field the sidebar can be told to leave out.
+///
+/// Provider is not here: it is the identity of the row, and a row that cannot
+/// say which subscription it belongs to is worse than no row. `$quota_error`
+/// is not here either — it is how the plugin reports that it could not speak
+/// for a pane at all, and hiding it would hide the failure, not the field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarField {
+    Topic,
+    Model,
+    Cache,
+    Ttl,
+    Context,
+    FiveHour,
+    Week,
+}
+
+impl SidebarField {
+    pub const ALL: [Self; 7] = [
+        Self::Topic,
+        Self::Model,
+        Self::Cache,
+        Self::Ttl,
+        Self::Context,
+        Self::FiveHour,
+        Self::Week,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Topic => "topic",
+            Self::Model => "model",
+            Self::Cache => "cache",
+            Self::Ttl => "ttl",
+            Self::Context => "context",
+            Self::FiveHour => "5h",
+            Self::Week => "7d",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        let name = name.trim().to_ascii_lowercase();
+        Self::ALL
+            .into_iter()
+            .find(|field| field.name() == name)
+            .or(match name.as_str() {
+                "week" => Some(Self::Week),
+                "5h_limit" | "five_hour" => Some(Self::FiveHour),
+                _ => None,
+            })
+    }
+
+    fn bit(self) -> u8 {
+        1 << Self::ALL
+            .iter()
+            .position(|field| *field == self)
+            .unwrap_or(0)
+    }
+}
+
+/// Which quota fields the sidebar shows. Every field is on by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FieldSet(u8);
+
+impl FieldSet {
+    pub const ENV: &'static str = "HERDR_AGENT_QUOTA_FIELDS";
+
+    pub fn all() -> Self {
+        Self(
+            SidebarField::ALL
+                .iter()
+                .fold(0, |bits, field| bits | field.bit()),
+        )
+    }
+
+    pub fn contains(self, field: SidebarField) -> bool {
+        self.0 & field.bit() != 0
+    }
+
+    pub fn toggled(self, field: SidebarField) -> Self {
+        Self(self.0 ^ field.bit())
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// A comma-separated list of the fields that are on, in `ALL` order.
+    ///
+    /// The empty selection is written as `none` rather than an empty string,
+    /// which every preference reader treats as "not set".
+    pub fn as_list(self) -> String {
+        if self.is_empty() {
+            return "none".to_string();
+        }
+        SidebarField::ALL
+            .into_iter()
+            .filter(|field| self.contains(*field))
+            .map(SidebarField::name)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// `None` when nothing in the list is a field name, so an unparsable
+    /// preference falls through to the next source rather than hiding
+    /// everything.
+    pub fn parse(raw: &str) -> Option<Self> {
+        let raw = raw.trim();
+        if raw.eq_ignore_ascii_case("all") {
+            return Some(Self::all());
+        }
+        if raw.eq_ignore_ascii_case("none") {
+            return Some(Self(0));
+        }
+        let bits = raw
+            .split(',')
+            .filter_map(SidebarField::parse)
+            .fold(0, |bits, field| bits | field.bit());
+        (bits != 0).then_some(Self(bits))
+    }
+
+    pub fn from_arg_or_env(value: Option<Self>) -> Option<Self> {
+        if value.is_some() {
+            return value;
+        }
+        std::env::var(Self::ENV)
+            .ok()
+            .as_deref()
+            .and_then(Self::parse)
+    }
+}
+
+impl Default for FieldSet {
+    fn default() -> Self {
+        Self::all()
+    }
+}
+
+fn parse_field_set(value: &str) -> Result<FieldSet, String> {
+    FieldSet::parse(value).ok_or_else(|| {
+        format!(
+            "fields must be all, none, or a comma-separated list of: {}",
+            SidebarField::ALL
+                .into_iter()
+                .map(SidebarField::name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })
+}
+
+/// Whether provider and model carry each agent's brand hue.
+///
+/// Herdr owns the sidebar theme; this is the only colour the plugin writes of
+/// its own, so it is the only colour it can offer to turn off. Severity
+/// colours stay in both settings: they are information, not decoration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum BrandColors {
+    #[default]
+    On,
+    Off,
+}
+
+impl BrandColors {
+    pub const ENV: &'static str = "HERDR_AGENT_QUOTA_BRAND_COLORS";
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+
+    pub fn is_on(self) -> bool {
+        self == Self::On
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "on" | "brand" | "true" => Some(Self::On),
+            "off" | "plain" | "false" => Some(Self::Off),
+            _ => None,
+        }
+    }
+
+    pub fn from_arg_or_env(value: Option<Self>) -> Option<Self> {
+        if value.is_some() {
+            return value;
+        }
+        std::env::var(Self::ENV)
+            .ok()
+            .as_deref()
+            .and_then(Self::parse)
+    }
+}
+
 /// Every option `configure` accepts, from any of its channels.
 ///
 /// They travel together because they are resolved together: a flag wins, then
@@ -159,6 +364,8 @@ pub struct ConfigureOptions {
     pub sidebar_layout: Option<SidebarLayout>,
     pub quota_percent: Option<PercentStyle>,
     pub row_gap: Option<SidebarRowGap>,
+    pub fields: Option<FieldSet>,
+    pub brand_colors: Option<BrandColors>,
 }
 
 /// Which side of a quota window a percentage reports.
