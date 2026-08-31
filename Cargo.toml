@@ -1,6 +1,6 @@
 [package]
 name = "herdr-agent-quota"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 rust-version = "1.95"
 description = "Credential-scoped AI quota and context in Herdr for Claude, Codex, Grok, Agy, OpenCode, and Pi"
