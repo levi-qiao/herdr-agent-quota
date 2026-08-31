@@ -6,7 +6,7 @@ mod integration;
 mod statusline;
 
 use crate::cache::CacheStore;
-use crate::cli::AgentSelection;
+use crate::cli::{AgentSelection, SidebarLayout, SidebarRowGap};
 use crate::model::Harness;
 use anyhow::{Context, Result};
 
@@ -29,6 +29,8 @@ pub fn run(
     uninstall: bool,
     agents: &[Harness],
     watch_interval_seconds: Option<u64>,
+    sidebar_layout: Option<SidebarLayout>,
+    row_gap: Option<SidebarRowGap>,
 ) -> Result<()> {
     if apply || uninstall {
         std::env::var_os("HERDR_PLUGIN_STATE_DIR").context(
@@ -58,6 +60,10 @@ pub fn run(
         herdr::uninstall(agents, full)?;
         if full {
             cache.clear_watch_interval()?;
+            cache.clear_sidebar_layout()?;
+            cache.clear_row_gap()?;
+            clear_plugin_pref("sidebar-layout")?;
+            clear_plugin_pref("row-gap")?;
         }
     } else if apply {
         let cache = CacheStore::from_env()?;
@@ -73,7 +79,13 @@ pub fn run(
         } else {
             cache.watch_interval_seconds()
         };
-        herdr::apply(agents)?;
+        let layout = resolve_sidebar_layout(sidebar_layout, Some(&cache));
+        cache.set_sidebar_layout(layout)?;
+        write_plugin_pref("sidebar-layout", layout.as_str())?;
+        let gap = resolve_row_gap(row_gap, Some(&cache));
+        cache.set_row_gap(gap)?;
+        write_plugin_pref("row-gap", &gap.to_string())?;
+        herdr::apply(agents, layout, gap)?;
         if agents.contains(&Harness::Claude) {
             claude::apply_with_refresh_interval(interval)?;
         }
@@ -85,7 +97,10 @@ pub fn run(
         }
         integration::report_missing(agents);
     } else {
-        herdr::check(agents)?;
+        let cache = CacheStore::from_env().ok();
+        let layout = resolve_sidebar_layout(sidebar_layout, cache.as_ref());
+        let gap = resolve_row_gap(row_gap, cache.as_ref());
+        herdr::check(agents, layout, gap)?;
         if agents.contains(&Harness::Claude) {
             claude::check()?;
         }
@@ -98,6 +113,51 @@ pub fn run(
         integration::report_missing(agents);
     }
     Ok(())
+}
+
+fn resolve_sidebar_layout(
+    explicit: Option<SidebarLayout>,
+    cache: Option<&CacheStore>,
+) -> SidebarLayout {
+    SidebarLayout::from_arg_or_env(explicit)
+        .or_else(|| plugin_pref("sidebar-layout").and_then(|value| SidebarLayout::parse(&value)))
+        .or_else(|| cache.and_then(CacheStore::sidebar_layout))
+        .unwrap_or_default()
+}
+
+fn resolve_row_gap(explicit: Option<SidebarRowGap>, cache: Option<&CacheStore>) -> SidebarRowGap {
+    SidebarRowGap::from_arg_or_env(explicit)
+        .or_else(|| plugin_pref("row-gap").and_then(|value| SidebarRowGap::parse(&value)))
+        .or_else(|| cache.and_then(CacheStore::row_gap))
+        .unwrap_or_default()
+}
+
+fn plugin_pref(name: &str) -> Option<String> {
+    let directory = std::env::var_os("HERDR_PLUGIN_CONFIG_DIR")?;
+    let value = std::fs::read_to_string(std::path::PathBuf::from(directory).join(name)).ok()?;
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn write_plugin_pref(name: &str, value: &str) -> Result<()> {
+    let Some(directory) = std::env::var_os("HERDR_PLUGIN_CONFIG_DIR") else {
+        return Ok(());
+    };
+    let path = std::path::PathBuf::from(directory);
+    std::fs::create_dir_all(&path)
+        .with_context(|| format!("create plugin config directory {}", path.display()))?;
+    std::fs::write(path.join(name), value).with_context(|| format!("write plugin pref {name}"))
+}
+
+fn clear_plugin_pref(name: &str) -> Result<()> {
+    let Some(directory) = std::env::var_os("HERDR_PLUGIN_CONFIG_DIR") else {
+        return Ok(());
+    };
+    match std::fs::remove_file(std::path::PathBuf::from(directory).join(name)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("remove plugin pref {name}")),
+    }
 }
 
 #[cfg(test)]

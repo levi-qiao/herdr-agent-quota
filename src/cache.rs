@@ -1,3 +1,4 @@
+use crate::cli::{SidebarLayout, SidebarRowGap};
 use crate::model::{
     merge_omitted_window_list, BillingTarget, ContextUsage, Provider, ProviderSnapshot,
 };
@@ -15,6 +16,8 @@ pub const MIN_WATCH_INTERVAL_SECONDS: u64 = 30;
 pub const MAX_WATCH_INTERVAL_SECONDS: u64 = 60 * 60;
 const WATCH_INTERVAL_ENV: &str = "HERDR_AGENT_QUOTA_WATCH_INTERVAL_SECONDS";
 const WATCH_INTERVAL_FILE: &str = "watch-interval-seconds";
+const SIDEBAR_LAYOUT_FILE: &str = "sidebar-layout";
+const ROW_GAP_FILE: &str = "row-gap";
 const MAX_STATUSLINE_SESSIONS: usize = 128;
 
 #[derive(Debug, Clone)]
@@ -400,6 +403,51 @@ impl CacheStore {
         }
     }
 
+    /// Last sidebar layout written by `configure --apply`.
+    ///
+    /// Invalid files are ignored so a repair never refuses to write rows.
+    /// The installer environment and config-dir prefs are resolved by
+    /// `configure`, not here.
+    pub fn sidebar_layout(&self) -> Option<SidebarLayout> {
+        fs::read_to_string(self.sidebar_layout_path())
+            .ok()
+            .as_deref()
+            .and_then(SidebarLayout::parse)
+    }
+
+    pub fn set_sidebar_layout(&self, layout: SidebarLayout) -> Result<()> {
+        self.ensure()?;
+        fs::write(self.sidebar_layout_path(), layout.as_str()).context("write sidebar layout")
+    }
+
+    pub fn clear_sidebar_layout(&self) -> Result<()> {
+        match fs::remove_file(self.sidebar_layout_path()) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).context("remove sidebar layout"),
+        }
+    }
+
+    pub fn row_gap(&self) -> Option<SidebarRowGap> {
+        fs::read_to_string(self.row_gap_path())
+            .ok()
+            .as_deref()
+            .and_then(SidebarRowGap::parse)
+    }
+
+    pub fn set_row_gap(&self, gap: SidebarRowGap) -> Result<()> {
+        self.ensure()?;
+        fs::write(self.row_gap_path(), gap.to_string()).context("write sidebar row gap")
+    }
+
+    pub fn clear_row_gap(&self) -> Result<()> {
+        match fs::remove_file(self.row_gap_path()) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).context("remove sidebar row gap"),
+        }
+    }
+
     pub fn validate_watch_interval_seconds(seconds: u64) -> Result<u64> {
         Self::valid_watch_interval(seconds).with_context(|| {
             format!(
@@ -485,6 +533,14 @@ impl CacheStore {
 
     fn watch_interval_path(&self) -> PathBuf {
         self.root.join(WATCH_INTERVAL_FILE)
+    }
+
+    fn sidebar_layout_path(&self) -> PathBuf {
+        self.root.join(SIDEBAR_LAYOUT_FILE)
+    }
+
+    fn row_gap_path(&self) -> PathBuf {
+        self.root.join(ROW_GAP_FILE)
     }
 
     fn valid_watch_interval(seconds: u64) -> Option<u64> {
@@ -1420,5 +1476,32 @@ mod tests {
         );
         assert!(CacheStore::validate_watch_interval_seconds(MIN_WATCH_INTERVAL_SECONDS).is_ok());
         assert!(CacheStore::validate_watch_interval_seconds(MAX_WATCH_INTERVAL_SECONDS).is_ok());
+    }
+
+    #[test]
+    fn sidebar_layout_defaults_to_packed_and_persists_stacked() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        assert_eq!(cache.sidebar_layout(), None);
+        cache
+            .set_sidebar_layout(crate::cli::SidebarLayout::Stacked)
+            .unwrap();
+        assert_eq!(
+            cache.sidebar_layout(),
+            Some(crate::cli::SidebarLayout::Stacked)
+        );
+        cache.clear_sidebar_layout().unwrap();
+        assert_eq!(cache.sidebar_layout(), None);
+    }
+
+    #[test]
+    fn row_gap_persists_flush_and_separated() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        assert_eq!(cache.row_gap(), None);
+        cache.set_row_gap(SidebarRowGap::FLUSH).unwrap();
+        assert_eq!(cache.row_gap(), Some(SidebarRowGap::FLUSH));
+        cache.clear_row_gap().unwrap();
+        assert_eq!(cache.row_gap(), None);
     }
 }

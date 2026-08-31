@@ -147,34 +147,45 @@ fn default_herdr_rows_become_plane_provider_usage_and_topic_lines() {
     assert!(applied.contains("$quota_provider_model"));
     assert!(applied.contains("bold = true"));
     assert!(applied.contains("$quota_5h_normal"));
+    assert!(applied.contains("$quota_5h_caution"));
     assert!(applied.contains("$quota_5h_warning"));
     assert!(applied.contains("$quota_5h_danger"));
     assert!(applied.contains("$quota_week_normal"));
+    assert!(applied.contains("$quota_week_caution"));
     assert!(applied.contains("$quota_week_warning"));
     assert!(applied.contains("$quota_week_danger"));
     assert!(applied.contains("$quota_week_inline_normal"));
+    assert!(applied.contains("$quota_week_inline_caution"));
     assert!(applied.contains("$quota_week_inline_warning"));
     assert!(applied.contains("$quota_week_inline_danger"));
     assert!(!applied.contains("[\"$quota_summary\"]"));
     assert!(applied.contains("$quota_topic"));
     assert!(applied.contains("$quota_context"));
     assert!(applied.contains("$quota_provider_model"));
-    assert!(applied.contains("fg = \"#9aa7b8\""));
+    assert!(applied.contains("fg = \"#969eae\""));
     assert!(applied.find("$quota_provider_model").unwrap() < applied.find("$quota_topic").unwrap());
     assert!(applied.contains("$quota_cache"));
     assert!(applied.contains("$quota_cache_ttl"));
-    assert!(applied.contains("fg = \"#9aa7b8\""));
-    assert!(applied.contains("row_gap = 0 # herdr-agent-quota"));
+    assert!(!applied.contains("$quota_5h_label"));
+    assert!(!applied.contains("$quota_5h_eta"));
+    assert!(applied.contains("fg = \"#969eae\""));
+    assert!(applied.contains("row_gap = 1 # herdr-agent-quota"));
     assert!(applied.find("$quota_topic").unwrap() < applied.find("$quota_5h_normal").unwrap());
-    assert!(applied.contains("fg = \"#84b084\""));
-    assert!(applied.contains("fg = \"#cdaa65\""));
-    assert!(applied.contains("fg = \"#ca6470\""));
+    assert!(applied.contains("fg = \"#82d978\""));
+    assert!(applied.contains("fg = \"#e4b957\""));
+    assert!(!applied.contains("fg = \"#c6d768\""));
+    assert!(!applied.contains("fg = \"#e2bd58\""));
+    assert!(applied.contains("fg = \"#f16f7e\""));
+    assert!(applied.contains("fg = \"#eceef2\""));
+    assert!(!applied.contains("selection_bg"));
+    assert!(!applied.contains("active_row_bg"));
     assert!(applied.contains("[ui.sidebar.agents.rows_by_agent]"));
-    assert!(applied.contains("fg = \"#c47f6a\""));
-    assert!(applied.contains("fg = \"#7998b7\""));
-    assert!(applied.contains("fg = \"#acb4c3\""));
-    assert!(applied.contains("fg = \"#84b0af\""));
-    assert!(applied.contains("fg = \"#b58bbd\""));
+    assert!(applied.contains("fg = \"#e88461\""));
+    assert!(applied.contains("fg = \"#c4d7f5\""));
+    assert!(applied.contains("fg = \"#d5d5d8\""));
+    assert!(applied.contains("fg = \"#8ab4f8\""));
+    assert!(applied.contains("fg = \"#bba3e8\""));
+    assert!(applied.contains("fg = \"#d4a0c8\""));
 }
 
 #[test]
@@ -213,9 +224,29 @@ fn context_is_the_penultimate_row_and_model_shares_provider_style() {
     assert_eq!(context_index + 1, limit_index);
     assert_eq!(limit_index + 1, rows.len());
 
-    let claude_rows = agents["rows_by_agent"]["claude"].as_value().unwrap();
-    let rendered = claude_rows.to_string();
-    assert_eq!(rendered.matches("fg = \"#c47f6a\"").count(), 1);
+    for (provider, color, dim) in [
+        ("claude", "#e88461", Some("#f0a080")),
+        ("codex", "#c4d7f5", Some("#aab9d0")),
+        ("grok", "#d5d5d8", Some("#acb0b7")),
+        ("agy", "#8ab4f8", Some("#a7c7fa")),
+        ("opencode", "#bba3e8", None),
+        ("pi", "#d4a0c8", None),
+    ] {
+        let provider_rows = agents["rows_by_agent"][provider].as_value().unwrap();
+        let rendered = provider_rows.to_string();
+        let needle = format!("fg = \"{color}\"");
+        assert_eq!(
+            rendered.matches(needle.as_str()).count(),
+            1,
+            "wrong brand color for {provider}: {rendered}"
+        );
+        if let Some(dim) = dim {
+            assert!(
+                !rendered.contains(dim),
+                "packed {provider} should not use model dim: {rendered}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -343,15 +374,15 @@ fn sidebar_configuration_preserves_an_explicit_row_gap() {
 }
 
 #[test]
-fn sidebar_configuration_migrates_the_plugin_owned_gap_to_packed_layout() {
+fn sidebar_configuration_migrates_the_plugin_owned_gap_to_separated_panes() {
     let original = concat!(
         "[ui.sidebar.agents]\n",
-        "row_gap = 1 # herdr-agent-quota\n",
+        "row_gap = 0 # herdr-agent-quota\n",
         "rows = [[\"state_icon\", \"agent\"]]\n"
     );
     let applied = add_quota_row(original).unwrap();
-    assert!(applied.contains("row_gap = 0 # herdr-agent-quota"));
-    assert!(!applied.contains("row_gap = 1"));
+    assert!(applied.contains("row_gap = 1 # herdr-agent-quota"));
+    assert!(!applied.contains("row_gap = 0"));
 }
 
 #[test]
@@ -449,8 +480,10 @@ fn claude_cache_is_published_by_refresh_event() {
     run_claude_refresh(state.path(), &herdr_stub);
     let report = fs::read_to_string(herdr_log).unwrap();
     assert!(!report.contains("pane read"));
-    assert!(report.contains("quota_5h=5h 42%"));
-    assert!(report.contains("quota_week=7d 73%"));
+    assert!(report.contains("quota_5h_warning=5h 42%"));
+    assert!(report.contains("quota_week_normal=7d 73%"));
+    assert!(!report.contains("quota_5h_label="));
+    assert!(!report.contains("quota_week_label="));
 }
 
 #[test]
@@ -504,7 +537,8 @@ fn statusline_without_context_keeps_the_last_context_snapshot() {
     run_claude_refresh(state.path(), &herdr_stub);
     let report = fs::read_to_string(herdr_log).unwrap();
     assert!(report.contains("quota_context=context 24%"));
-    assert!(report.contains("quota_week=7d 72%"));
+    assert!(report.contains("quota_week_normal=7d 72%"));
+    assert!(!report.contains("quota_week_label="));
 }
 
 #[test]
@@ -554,14 +588,20 @@ fn concurrent_claude_accounts_keep_their_own_quota_windows() {
         .lines()
         .find(|line| line.contains("w2:p1"))
         .expect("personal pane reported");
-    assert!(work_report.contains("quota_5h=5h 82%"), "{work_report}");
-    assert!(work_report.contains("quota_week=7d 90%"), "{work_report}");
     assert!(
-        personal_report.contains("quota_5h=5h 18%"),
+        work_report.contains("quota_5h_normal=5h 82%"),
+        "{work_report}"
+    );
+    assert!(
+        work_report.contains("quota_week_normal=7d 90%"),
+        "{work_report}"
+    );
+    assert!(
+        personal_report.contains("quota_5h_danger=5h 18%"),
         "{personal_report}"
     );
     assert!(
-        personal_report.contains("quota_week=7d 10%"),
+        personal_report.contains("quota_week_danger=7d 10%"),
         "{personal_report}"
     );
 }
@@ -788,7 +828,7 @@ fn install_opencode_store(xdg_data_home: &Path, auth_name: &str, db_name: &str) 
 }
 
 fn plugin_quota_tokens() -> &'static str {
-    r#"{"quota_state":"?","quota_provider":"Claude","quota_provider_model":"Claude","quota_5h":"5h 10%","quota_week":"7d 20%","quota_summary":"5h 10% · 7d 20%"}"#
+    r#"{"quota_provider":"Claude","quota_provider_model":"Claude","quota_5h_label":"5h","quota_5h_danger":"10%","quota_week_label":"7d","quota_week_warning":"20%"}"#
 }
 
 fn two_opencode_inventory(named_session: &str, named_tokens: &str) -> String {
@@ -974,7 +1014,7 @@ fn claude_collector_does_not_republish_unchanged_quota() {
     let state = tempdir().unwrap();
     let (herdr_stub, herdr_log) = install_herdr_stub(
         state.path(),
-        r#"{"result":{"agents":[{"agent":"claude","pane_id":"w1:p1","tokens":{"quota_state":"?","quota_provider":"Claude","quota_provider_model":"Claude","quota_5h":"5h 42%","quota_5h_warning":"5h 42%","quota_week":"7d 73%","quota_week_warning":"7d 73%","quota_summary":"5h 42% · 7d 73%"}}]}}"#,
+        r#"{"result":{"agents":[{"agent":"claude","pane_id":"w1:p1","tokens":{"quota_provider":"Claude","quota_provider_model":"Claude","quota_5h_warning":"5h 42%","quota_week_normal":"7d 73%"}}]}}"#,
     );
 
     let input = br#"{
@@ -1385,6 +1425,166 @@ fn an_unusable_environment_selection_still_installs_everything() {
     }
 }
 
+#[test]
+fn stacked_sidebar_layout_is_persisted_across_a_repair() {
+    let root = tempdir().unwrap();
+    let homes = AgentHomes::new(root.path());
+    let output = homes.configure(&["--apply", "--sidebar-layout", "stacked"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        sidebar_is_stacked(&homes.sidebar()),
+        "first apply was not stacked: {}",
+        homes.sidebar()
+    );
+
+    assert!(homes.configure(&["--apply"]).status.success());
+    assert!(
+        sidebar_is_stacked(&homes.sidebar()),
+        "repair dropped stacked: {}",
+        homes.sidebar()
+    );
+
+    assert!(homes
+        .configure(&["--apply", "--sidebar-layout", "packed"])
+        .status
+        .success());
+    assert!(
+        sidebar_is_packed(&homes.sidebar()),
+        "explicit packed did not switch: {}",
+        homes.sidebar()
+    );
+}
+
+#[test]
+fn an_installer_can_select_stacked_layout_through_the_environment() {
+    let root = tempdir().unwrap();
+    let homes = AgentHomes::new(root.path());
+    let output = homes.configure_with_env(
+        &["--apply"],
+        &[("HERDR_AGENT_QUOTA_SIDEBAR_LAYOUT", "stacked")],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(sidebar_is_stacked(&homes.sidebar()), "{}", homes.sidebar());
+}
+
+#[test]
+fn flush_row_gap_is_persisted_across_a_repair() {
+    let root = tempdir().unwrap();
+    let homes = AgentHomes::new(root.path());
+    let output = homes.configure(&["--apply", "--row-gap", "0"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(homes.sidebar().contains("row_gap = 0 # herdr-agent-quota"));
+
+    assert!(homes.configure(&["--apply"]).status.success());
+    assert!(
+        homes.sidebar().contains("row_gap = 0 # herdr-agent-quota"),
+        "repair dropped flush gap: {}",
+        homes.sidebar()
+    );
+
+    assert!(homes
+        .configure(&["--apply", "--row-gap", "1"])
+        .status
+        .success());
+    assert!(homes.sidebar().contains("row_gap = 1 # herdr-agent-quota"));
+    assert!(!homes.sidebar().contains("row_gap = 0"));
+}
+
+#[test]
+fn an_installer_can_select_flush_gap_through_the_plugin_config_dir() {
+    let root = tempdir().unwrap();
+    let homes = AgentHomes::new(root.path());
+    let config_dir = root.path().join("plugin-config");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(config_dir.join("row-gap"), "0\n").unwrap();
+    fs::write(config_dir.join("sidebar-layout"), "stacked\n").unwrap();
+    let output = homes.configure_with_env(
+        &["--apply"],
+        &[("HERDR_PLUGIN_CONFIG_DIR", config_dir.to_str().unwrap())],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sidebar = homes.sidebar();
+    assert!(sidebar_is_stacked(&sidebar), "{sidebar}");
+    assert!(
+        sidebar.contains("row_gap = 0 # herdr-agent-quota"),
+        "{sidebar}"
+    );
+}
+
+fn sidebar_is_packed(sidebar: &str) -> bool {
+    quota_tokens_share_a_row(sidebar, "$quota_cache", "$quota_cache_ttl")
+        && quota_tokens_share_a_row(sidebar, "$quota_5h_normal", "$quota_week_normal")
+        && tab_shares_row_with_provider_model(sidebar)
+}
+
+fn sidebar_is_stacked(sidebar: &str) -> bool {
+    !quota_tokens_share_a_row(sidebar, "$quota_cache", "$quota_cache_ttl")
+        && !quota_tokens_share_a_row(sidebar, "$quota_context", "$quota_week_inline_normal")
+        && !quota_tokens_share_a_row(sidebar, "$quota_5h_normal", "$quota_week_normal")
+        && !quota_tokens_share_a_row(sidebar, "$quota_provider", "$quota_model")
+        && !tab_shares_row_with_provider_model(sidebar)
+        && sidebar_has_token(sidebar, "$quota_provider")
+        && sidebar_has_token(sidebar, "$quota_model")
+        && !sidebar_has_token(sidebar, "$quota_provider_model")
+        && sidebar.contains("$quota_cache")
+        && sidebar.contains("$quota_week_normal")
+}
+
+fn sidebar_has_token(sidebar: &str, token: &str) -> bool {
+    let document = sidebar.parse::<toml_edit::DocumentMut>().unwrap();
+    let Some(rows) = document["ui"]["sidebar"]["agents"]["rows"].as_array() else {
+        return false;
+    };
+    let present = rows.iter().any(|row| row_contains_token(row, token));
+    present
+}
+
+fn tab_shares_row_with_provider_model(sidebar: &str) -> bool {
+    let document = sidebar.parse::<toml_edit::DocumentMut>().unwrap();
+    let Some(rows) = document["ui"]["sidebar"]["agents"]["rows"].as_array() else {
+        return false;
+    };
+    let shares = rows.iter().any(|row| {
+        let Some(items) = row.as_array() else {
+            return false;
+        };
+        items
+            .iter()
+            .any(|item| configured_token(item) == Some("tab"))
+            && items
+                .iter()
+                .any(|item| configured_token(item) == Some("$quota_provider_model"))
+    });
+    shares
+}
+
+fn quota_tokens_share_a_row(sidebar: &str, left: &str, right: &str) -> bool {
+    let document = sidebar.parse::<toml_edit::DocumentMut>().unwrap();
+    let Some(rows) = document["ui"]["sidebar"]["agents"]["rows"].as_array() else {
+        return false;
+    };
+    let shares = rows
+        .iter()
+        .any(|row| row_contains_token(row, left) && row_contains_token(row, right));
+    shares
+}
+
 fn pi_fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/pi")
@@ -1581,7 +1781,10 @@ fn pi_codex_event_overlays_exact_session_context_and_cache_without_inventing_ttl
     );
     assert!(calls.contains("--token quota_cache=cache 85.0%"), "{calls}");
     assert!(!calls.contains("quota_cache_ttl"), "{calls}");
-    assert!(calls.contains("--token quota_week=7d 80%"), "{calls}");
+    assert!(
+        calls.contains("--token quota_week_inline_normal=7d 80%"),
+        "{calls}"
+    );
 }
 
 #[test]
@@ -1753,8 +1956,8 @@ fn pi_different_account_preserves_stale_quota_and_cannot_borrow_codex_cache() {
         calls.contains("--token quota_provider_model=Codex/model-b"),
         "{calls}"
     );
-    assert!(calls.contains("--token quota_5h=5h 10%"), "{calls}");
-    assert!(calls.contains("--token quota_week=7d 20%"), "{calls}");
+    assert!(calls.contains("--token quota_5h_danger=10%"), "{calls}");
+    assert!(calls.contains("--token quota_week_warning=20%"), "{calls}");
     assert!(!calls.contains("--clear-token quota_5h"), "{calls}");
     assert!(!calls.contains("--clear-token quota_week"), "{calls}");
     assert!(!codex_log.exists(), "indeterminate route invoked Codex");
@@ -1793,8 +1996,8 @@ fn pi_model_switch_updates_identity_but_preserves_indeterminate_quota() {
         calls.contains("--token quota_provider_model=Grok/grok-4.6"),
         "{calls}"
     );
-    assert!(calls.contains("--token quota_5h=5h 10%"), "{calls}");
-    assert!(calls.contains("--token quota_week=7d 20%"), "{calls}");
+    assert!(calls.contains("--token quota_5h_danger=10%"), "{calls}");
+    assert!(calls.contains("--token quota_week_warning=20%"), "{calls}");
     assert!(!calls.contains("--clear-token quota_5h"), "{calls}");
     assert!(!calls.contains("--clear-token quota_week"), "{calls}");
     assert!(!codex_log.exists(), "switched xAI route invoked Codex");

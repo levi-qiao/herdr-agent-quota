@@ -12,8 +12,14 @@ pub struct MetadataTokens {
     pub quota_provider_model: String,
     pub quota_status: String,
     pub quota_5h: String,
+    pub quota_5h_label: String,
+    pub quota_5h_percent: String,
+    pub quota_5h_eta: String,
     pub quota_5h_severity: Option<Severity>,
     pub quota_week: String,
+    pub quota_week_label: String,
+    pub quota_week_percent: String,
+    pub quota_week_eta: String,
     pub quota_week_severity: Option<Severity>,
     pub quota_summary: String,
     pub quota_context: String,
@@ -74,6 +80,14 @@ impl MetadataTokens {
         let quota_provider = snapshot.provider.display_name().to_string();
         let quota_model = model.unwrap_or_default().to_string();
         let quota_5h = sidebar_window(windows, snapshot.provider, WindowKind::FiveHour, now_unix);
+        let five_hour = window_in(windows, WindowKind::FiveHour)
+            .map(|window| compact_window_parts(window, now_unix));
+        let weekly = window_in(windows, WindowKind::Weekly)
+            .map(|window| compact_window_parts(window, now_unix));
+        let five_hour_placeholder = five_hour
+            .is_none()
+            .then(|| missing_five_hour_label(snapshot.provider))
+            .flatten();
         let severity = ProviderSnapshot::severity_for_windows(snapshot.provider, windows, now_unix);
         Self {
             quota_state: severity.symbol().to_string(),
@@ -84,8 +98,34 @@ impl MetadataTokens {
             quota_status: severity.label().to_string(),
             quota_5h_severity: window_severity(windows, WindowKind::FiveHour, now_unix)
                 .or_else(|| missing_five_hour_severity(snapshot.provider, &quota_5h)),
+            quota_5h_label: five_hour
+                .as_ref()
+                .map(|parts| parts.label.clone())
+                .or_else(|| five_hour_placeholder.map(|_| "5h".to_string()))
+                .unwrap_or_default(),
+            quota_5h_percent: five_hour
+                .as_ref()
+                .map(|parts| parts.percent.clone())
+                .or_else(|| five_hour_placeholder.map(|_| "N/A".to_string()))
+                .unwrap_or_default(),
+            quota_5h_eta: five_hour
+                .as_ref()
+                .map(|parts| parts.eta.clone())
+                .unwrap_or_default(),
             quota_5h,
             quota_week: sidebar_window(windows, snapshot.provider, WindowKind::Weekly, now_unix),
+            quota_week_label: weekly
+                .as_ref()
+                .map(|parts| parts.label.clone())
+                .unwrap_or_default(),
+            quota_week_percent: weekly
+                .as_ref()
+                .map(|parts| parts.percent.clone())
+                .unwrap_or_default(),
+            quota_week_eta: weekly
+                .as_ref()
+                .map(|parts| parts.eta.clone())
+                .unwrap_or_default(),
             quota_week_severity: window_severity(windows, WindowKind::Weekly, now_unix),
             quota_summary: summary_from_windows(windows, now_unix, false),
             quota_context: sidebar_context(context),
@@ -107,8 +147,18 @@ impl MetadataTokens {
             quota_5h: missing_five_hour_label(provider)
                 .unwrap_or_default()
                 .to_string(),
+            quota_5h_label: missing_five_hour_label(provider)
+                .map(|_| "5h".to_string())
+                .unwrap_or_default(),
+            quota_5h_percent: missing_five_hour_label(provider)
+                .map(|_| "N/A".to_string())
+                .unwrap_or_default(),
+            quota_5h_eta: String::new(),
             quota_5h_severity: missing_five_hour_label(provider).map(|_| Severity::Unknown),
             quota_week: "7d N/A".to_string(),
+            quota_week_label: "7d".to_string(),
+            quota_week_percent: "N/A".to_string(),
+            quota_week_eta: String::new(),
             quota_week_severity: Some(Severity::Unknown),
             quota_summary: "unavailable".to_string(),
             quota_context: String::new(),
@@ -260,13 +310,29 @@ fn format_window(window: &UsageWindow, now_unix: u64, include_left: bool) -> Str
     format!("{label} reset {eta}")
 }
 
+struct WindowParts {
+    label: String,
+    percent: String,
+    eta: String,
+}
+
+fn compact_window_parts(window: &UsageWindow, now_unix: u64) -> WindowParts {
+    WindowParts {
+        label: window.kind.label().to_string(),
+        percent: format!("{}%", format_percent(window.remaining_percent)),
+        eta: window
+            .resets_at
+            .map(|reset| format_reset_eta(reset, now_unix))
+            .unwrap_or_default(),
+    }
+}
+
 fn format_compact_window(window: &UsageWindow, now_unix: u64) -> String {
-    let label = window.kind.label();
-    let percent = format!("{}%", format_percent(window.remaining_percent));
-    let Some(reset) = window.resets_at else {
-        return format!("{label} {percent}");
-    };
-    format!("{label} {percent} {}", format_reset_eta(reset, now_unix))
+    let parts = compact_window_parts(window, now_unix);
+    if parts.eta.is_empty() {
+        return format!("{} {}", parts.label, parts.percent);
+    }
+    format!("{} {} {}", parts.label, parts.percent, parts.eta)
 }
 
 fn format_reset_eta(reset_at: ResetAt, now_unix: u64) -> String {
@@ -411,6 +477,14 @@ mod tests {
         let values = MetadataTokens::from_snapshot(&snapshot, 0);
         assert_eq!(values.quota_5h, "5h 42% 4h07m");
         assert_eq!(values.quota_week, "7d 73% 2d3h");
+        assert!(!values.quota_5h.contains('·'));
+        assert!(!values.quota_week.contains('·'));
+        assert_eq!(values.quota_5h_label, "5h");
+        assert_eq!(values.quota_5h_percent, "42%");
+        assert_eq!(values.quota_5h_eta, "4h07m");
+        assert_eq!(values.quota_week_label, "7d");
+        assert_eq!(values.quota_week_percent, "73%");
+        assert_eq!(values.quota_week_eta, "2d3h");
     }
 
     #[test]

@@ -16,7 +16,25 @@ Live, credential-scoped AI quota and context in Herdr's agent sidebar.
   5h 100% 3h07m · 7d 31% 2d3h
 ```
 
-![Live Herdr agent sidebar](docs/screenshots/herdr-sidebar-live.png)
+That packed layout is the default. `--sidebar-layout stacked` puts provider, model,
+and each quota field on its own row so a narrow sidebar does not truncate
+`tab · Claude/Sonnet`, `cache · ttl`, or `5h · 7d`:
+
+```text
+● Owner
+  Claude
+  Sonnet
+  fix the release check
+  cache 99.6%
+  ttl≈58m
+  context 23%
+  5h 100% 3h07m
+  7d 31% 2d3h
+```
+
+| packed (default) | stacked |
+| --- | --- |
+| ![Packed sidebar](docs/screenshots/sidebar-packed.png) | ![Stacked sidebar](docs/screenshots/sidebar-stacked.png) |
 
 The plugin shows only data it can attribute to the pane's exact session and
 credential scope. Missing fields collapse automatically; failed refreshes keep
@@ -119,20 +137,35 @@ numbers match would be very helpful. Issues and PRs are welcome.
 
 ## Sidebar behavior
 
-- Rows whose tokens are all empty collapse; plugin-owned layouts use
-  `row_gap = 0`. User-owned spacing is preserved.
+- Two layouts: `packed` joins tab with provider/model, cache with TTL, and 5h
+  with 7d; empty 5h still folds 7d onto context. `stacked` gives provider, model,
+  cache, TTL, context, 5h, and 7d their own rows. Empty tokens collapse in both.
+- Rows whose tokens are all empty collapse. Plugin-owned layouts use
+  `row_gap = 1` (one blank row between panes). Pass `--row-gap 0` to pack them
+  flush. Herdr only accepts whole rows; a user-owned `row_gap` is left alone.
 - Provider/model, topic, cache/TTL, context, and limits appear only when known.
-- 5h and 7d colors compare remaining quota with remaining time: green is on
-  pace, amber is ahead of pace, and red is ahead of pace with under 20% left.
+- Tab names use primary text (`#eceef2`). The prompt is body text
+  (`#c8cdd6`). Cache, TTL, and context stay muted (`#969eae`). Brand color is
+  only on provider; model uses the dim sibling. Selected state may change the
+  card background, never the provider hue.
+  Each 5h/7d window is one compact token (`5h 0% 1h18m`), space-separated,
+  because Herdr joins sibling tokens with ` · `. The remaining-percent color
+  is green at 50%+, amber at 20–49%, and red below 20%. Packed still puts a
+  ` · ` between the two windows. `no cached` uses the same amber.
 - Events read only their named pane with `--source visible`. Startup, focus,
   refresh, and the active-turn watcher never read pane output.
 - Metadata is written only when a token changed and remains under Herdr's
   16-token limit.
 
-The default watcher interval is 60 seconds and can be changed during install:
+The default watcher interval is 60 seconds. Sidebar layout is `packed` and
+row gap is `1` unless you pass something else; both choices persist across a
+later repair:
 
 ```sh
 ./install.sh --watch-interval-seconds 300
+./install.sh --sidebar-layout stacked
+./install.sh --row-gap 0
+herdr-agent-quota configure --apply --sidebar-layout packed --row-gap 1
 ```
 
 ## Data and privacy
@@ -159,6 +192,7 @@ The default watcher interval is 60 seconds and can be changed during install:
 | OpenCode has model/context but no quota | This is expected for Zen, PAYG, OAuth, or an unverified/missing Go key. |
 | A refresh fails | The last good same-account value is intentionally retained. |
 | Codex 5h is from a previous ChatGPT login | `codex login` rewrites `~/.codex/auth.json`; the next refresh should hide 5h when the new account has only 7d. Send one turn if the sidebar still looks stale. |
+| `cache · ttl` or `5h · 7d` is truncated | Herdr does not wrap sidebar tokens. Reinstall with `./install.sh --sidebar-layout stacked`. |
 
 ## Development
 

@@ -2,8 +2,10 @@
 # Restore plugin-owned configuration, then unlink herdr-agent-quota.
 #
 # Usage:
-#   ./uninstall.sh                    # remove everything and unlink
+#   ./uninstall.sh                    # restore config, then unlink
 #   ./uninstall.sh --agent grok       # remove only that agent, stay installed
+#
+# A full uninstall also drops the saved sidebar-layout and row-gap prefs.
 #
 # The configuration action is intentionally run before unlinking: Herdr owns
 # the plugin state directory used to restore Claude/Agy statusLine backups.
@@ -18,7 +20,7 @@ while (($# > 0)); do
       shift 2
       ;;
     -h|--help)
-      sed -n '2,8p' "$0"
+      sed -n '2,10p' "$0"
       exit 0
       ;;
     *)

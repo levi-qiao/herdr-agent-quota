@@ -6,8 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-31
+
 ### Added
 
+- Sidebar rows can be `packed` (default: join cache/TTL and 5h/7d on one row)
+  or `stacked` (provider, model, cache, TTL, context, 5h, and 7d each on their
+  own row). Plugin-owned `row_gap` defaults to `1` so adjacent panes are not
+  packed flush; `--row-gap 0` packs them together. A user-owned `row_gap` is
+  left alone. Herdr only accepts whole rows. `configure --sidebar-layout` /
+  `--row-gap`, `./install.sh --sidebar-layout` / `--row-gap`, and the matching
+  plugin config-dir prefs select them; the choice is stored so a later repair
+  keeps it. Empty tokens still collapse in both layouts. Herdr itself does not
+  wrap overflowing tokens.
 - Codex now publishes an estimated prompt cache TTL. The rollout JSONL records
   no TTL and no expiry, so the countdown is the documented 30 minute
   `prompt_cache_options.ttl` anchored to the timestamp of the last recorded
@@ -18,6 +29,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Sidebar color is two systems: brand answers who, status answers remaining
+  quota. Provider uses the brand hue; model uses the dim sibling. Tab names
+  are `#eceef2`, prompts `#c8cdd6`, cache/TTL/context `#969eae`. Compact
+  `5h 0% 1h18m` / `7d 72% 5d22h` windows (spaces, no middle dots) take the
+  remaining-percent color: green at 50%+, amber at 20–49%, red below 20%.
+  `no cached` uses that same amber. Herdr joins sibling tokens with ` · `,
+  so a window is one token. Selected state must not change provider hue. Selected-card
+  fill is left to Herdr: `theme.custom.selection_bg` / `active_row_bg` exist
+  from 0.8.2, 0.8.0 rejects them, and the intended fill is `#42474f`.
+  Codex is cold white-blue, Claude coral, Agy Gemini blue, Grok silver,
+  OpenCode the former Grok purple, Pi mauve.
 - Claude cache TTL now comes from statusLine `prompt_cache.expires_at`
   (Claude Code v2.1.251+). Transcript-tail guesses from
   `ephemeral_5m`/`ephemeral_1h` buckets are gone. A cold or missing prefix
@@ -26,6 +48,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Grok panes no longer hide context/cache when Herdr binds the process's empty
+  session-start id. `active_sessions.json` can list that stub and the real
+  conversation under one PID; the stub has a model and no `signals.json`, so
+  the same-PID sibling supplies the missing numbers. A different PID is never
+  used, and a bound session that already has context is left alone.
 - Switching Codex ChatGPT accounts no longer keeps the previous login's 5h
   row. The live `account/rateLimits/read` result is the account-level source;
   a local rollout may fill an omitted 5h window only when that file is at
@@ -144,6 +171,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   supplements its billing snapshot with bounded local `signals.json` and
   `updates.jsonl` session metadata, so both providers expose context/cache when
   the local session files contain those fields; missing data remains hidden.
+- Grok session matching no longer requires `signals.json`. Newer CLI sessions
+  may only have `summary.json` until the first usage signal; the model still
+  comes from `current_model_id`. Context and cache stay hidden until
+  `signals.json` / usage updates exist.
 - Grok's weekly-only limit is placed beside context in its provider-specific
   row, and Claude/Agy statusLine diagnostics are keyed by session so a fresh
   session cannot inherit another session's cache. All per-session maps are
@@ -313,7 +344,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A popup dashboard pane, event-driven refresh, and a local snapshot cache that
   survives provider failures.
 
-[Unreleased]: https://github.com/levi-qiao/herdr-agent-quota/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/levi-qiao/herdr-agent-quota/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/levi-qiao/herdr-agent-quota/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/levi-qiao/herdr-agent-quota/compare/v0.2.0...v1.0.0
 [0.2.0]: https://github.com/levi-qiao/herdr-agent-quota/releases/tag/v0.2.0
 [0.1.0]: https://github.com/levi-qiao/herdr-agent-quota/releases/tag/v0.1.0

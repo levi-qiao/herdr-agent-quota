@@ -7,7 +7,7 @@ use std::process::Command;
 
 const METADATA_TTL_MS: &str = "86400000";
 const MAX_METADATA_TOKENS: usize = 16;
-const METADATA_TOKEN_NAMES: [&str; 21] = [
+const METADATA_TOKEN_NAMES: [&str; 33] = [
     "quota_state",
     "quota_provider",
     "quota_model",
@@ -17,16 +17,28 @@ const METADATA_TOKEN_NAMES: [&str; 21] = [
     "quota_cache",
     "quota_cache_ttl",
     "quota_5h",
+    "quota_5h_label",
+    "quota_5h_eta",
     "quota_5h_normal",
+    "quota_5h_caution",
     "quota_5h_warning",
     "quota_5h_danger",
+    "quota_5h_unknown",
     "quota_week",
+    "quota_week_label",
+    "quota_week_eta",
     "quota_week_normal",
+    "quota_week_caution",
     "quota_week_warning",
     "quota_week_danger",
+    "quota_week_unknown",
+    "quota_week_inline_label",
+    "quota_week_inline_eta",
     "quota_week_inline_normal",
+    "quota_week_inline_caution",
     "quota_week_inline_warning",
     "quota_week_inline_danger",
+    "quota_week_inline_unknown",
     "quota_topic",
     "quota_error",
 ];
@@ -412,29 +424,26 @@ fn pane_is_scrolled(executable: &std::ffi::OsStr, pane_id: &str) -> bool {
 
 fn desired_tokens(values: &MetadataTokens, topic: &str) -> BTreeMap<String, String> {
     let mut tokens = BTreeMap::from([
-        ("quota_state".to_string(), values.quota_state.clone()),
         ("quota_provider".to_string(), values.quota_provider.clone()),
         (
             "quota_provider_model".to_string(),
             values.quota_provider_model.clone(),
         ),
-        ("quota_summary".to_string(), values.quota_summary.clone()),
     ]);
     insert_optional_token(&mut tokens, "quota_model", &values.quota_model);
     insert_optional_token(&mut tokens, "quota_context", &values.quota_context);
     insert_optional_token(&mut tokens, "quota_cache", &values.quota_cache);
     insert_optional_token(&mut tokens, "quota_cache_ttl", &values.quota_cache_ttl);
-    insert_optional_token(&mut tokens, "quota_5h", &values.quota_5h);
+    let week_base = week_style_base(&values.quota_5h);
     insert_severity_token(
         &mut tokens,
         "quota_5h",
         &values.quota_5h,
         values.quota_5h_severity,
     );
-    insert_optional_token(&mut tokens, "quota_week", &values.quota_week);
     insert_severity_token(
         &mut tokens,
-        week_style_base(&values.quota_5h),
+        week_base,
         &values.quota_week,
         values.quota_week_severity,
     );
@@ -573,8 +582,10 @@ fn metadata_report_names(
                         | "quota_provider"
                         | "quota_topic"
                         | "quota_week_inline_normal"
+                        | "quota_week_inline_caution"
                         | "quota_week_inline_warning"
                         | "quota_week_inline_danger"
+                        | "quota_week_inline_unknown"
                 )
         }) else {
             break;
@@ -613,8 +624,8 @@ fn severity_variant(severity: Option<crate::model::Severity>) -> &'static str {
     match severity.unwrap_or(crate::model::Severity::Unknown) {
         crate::model::Severity::Warning => "warning",
         crate::model::Severity::Danger => "danger",
-        crate::model::Severity::Normal => "normal",
-        crate::model::Severity::Unknown => "warning",
+        crate::model::Severity::Normal | crate::model::Severity::Caution => "normal",
+        crate::model::Severity::Unknown => "unknown",
     }
 }
 
@@ -1172,7 +1183,11 @@ mod tests {
             0,
         );
         let desired = desired_tokens(&MetadataTokens::from_snapshot(&snapshot, 0), "prompt");
-        assert_eq!(desired.get("quota_5h").map(String::as_str), Some("5h N/A"));
+        assert_eq!(
+            desired.get("quota_5h_unknown").map(String::as_str),
+            Some("5h N/A")
+        );
+        assert!(!desired.contains_key("quota_5h_label"));
         assert!(desired.contains_key("quota_week_normal"));
         assert!(!desired.contains_key("quota_week_inline_normal"));
         assert!(!desired.contains_key("quota_week_inline_warning"));
@@ -1192,9 +1207,10 @@ mod tests {
             0,
         );
         let desired = desired_tokens(&MetadataTokens::from_snapshot(&snapshot, 0), "prompt");
-        assert!(!desired.contains_key("quota_5h"));
-        assert!(desired.contains_key("quota_week"));
+        assert!(!desired.contains_key("quota_5h_normal"));
+        assert!(!desired.contains_key("quota_5h_label"));
         assert!(desired.contains_key("quota_week_inline_normal"));
+        assert!(!desired.contains_key("quota_week_inline_label"));
         assert!(!desired.contains_key("quota_week_normal"));
     }
 
@@ -1219,8 +1235,18 @@ mod tests {
             0,
         );
         let desired = desired_tokens(&MetadataTokens::from_snapshot(&snapshot, 0), "prompt");
-        assert!(desired.contains_key("quota_5h"));
-        assert!(desired.contains_key("quota_week_normal"));
+        assert_eq!(
+            desired.get("quota_5h_normal").map(String::as_str),
+            Some("5h 95% 4h07m")
+        );
+        assert_eq!(
+            desired.get("quota_week_normal").map(String::as_str),
+            Some("7d 99% 2d3h")
+        );
+        assert!(!desired.contains_key("quota_5h"));
+        assert!(!desired.contains_key("quota_5h_label"));
+        assert!(!desired.contains_key("quota_5h_eta"));
+        assert!(!desired.contains_key("quota_week"));
         assert!(!desired.contains_key("quota_week_inline_normal"));
         assert!(!desired.contains_key("quota_week_inline_warning"));
         assert!(!desired.contains_key("quota_week_inline_danger"));
@@ -1302,14 +1328,15 @@ mod tests {
         insert_severity_token(
             &mut tokens,
             "quota_week",
-            "7d 25% reset 2d3h",
+            "25%",
             Some(crate::model::Severity::Warning),
         );
         assert_eq!(
             tokens.get("quota_week_warning").map(String::as_str),
-            Some("7d 25% reset 2d3h")
+            Some("25%")
         );
         assert!(!tokens.contains_key("quota_week_normal"));
+        assert!(!tokens.contains_key("quota_week_caution"));
         assert!(!tokens.contains_key("quota_week_danger"));
     }
 

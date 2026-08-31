@@ -733,6 +733,7 @@ pub(crate) fn sibling_quota_reset_in(current: &[UsageWindow], previous: &[UsageW
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Normal,
+    Caution,
     Warning,
     Danger,
     Unknown,
@@ -742,6 +743,7 @@ impl Severity {
     pub fn symbol(self) -> &'static str {
         match self {
             Self::Normal => "●",
+            Self::Caution => "●",
             Self::Warning => "▲",
             Self::Danger => "!",
             Self::Unknown => "?",
@@ -751,30 +753,23 @@ impl Severity {
     pub fn label(self) -> &'static str {
         match self {
             Self::Normal => "OK",
+            Self::Caution => "OK",
             Self::Warning => "WARN",
             Self::Danger => "LOW",
             Self::Unknown => "N/A",
         }
     }
 
-    pub fn for_window(window: &UsageWindow, now_unix: u64) -> Self {
-        let Some(reset_at) = window.resets_at else {
-            return Self::Unknown;
-        };
-        let remaining_seconds = reset_at.unix_seconds().saturating_sub(now_unix);
-        if remaining_seconds == 0 {
-            return Self::Unknown;
-        }
-
-        let remaining_time_percent = remaining_seconds.min(window.kind.duration_seconds()) as f64
-            / window.kind.duration_seconds() as f64
-            * 100.0;
-        if window.remaining_percent >= remaining_time_percent {
+    pub fn for_window(window: &UsageWindow, _now_unix: u64) -> Self {
+        // Remaining quota only. Three sidebar bands so packed 5h/7d rows
+        // do not mix two nearby greens. Classify the rounded integer shown.
+        let displayed_remaining = window.remaining_percent.round();
+        if displayed_remaining >= 50.0 {
             Self::Normal
-        } else if window.remaining_percent < 20.0 {
-            Self::Danger
-        } else {
+        } else if displayed_remaining >= 20.0 {
             Self::Warning
+        } else {
+            Self::Danger
         }
     }
 }
@@ -921,17 +916,20 @@ mod tests {
     }
 
     #[test]
-    fn severity_compares_quota_runway_with_time_remaining() {
+    fn severity_follows_remaining_quota_bands() {
         let now = 1_000_000;
         let reset = ResetAt::after(now, WindowKind::Weekly.duration_seconds() / 2);
-
-        let healthy = UsageWindow::new(WindowKind::Weekly, 40.0, Some(reset)).unwrap();
-        let behind = UsageWindow::new(WindowKind::Weekly, 60.0, Some(reset)).unwrap();
-        let danger = UsageWindow::new(WindowKind::Weekly, 85.0, Some(reset)).unwrap();
-
-        assert_eq!(Severity::for_window(&healthy, now), Severity::Normal);
-        assert_eq!(Severity::for_window(&behind, now), Severity::Warning);
-        assert_eq!(Severity::for_window(&danger, now), Severity::Danger);
+        for (used_percent, expected) in [
+            (20.0, Severity::Normal),
+            (20.6, Severity::Normal),
+            (50.0, Severity::Normal),
+            (50.6, Severity::Warning),
+            (80.0, Severity::Warning),
+            (80.6, Severity::Danger),
+        ] {
+            let window = UsageWindow::new(WindowKind::Weekly, used_percent, Some(reset)).unwrap();
+            assert_eq!(Severity::for_window(&window, now), expected);
+        }
     }
 
     #[test]
@@ -965,26 +963,26 @@ mod tests {
     }
 
     #[test]
-    fn low_quota_is_safe_when_reset_is_close() {
+    fn low_remaining_quota_is_danger_even_when_reset_is_close() {
         let now = 1_000_000;
         let reset = ResetAt::after(now, WindowKind::Weekly.duration_seconds() / 10);
         let window = UsageWindow::new(WindowKind::Weekly, 85.0, Some(reset)).unwrap();
 
-        assert_eq!(Severity::for_window(&window, now), Severity::Normal);
+        assert_eq!(Severity::for_window(&window, now), Severity::Danger);
     }
 
     #[test]
-    fn severity_is_unknown_without_a_current_reset_time() {
+    fn remaining_quota_still_colors_a_window_without_a_reset_time() {
         let window = UsageWindow::new(WindowKind::Weekly, 85.0, None).unwrap();
-        assert_eq!(Severity::for_window(&window, 1_000_000), Severity::Unknown);
+        assert_eq!(Severity::for_window(&window, 1_000_000), Severity::Danger);
 
         let expired = UsageWindow::new(
             WindowKind::Weekly,
-            85.0,
+            40.0,
             Some(ResetAt::from_unix_seconds(999_999)),
         )
         .unwrap();
-        assert_eq!(Severity::for_window(&expired, 1_000_000), Severity::Unknown);
+        assert_eq!(Severity::for_window(&expired, 1_000_000), Severity::Normal);
     }
 
     #[test]

@@ -16,7 +16,25 @@ English: [README.md](README.md)
   5h 100% 3h07m · 7d 31% 2d3h
 ```
 
-![Herdr agent 侧栏实况](docs/screenshots/herdr-sidebar-live.png)
+这是默认的拼接布局。`--sidebar-layout stacked` 把供应商、模型和每个额度字段
+单独一行，窄侧栏时不会把 `tab · Claude/Sonnet`、`cache · ttl` 或 `5h · 7d`
+截成省略号：
+
+```text
+● Owner
+  Claude
+  Sonnet
+  fix the release check
+  cache 99.6%
+  ttl≈58m
+  context 23%
+  5h 100% 3h07m
+  7d 31% 2d3h
+```
+
+| packed（默认） | stacked |
+| --- | --- |
+| ![拼接布局](docs/screenshots/sidebar-packed.png) | ![分行布局](docs/screenshots/sidebar-stacked.png) |
 
 插件只展示能够归属到当前 pane 精确 session 和凭据范围的数据。空字段会自动折叠；刷新失败保留
 同一账户最后一次成功额度；已确认的 PAYG session 会清掉旧订阅额度。
@@ -107,16 +125,30 @@ OpenCode 1.18.20 上验证；成功响应结构来自
 
 ## 侧栏行为
 
-- token 全空的行会折叠；插件自有布局使用 `row_gap = 0`，用户自定义间距保持不变。
+- 两种布局：`packed` 把 tab 和 provider/model、cache 和 TTL、5h 和 7d 拼在同一行；
+  没有 5h 时 7d 仍会折到 context。`stacked` 让供应商、模型、cache、TTL、context、
+  5h、7d 各占一行。两种布局下空 token 都会折叠。
+- token 全空的行会折叠。插件自有布局默认 `row_gap = 1`（pane 之间一行空白）。
+  `--row-gap 0` 贴紧。Herdr 只接受整行；用户自己写的 `row_gap` 不会被改。
 - provider/model、topic、cache/TTL、context 和限额只在有可靠数据时显示。
-- 5h/7d 颜色比较剩余额度和剩余时间：正常为绿，消耗超前为黄，超前且低于 20% 为红。
+- tab 用主文字色（`#eceef2`）。prompt 用正文色（`#c8cdd6`）。cache、TTL、
+  context 用 metadata 灰（`#969eae`）。品牌色只给供应商；模型用同色系的
+  dim。选中态只许改卡片背景，不许改供应商 hue。
+  每个 5h/7d 窗口是一个紧凑 token（`5h 0% 1h18m`），空格分隔。Herdr 会把
+  同行 token 用 ` · ` 拼起来，所以窗口不能拆成标签/百分比/倒计时三块。
+  剩余百分比颜色：≥50% 绿，20–49% 琥珀，<20% 红。`no cached` 用同一套琥珀。
+  packed 布局里两个窗口之间仍会有一个 ` · `。
 - event 只用 `--source visible` 读取事件点名的 pane；启动、focus、refresh 和 watcher 不读 pane。
 - 只有 token 真正变化时才写 metadata，并始终遵守 Herdr 的 16-token 上限。
 
-默认 watcher 间隔为 60 秒，安装时可调整：
+默认 watcher 间隔为 60 秒，安装时可调整。侧栏布局默认 `packed`，间距默认 `1`，
+选择会写入插件状态，之后的 **Install / repair** 会沿用：
 
 ```sh
 ./install.sh --watch-interval-seconds 300
+./install.sh --sidebar-layout stacked
+./install.sh --row-gap 0
+herdr-agent-quota configure --apply --sidebar-layout packed --row-gap 1
 ```
 
 ## 数据与隐私
@@ -139,6 +171,7 @@ OpenCode 1.18.20 上验证；成功响应结构来自
 | OpenCode 有 model/context 但无额度 | Zen、PAYG、OAuth 或缺少/未验证 Go key 时属于正常行为。 |
 | 刷新失败 | 插件会保留同一账户最后一次成功值。 |
 | Codex 的 5h 还是上一个 ChatGPT 账号的 | `codex login` 会重写 `~/.codex/auth.json`；下一次刷新应在新账号只有 7d 时立刻隐藏 5h。若侧栏仍旧，发一轮对话即可。 |
+| `cache · ttl` 或 `5h · 7d` 被截成省略号 | Herdr 不会按侧栏宽度换行。用 `./install.sh --sidebar-layout stacked` 重装。 |
 
 ## 开发检查
 

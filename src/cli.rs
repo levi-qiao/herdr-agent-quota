@@ -71,6 +71,19 @@ pub enum Command {
         /// Persist the active-turn poll interval while applying configuration.
         #[arg(long, requires = "apply")]
         watch_interval_seconds: Option<u64>,
+        /// Sidebar row layout: packed joins related tokens on one row;
+        /// stacked puts provider, model, cache, TTL, context, 5h, and 7d on
+        /// their own rows.
+        /// Herdr plugin actions run a fixed command line, so install.sh
+        /// passes this through $HERDR_AGENT_QUOTA_SIDEBAR_LAYOUT.
+        #[arg(long, value_enum)]
+        sidebar_layout: Option<SidebarLayout>,
+        /// Blank rows between agent panes. `1` (default) separates them;
+        /// `0` packs them flush. Herdr only accepts whole rows. install.sh
+        /// writes this to the plugin config directory because plugin actions
+        /// run a fixed command line.
+        #[arg(long, value_parser = parse_row_gap)]
+        row_gap: Option<SidebarRowGap>,
     },
     /// Claude statusLine hook. Claude Code invokes this; not for manual use.
     ClaudeStatusline,
@@ -112,6 +125,105 @@ pub enum AgentSelection {
     Agy,
     Opencode,
     Pi,
+}
+
+/// How quota tokens are arranged in Herdr's agent sidebar.
+///
+/// Packed is the historical layout: cache sits beside TTL, and 5h sits beside
+/// 7d. Stacked gives each field its own row so a narrow sidebar does not
+/// truncate both values. Empty tokens still collapse in both layouts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum SidebarLayout {
+    /// Join related tokens on one row (`cache · ttl`, `5h · 7d`).
+    #[default]
+    Packed,
+    /// One field per row (provider, model, cache, TTL, context, 5h, 7d).
+    Stacked,
+}
+
+/// Blank terminal rows between expanded agent sidebar entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SidebarRowGap(u8);
+
+impl SidebarRowGap {
+    pub const ENV: &'static str = "HERDR_AGENT_QUOTA_ROW_GAP";
+    pub const FLUSH: Self = Self(0);
+    pub const SEPARATED: Self = Self(1);
+
+    pub fn as_u8(self) -> u8 {
+        self.0
+    }
+
+    pub fn as_i64(self) -> i64 {
+        i64::from(self.0)
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim() {
+            "0" => Some(Self::FLUSH),
+            "1" => Some(Self::SEPARATED),
+            _ => None,
+        }
+    }
+
+    pub fn from_arg_or_env(value: Option<Self>) -> Option<Self> {
+        if value.is_some() {
+            return value;
+        }
+        std::env::var(Self::ENV)
+            .ok()
+            .as_deref()
+            .and_then(Self::parse)
+    }
+}
+
+impl Default for SidebarRowGap {
+    fn default() -> Self {
+        Self::SEPARATED
+    }
+}
+
+impl std::fmt::Display for SidebarRowGap {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.0)
+    }
+}
+
+fn parse_row_gap(value: &str) -> Result<SidebarRowGap, String> {
+    SidebarRowGap::parse(value).ok_or_else(|| "row-gap must be 0 or 1".to_string())
+}
+
+impl SidebarLayout {
+    pub const ENV: &'static str = "HERDR_AGENT_QUOTA_SIDEBAR_LAYOUT";
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Packed => "packed",
+            Self::Stacked => "stacked",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "packed" => Some(Self::Packed),
+            "stacked" => Some(Self::Stacked),
+            _ => None,
+        }
+    }
+
+    /// Flag wins; otherwise the installer environment; otherwise packed.
+    ///
+    /// Persistence is applied by `configure` after this, so a later repair
+    /// with no flag still keeps the layout the user installed.
+    pub fn from_arg_or_env(value: Option<Self>) -> Option<Self> {
+        if value.is_some() {
+            return value;
+        }
+        std::env::var(Self::ENV)
+            .ok()
+            .as_deref()
+            .and_then(Self::parse)
+    }
 }
 
 impl AgentSelection {
@@ -230,5 +342,28 @@ mod tests {
             AgentSelection::resolve(&[]),
             AgentSelection::SUPPORTED.to_vec()
         );
+    }
+
+    #[test]
+    fn sidebar_layout_parses_packed_and_stacked_and_ignores_junk() {
+        assert_eq!(SidebarLayout::parse("packed"), Some(SidebarLayout::Packed));
+        assert_eq!(
+            SidebarLayout::parse("Stacked"),
+            Some(SidebarLayout::Stacked)
+        );
+        assert_eq!(SidebarLayout::parse("nonsense"), None);
+        assert_eq!(
+            SidebarLayout::from_arg_or_env(Some(SidebarLayout::Stacked)),
+            Some(SidebarLayout::Stacked)
+        );
+    }
+
+    #[test]
+    fn row_gap_accepts_zero_and_one() {
+        assert_eq!(SidebarRowGap::parse("0"), Some(SidebarRowGap::FLUSH));
+        assert_eq!(SidebarRowGap::parse("1"), Some(SidebarRowGap::SEPARATED));
+        assert_eq!(SidebarRowGap::parse("2"), None);
+        assert_eq!(SidebarRowGap::parse("0.5"), None);
+        assert_eq!(SidebarRowGap::default().as_u8(), 1);
     }
 }
