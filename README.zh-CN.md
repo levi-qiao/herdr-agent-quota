@@ -32,9 +32,16 @@ English: [README.md](README.md)
   7d 31% 2d3h
 ```
 
-| packed（默认） | stacked |
-| --- | --- |
-| ![拼接布局](docs/screenshots/sidebar-packed.png) | ![分行布局](docs/screenshots/sidebar-stacked.png) |
+<table>
+<tr>
+<th>packed（默认）</th>
+<th>stacked</th>
+</tr>
+<tr>
+<td valign="top"><img src="docs/screenshots/sidebar-packed.png" alt="拼接布局" width="284"></td>
+<td valign="top"><img src="docs/screenshots/sidebar-stacked.png" alt="分行布局" width="177"></td>
+</tr>
+</table>
 
 插件只展示能够归属到当前 pane 精确 session 和凭据范围的数据。空字段会自动折叠；刷新失败保留
 同一账户最后一次成功额度；已确认的 PAYG session 会清掉旧订阅额度。

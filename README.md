@@ -32,9 +32,16 @@ and each quota field on its own row so a narrow sidebar does not truncate
   7d 31% 2d3h
 ```
 
-| packed (default) | stacked |
-| --- | --- |
-| ![Packed sidebar](docs/screenshots/sidebar-packed.png) | ![Stacked sidebar](docs/screenshots/sidebar-stacked.png) |
+<table>
+<tr>
+<th>packed (default)</th>
+<th>stacked</th>
+</tr>
+<tr>
+<td valign="top"><img src="docs/screenshots/sidebar-packed.png" alt="Packed sidebar" width="284"></td>
+<td valign="top"><img src="docs/screenshots/sidebar-stacked.png" alt="Stacked sidebar" width="177"></td>
+</tr>
+</table>
 
 The plugin shows only data it can attribute to the pane's exact session and
 credential scope. Missing fields collapse automatically; failed refreshes keep
