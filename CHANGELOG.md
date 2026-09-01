@@ -39,8 +39,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   second set of per-provider rules. Daily and monthly reports such as `1d` and
   `Monthly` now reach the existing short/long sidebar rows rather than being
   dropped.
-- **Open agent quota settings** is a plugin action, so the settings popup is
-  available from Herdr's menu as well as `herdr plugin pane open`.
+- **Open agent quota settings** is a plugin action bound to
+  `prefix+shift+q`; Herdr 0.8 does not expose extension points for its built-in
+  Settings tabs or bottom-right menu.
 
 ### Changed
 
@@ -49,6 +50,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Both READMEs were reduced to feature, support, settings, integration, and
   troubleshooting tables, and now include the full settings-pane screenshot
   and copy-ready commands.
+
+### Fixed
+
+- OMP providers such as `google-antigravity` now route through OMP's generic
+  usage collector instead of being excluded by the legacy provider allowlist.
+  Provider ids have isolated hashed cache/debounce keys.
+- The settings popup no longer repeats its title inside Herdr's titled pane.
 
 ## [1.2.0] - 2026-09-01
 

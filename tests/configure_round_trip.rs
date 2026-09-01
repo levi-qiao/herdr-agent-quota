@@ -110,6 +110,8 @@ fn sidebar_configuration_is_idempotent_and_removes_plugin_rows() {
     assert!(applied.contains("key = \"prefix+shift+r\""));
     assert!(applied.contains("type = \"plugin_action\""));
     assert!(applied.contains("command = \"herdr-agent-quota.refresh\""));
+    assert!(applied.contains("key = \"prefix+shift+q\""));
+    assert!(applied.contains("command = \"herdr-agent-quota.open-settings\""));
     assert_eq!(add_quota_row(&applied).unwrap(), applied);
     assert_eq!(
         remove_quota_row(&applied).unwrap(),
@@ -136,6 +138,27 @@ fn sidebar_configuration_preserves_a_conflicting_refresh_key() {
         remove_quota_row(&applied).unwrap(),
         "[[keys.command]]\nkey = \"prefix+shift+r\"\ntype = \"shell\"\ncommand = \"echo user-owned\"\ndescription = \"user refresh\"\n\n[ui.sidebar.agents]\nrows = [[\"state_icon\"]]\n"
     );
+}
+
+#[test]
+fn sidebar_configuration_preserves_a_conflicting_settings_key() {
+    let original = concat!(
+        "[[keys.command]]\n",
+        "key = \"prefix+shift+q\"\n",
+        "type = \"shell\"\n",
+        "command = \"echo user-owned\"\n",
+        "description = \"user settings\"\n\n",
+        "[ui.sidebar.agents]\n",
+        "rows = [[\"state_icon\", \"agent\"]]\n"
+    );
+    let applied = add_quota_row(original).unwrap();
+    assert_eq!(applied.matches("key = \"prefix+shift+q\"").count(), 1);
+    assert!(applied.contains("command = \"echo user-owned\""));
+    assert!(!applied.contains("command = \"herdr-agent-quota.open-settings\""));
+    assert!(applied.contains("command = \"herdr-agent-quota.refresh\""));
+    let removed = remove_quota_row(&applied).unwrap();
+    assert!(removed.contains("command = \"echo user-owned\""));
+    assert!(!removed.contains("herdr-agent-quota.refresh"));
 }
 
 #[test]

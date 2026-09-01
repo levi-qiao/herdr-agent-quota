@@ -54,6 +54,8 @@ const ROW_GAP_MARKER: &str = "herdr-agent-quota";
 const PROVIDER_STYLE_MARKER: &str = "herdr-agent-quota-provider";
 const REFRESH_KEY: &str = "prefix+shift+r";
 const REFRESH_ACTION: &str = "herdr-agent-quota.refresh";
+const SETTINGS_KEY: &str = "prefix+shift+q";
+const SETTINGS_ACTION: &str = "herdr-agent-quota.open-settings";
 const CONFIG_PRESENCE_FILE: &str = "herdr-config.original.present";
 // Brand answers "who"; status answers "how much is left". Selected state
 // may change background only — never the provider hue. Herdr 0.8.0 rejects
@@ -321,7 +323,18 @@ pub fn add_quota_row_with(
             .parse::<DocumentMut>()
             .context("parse Herdr TOML config")?
     };
-    add_refresh_keybinding(&mut document)?;
+    add_plugin_keybinding(
+        &mut document,
+        REFRESH_KEY,
+        REFRESH_ACTION,
+        "refresh all agent quotas",
+    )?;
+    add_plugin_keybinding(
+        &mut document,
+        SETTINGS_KEY,
+        SETTINGS_ACTION,
+        "open agent quota settings",
+    )?;
     let table = ensure_table(&mut document, &["ui", "sidebar", "agents"])?;
     let managed_row_gap = table
         .get("row_gap")
@@ -373,7 +386,7 @@ pub fn remove_quota_row(input: &str) -> Result<String> {
 }
 
 /// `full` means the whole plugin is being removed, so the shared base rows and
-/// the refresh keybinding go too. A narrower selection only drops that agent's
+/// the plugin keybindings go too. A narrower selection only drops that agent's
 /// own `rows_by_agent` entry and leaves the rest of the sidebar intact.
 pub fn remove_quota_row_for(input: &str, agents: &[Harness], full: bool) -> Result<String> {
     if input.trim().is_empty() {
@@ -396,7 +409,7 @@ pub fn remove_quota_row_for(input: &str, agents: &[Harness], full: bool) -> Resu
         .parse::<DocumentMut>()
         .context("parse Herdr TOML config")?;
     if full {
-        remove_refresh_keybinding(&mut document);
+        remove_plugin_keybindings(&mut document);
     }
     let Some(table) = document
         .get_mut("ui")
@@ -409,7 +422,7 @@ pub fn remove_quota_row_for(input: &str, agents: &[Harness], full: bool) -> Resu
         return Ok(document.to_string());
     };
     remove_managed_provider_rows(table, agents);
-    // The base rows, row gap and keybinding are shared by every agent. Only a
+    // The base rows, row gap and keybindings are shared by every agent. Only a
     // full removal may take them; otherwise the agents left installed would
     // lose their sidebar out from under them.
     if !full {
@@ -446,7 +459,12 @@ pub fn remove_quota_row_for(input: &str, agents: &[Harness], full: bool) -> Resu
     Ok(document.to_string())
 }
 
-fn add_refresh_keybinding(document: &mut DocumentMut) -> Result<()> {
+fn add_plugin_keybinding(
+    document: &mut DocumentMut,
+    key: &str,
+    action: &str,
+    description: &str,
+) -> Result<()> {
     let keys = ensure_table(document, &["keys"])?;
     let commands = keys
         .entry("command")
@@ -455,27 +473,24 @@ fn add_refresh_keybinding(document: &mut DocumentMut) -> Result<()> {
         .context("Herdr keys.command must be an array of tables")?;
     if commands
         .iter()
-        .any(|command| command.get("command").and_then(Item::as_str) == Some(REFRESH_ACTION))
+        .any(|command| command.get("command").and_then(Item::as_str) == Some(action))
         || commands
             .iter()
-            .any(|command| command.get("key").and_then(Item::as_str) == Some(REFRESH_KEY))
+            .any(|command| command.get("key").and_then(Item::as_str) == Some(key))
     {
         return Ok(());
     }
 
     let mut command = Table::new();
-    command.insert("key", Item::Value(Value::from(REFRESH_KEY)));
+    command.insert("key", Item::Value(Value::from(key)));
     command.insert("type", Item::Value(Value::from("plugin_action")));
-    command.insert("command", Item::Value(Value::from(REFRESH_ACTION)));
-    command.insert(
-        "description",
-        Item::Value(Value::from("refresh all agent quotas")),
-    );
+    command.insert("command", Item::Value(Value::from(action)));
+    command.insert("description", Item::Value(Value::from(description)));
     commands.push(command);
     Ok(())
 }
 
-fn remove_refresh_keybinding(document: &mut DocumentMut) {
+fn remove_plugin_keybindings(document: &mut DocumentMut) {
     let Some(keys) = document.get_mut("keys").and_then(Item::as_table_mut) else {
         return;
     };
@@ -487,7 +502,10 @@ fn remove_refresh_keybinding(document: &mut DocumentMut) {
     };
     let mut retained = ArrayOfTables::new();
     for command in commands.iter() {
-        if command.get("command").and_then(Item::as_str) != Some(REFRESH_ACTION) {
+        if !matches!(
+            command.get("command").and_then(Item::as_str),
+            Some(REFRESH_ACTION | SETTINGS_ACTION)
+        ) {
             retained.push(command.clone());
         }
     }

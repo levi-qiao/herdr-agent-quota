@@ -261,7 +261,7 @@ mod tests {
         let resolved = resolve_with_identity(&omp_pane(&path));
         assert_eq!(
             resolved.resolution,
-            Resolution::Subscription(BillingTarget::omp(Provider::Claude))
+            Resolution::Subscription(BillingTarget::omp("anthropic"))
         );
         let identity = resolved.identity.expect("identity");
         assert_eq!(identity.provider, "Claude");
@@ -312,7 +312,7 @@ mod tests {
         let resolved = resolve_with_identity(&omp_pane(&path));
         assert_eq!(
             resolved.resolution,
-            Resolution::Subscription(BillingTarget::omp(Provider::Grok))
+            Resolution::Subscription(BillingTarget::omp("xai-oauth"))
         );
         let identity = resolved.identity.expect("identity");
         assert_eq!(identity.provider, "Grok");
@@ -326,14 +326,17 @@ mod tests {
         );
     }
 
-    /// A provider this plugin has no collector for still gets its identity
-    /// row; what it must not get is somebody else's quota.
+    /// Every provider omp can name is collected through omp's own usage layer;
+    /// the plugin does not need a provider-specific compatibility entry.
     #[test]
-    fn an_unmapped_omp_provider_carries_identity_without_a_subscription() {
+    fn an_omp_provider_needs_no_plugin_specific_quota_mapping() {
         let dir = tempdir().unwrap();
         let path = omp_session(dir.path(), "session-openrouter.jsonl");
         let resolved = resolve_omp_with_identity(Some(&path));
-        assert_eq!(resolved.resolution, Resolution::Indeterminate);
+        assert_eq!(
+            resolved.resolution,
+            Resolution::Subscription(BillingTarget::omp("openrouter"))
+        );
         assert_eq!(
             resolved.identity.map(|identity| identity.provider),
             Some("openrouter".to_string())
@@ -355,11 +358,14 @@ mod tests {
     /// snapshot, or a Pro seat in omp would display the Max seat's quota.
     #[test]
     fn an_omp_target_caches_apart_from_the_canonical_collector() {
-        let omp = BillingTarget::omp(Provider::Claude);
+        let omp = BillingTarget::omp("anthropic");
+        let antigravity = BillingTarget::omp("google-antigravity");
         let canonical = BillingTarget::original_four(Provider::Claude);
         assert_ne!(omp.cache_identity(), canonical.cache_identity());
+        assert_ne!(omp.cache_identity(), antigravity.cache_identity());
+        assert!(!antigravity.cache_identity().contains("google-antigravity"));
         assert_eq!(omp.credential_scope, CredentialScope::OMP_STORE);
-        assert_eq!(omp.original_provider(), Some(Provider::Claude));
+        assert_eq!(omp.original_provider(), None);
     }
 
     #[test]

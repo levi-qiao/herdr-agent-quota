@@ -38,11 +38,15 @@ cd herdr-agent-quota
 
 ## 设置
 
-在 Herdr 的 `menu` 中选择 **Open agent quota settings**，或直接运行：
+按 `prefix+shift+q` 打开。也可以直接运行：
 
 ```sh
 herdr plugin pane open --plugin herdr-agent-quota --entrypoint settings --focus
 ```
+
+Herdr 0.8 的原生 Settings tab 和右下角 `menu` 不提供插件扩展点，因此插件
+无法把自己的设置页插进截图中的内置面板；快捷键冲突时不会覆盖用户配置，
+仍可使用上面的命令。
 
 <img src="docs/screenshots/settings.png" alt="Agent quota settings 设置页" width="760">
 
@@ -155,7 +159,7 @@ herdr integration install omp
 ```sh
 cargo fmt --all -- --check
 cargo test --all-targets --all-features --locked
-cargo clippy --release --all-targets -- -D warnings
+cargo clippy --release --all-targets --all-features --locked -- -D warnings
 cargo build --release --locked
 ```
 

@@ -1,4 +1,4 @@
-use herdr_agent_quota::model::{BillingTarget, Provider, ResetAt, WindowKind};
+use herdr_agent_quota::model::{BillingTarget, ResetAt, WindowKind};
 use herdr_agent_quota::presentation::MetadataTokens;
 use herdr_agent_quota::providers::{agy, claude, codex, grok, omp};
 use serde_json::Value;
@@ -155,7 +155,10 @@ fn omp_windows_keep_omps_normalized_labels() {
 #[test]
 fn omp_daily_is_rendered_as_1d_instead_of_being_dropped_or_renamed() {
     let usage = omp::parse_usage(&omp_usage(), "google-antigravity", 1);
-    let snapshot = omp::snapshot(&BillingTarget::omp(Provider::Agy), &usage.accounts[0]);
+    let snapshot = omp::snapshot(
+        &BillingTarget::omp("google-antigravity"),
+        &usage.accounts[0],
+    );
     let tokens = MetadataTokens::from_snapshot(&snapshot, 1_788_220_000);
     assert!(tokens.quota_5h.starts_with("1d 100%"), "{tokens:?}");
     assert_eq!(tokens.quota_week, "");

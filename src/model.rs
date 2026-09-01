@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use thiserror::Error;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -20,6 +21,9 @@ pub enum Provider {
     /// it has no 1:1 harness mapping and is only ever fetched for a pane that
     /// resolved to it, so the original four keep their exact refresh behavior.
     OpenCodeGo,
+    /// Quota reported by omp's own provider-agnostic usage layer. This is a
+    /// scoped collector only; it is never part of a bare provider refresh.
+    Omp,
 }
 
 /// Quota collector identity. The original four keep the historical
@@ -46,6 +50,7 @@ impl Provider {
             Self::Claude => "Claude",
             Self::Agy => "Agy",
             Self::OpenCodeGo => "OpenCode Go",
+            Self::Omp => "OMP",
         }
     }
 
@@ -58,6 +63,7 @@ impl Provider {
             // Scoped to the OpenCode credential store so it can never collide
             // with the original four's 0.2 filenames.
             Self::OpenCodeGo => "opencode-go.opencode-store",
+            Self::Omp => "omp-usage",
         }
     }
 }
@@ -133,6 +139,10 @@ impl CredentialScope {
 pub struct BillingTarget {
     pub billing: Provider,
     pub credential_scope: CredentialScope,
+    /// Stable discriminator for dynamic scoped collectors. OMP provider ids
+    /// are hashed so two providers never share a cache or debounce marker and
+    /// an arbitrary upstream id never becomes a filesystem path.
+    scope_hash: Option<[u8; 32]>,
 }
 
 impl BillingTarget {
@@ -140,6 +150,7 @@ impl BillingTarget {
         Self {
             billing: provider,
             credential_scope: CredentialScope::CANONICAL,
+            scope_hash: None,
         }
     }
 
@@ -147,14 +158,16 @@ impl BillingTarget {
         Self {
             billing: Provider::OpenCodeGo,
             credential_scope: CredentialScope::OPENCODE_STORE,
+            scope_hash: None,
         }
     }
 
     /// An omp-scoped target for a subscription omp routes a pane to.
-    pub fn omp(billing: Provider) -> Self {
+    pub fn omp(provider_id: &str) -> Self {
         Self {
-            billing,
+            billing: Provider::Omp,
             credential_scope: CredentialScope::OMP_STORE,
+            scope_hash: Some(Sha256::digest(provider_id.as_bytes()).into()),
         }
     }
 
@@ -174,6 +187,21 @@ impl BillingTarget {
     /// ids, and a scoped target carries its credential scope in the stem so it
     /// cannot collide with them.
     pub fn cache_identity(self) -> String {
+        if self.credential_scope == CredentialScope::OMP_STORE {
+            let discriminator = self
+                .scope_hash
+                .map(|hash| {
+                    hash.iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>()
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+            return format!(
+                "{}-{discriminator}.{}",
+                self.billing.source(),
+                self.credential_scope.as_str()
+            );
+        }
         let source = self.billing.source();
         // OpenCode Go's 0.2 source id already carries its scope; the original
         // four carry none because canonical is the absence of one. Anything
@@ -678,7 +706,11 @@ impl ProviderSnapshot {
     ) -> Severity {
         let relevant = match provider {
             Provider::Grok => long_window(windows),
-            Provider::Codex | Provider::Claude | Provider::Agy | Provider::OpenCodeGo => {
+            Provider::Codex
+            | Provider::Claude
+            | Provider::Agy
+            | Provider::OpenCodeGo
+            | Provider::Omp => {
                 window_in(windows, WindowKind::FiveHour).or_else(|| long_window(windows))
             }
         };

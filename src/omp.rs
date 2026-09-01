@@ -83,21 +83,13 @@ fn indeterminate() -> OmpRoute {
     }
 }
 
-/// omp's provider id to the collector that bills it, when this plugin has one.
-///
-/// An unmapped provider is not a failure: the pane still gets its identity and
-/// context, it just carries no quota row.
+/// Every safe omp provider id is collected through omp's own usage layer.
+/// Provider-specific compatibility belongs to omp, not this plugin.
 pub fn billing_for_provider(provider_id: &str) -> Option<Provider> {
-    match provider_id {
-        "anthropic" => Some(Provider::Claude),
-        "openai-codex" => Some(Provider::Codex),
-        // omp scopes the subscription backend by its auth: `xai-oauth` is the
-        // SuperGrok login, while a bare `xai` API key is billed per token.
-        "xai-oauth" => Some(Provider::Grok),
-        // Deliberately unmapped: omp reports Antigravity as daily pools, and
-        // the sidebar has no daily window to put them in.
-        _ => None,
-    }
+    (!provider_id.is_empty()
+        && provider_id.len() <= 128
+        && !provider_id.chars().any(char::is_control))
+    .then_some(Provider::Omp)
 }
 
 /// Context window for the session's model, from omp's own catalog.
@@ -162,9 +154,9 @@ pub(crate) fn resolve_with_session(
     };
     // Which subscription is paying, and whether there is one at all, is a
     // question for the credential pool, not the transcript. `refresh` asks
-    // `omp usage --json`; an unmapped provider never gets that far.
+    // omp's generic usage layer about this exact provider only.
     let resolution = match billing_for_provider(&session.provider_id) {
-        Some(billing) => Resolution::Subscription(crate::model::BillingTarget::omp(billing)),
+        Some(_) => Resolution::Subscription(crate::model::BillingTarget::omp(&session.provider_id)),
         None => Resolution::Indeterminate,
     };
     OmpRoute {
@@ -273,12 +265,15 @@ mod tests {
     }
 
     #[test]
-    fn only_mapped_providers_carry_a_collector() {
-        assert_eq!(billing_for_provider("anthropic"), Some(Provider::Claude));
-        assert_eq!(billing_for_provider("openai-codex"), Some(Provider::Codex));
-        assert_eq!(billing_for_provider("xai-oauth"), Some(Provider::Grok));
-        assert_eq!(billing_for_provider("xai"), None);
-        assert_eq!(billing_for_provider("google-antigravity"), None);
-        assert_eq!(billing_for_provider("openrouter"), None);
+    fn every_omp_provider_routes_through_omps_usage_layer() {
+        for provider_id in [
+            "anthropic",
+            "openai-codex",
+            "xai-oauth",
+            "google-antigravity",
+            "openrouter",
+        ] {
+            assert_eq!(billing_for_provider(provider_id), Some(Provider::Omp));
+        }
     }
 }

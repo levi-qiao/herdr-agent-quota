@@ -39,11 +39,15 @@ Supported values: `all`, `claude`, `codex`, `grok`, `agy`, `opencode`, `pi`, `om
 
 ## Settings
 
-Choose **Open agent quota settings** from Herdr's menu, or run:
+Press `prefix+shift+q`, or run:
 
 ```sh
 herdr plugin pane open --plugin herdr-agent-quota --entrypoint settings --focus
 ```
+
+Herdr 0.8 does not expose extension points for its built-in Settings tabs or
+bottom-right menu. The plugin therefore opens its own managed popup. A key
+conflict is preserved rather than overwritten; use the command above instead.
 
 <img src="docs/screenshots/settings.png" alt="Agent quota settings pane" width="760">
 
@@ -159,7 +163,7 @@ herdr integration install omp
 ```sh
 cargo fmt --all -- --check
 cargo test --all-targets --all-features --locked
-cargo clippy --release --all-targets -- -D warnings
+cargo clippy --release --all-targets --all-features --locked -- -D warnings
 cargo build --release --locked
 ```
 

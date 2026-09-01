@@ -520,15 +520,15 @@ fn render(
     status: Option<&str>,
 ) -> String {
     let rows = rows();
-    // Title, rule, the two scroll markers, the help line, and the status
-    // line, whether or not each is drawn: the window must fit in the worst
-    // case, not the average one.
-    let chrome = 6;
+    // The Herdr-managed pane border already carries the title. Reserve only
+    // the two scroll markers, help line, and status line here, whether or not
+    // each is drawn: the window must fit in the worst case.
+    let chrome = 4;
     let visible = (height as usize).saturating_sub(chrome).max(6);
     let start = scroll_start(selected, rows.len(), visible);
     let end = (start + visible).min(rows.len());
 
-    let mut output = String::from("Agent quota settings\r\n====================\r\n");
+    let mut output = String::new();
     if start > 0 {
         output.push_str("  \u{2191} more\r\n");
     }
@@ -789,6 +789,7 @@ mod tests {
         let frame = render(&draft, applied, 2, 24, Some("Nothing to apply."));
         assert!(frame.contains("> * Sidebar layout"), "{frame}");
         assert!(frame.contains("stacked"), "{frame}");
+        assert!(!frame.contains("Agent quota settings"), "{frame}");
         // The frame ends in a line break, so the split leaves a trailing "".
         let lines: Vec<&str> = frame.trim_end_matches("\r\n").split("\r\n").collect();
         assert!(lines.len() <= 24, "{} lines:\n{frame}", lines.len());

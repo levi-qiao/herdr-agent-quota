@@ -31,9 +31,9 @@ fn exited_panes_do_not_trigger_a_quota_refresh() {
 }
 
 /// Settings remains a pane so it receives the plugin environment, while a
-/// small action exposes that pane in Herdr's menu.
+/// small action lets a keybinding open that pane.
 #[test]
-fn settings_are_a_menu_action_backed_by_a_plugin_pane() {
+fn settings_are_an_action_backed_by_a_plugin_pane() {
     let manifest = include_str!("../herdr-plugin.toml");
     let pane = manifest
         .split("[[panes]]")
@@ -66,9 +66,9 @@ fn the_settings_popup_is_tall_enough_for_every_option() {
         .trim()
         .parse()
         .unwrap();
-    // Three section headers, seven choices, seven fields, seven agents, and
-    // the six lines of chrome `render` reserves.
-    assert!(height >= 3 + 7 + 7 + 7 + 6, "height = {height}");
+    // Three section headers, seven choices, seven fields, seven agents, four
+    // lines of TUI chrome, and the two rows consumed by Herdr's pane border.
+    assert!(height >= 3 + 7 + 7 + 7 + 4 + 2, "height = {height}");
 }
 
 /// Herdr accepts a plugin-owned agent view only from `plugin:<manifest id>`

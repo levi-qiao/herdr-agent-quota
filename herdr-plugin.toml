@@ -58,7 +58,8 @@ title = "Agent quota settings"
 command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-quota\" settings"]
 placement = "popup"
 # Every option on screen at once. The default half-size popup is 24 rows and
-# the list needs 30, so without this the agents section opens below the fold.
+# the list plus controls needs 28 interior rows, so without this the agents
+# section opens below the fold.
 # Herdr clamps to the terminal, and the pane still scrolls when it has to.
 width = 78
-height = 31
+height = 30

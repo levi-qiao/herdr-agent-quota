@@ -563,8 +563,8 @@ fn refresh_provider(
         Provider::Claude | Provider::Agy => load_statusline_snapshot(cache, provider),
         // OpenCode Go is fetched for a resolved pane, never through the
         // provider list; see `fetch_opencode_go`.
-        Provider::OpenCodeGo => Err(anyhow::anyhow!(
-            "OpenCode Go is refreshed per resolved pane, not through --provider"
+        Provider::OpenCodeGo | Provider::Omp => Err(anyhow::anyhow!(
+            "scoped providers are refreshed per resolved pane, not through --provider"
         )),
     };
     cache.mark_refresh(provider, now)?;
@@ -646,7 +646,7 @@ fn current_account_gate(provider: Provider) -> (Option<String>, Option<u64>) {
             (account_id, mtime)
         }
         Provider::Codex => (codex::current_account_id(), codex::auth_mtime_unix()),
-        Provider::Claude | Provider::Agy | Provider::OpenCodeGo => (None, None),
+        Provider::Claude | Provider::Agy | Provider::OpenCodeGo | Provider::Omp => (None, None),
     }
 }
 
@@ -1030,7 +1030,7 @@ mod tests {
     fn an_omp_oauth_account_without_usage_is_explicit_on_the_first_fetch() {
         let directory = tempdir().unwrap();
         let cache = CacheStore::new(directory.path());
-        let target = BillingTarget::omp(Provider::Claude);
+        let target = BillingTarget::omp("anthropic");
         let evidence = crate::omp::OmpEvidence {
             paths: crate::omp::OmpPaths {
                 agent_dir: directory.path().join(".omp/agent"),
@@ -1062,7 +1062,7 @@ mod tests {
     fn an_omp_failed_first_fetch_is_debounced_without_a_snapshot() {
         let directory = tempdir().unwrap();
         let cache = CacheStore::new(directory.path());
-        let target = BillingTarget::omp(Provider::Claude);
+        let target = BillingTarget::omp("anthropic");
         cache.mark_refresh_target(&target, 100).unwrap();
         let evidence = crate::omp::OmpEvidence {
             paths: crate::omp::OmpPaths {
@@ -1087,7 +1087,7 @@ mod tests {
     fn an_omp_usage_failure_keeps_the_same_accounts_last_good_snapshot() {
         let directory = tempdir().unwrap();
         let cache = CacheStore::new(directory.path());
-        let target = BillingTarget::omp(Provider::Claude);
+        let target = BillingTarget::omp("anthropic");
         let snapshot = ProviderSnapshot::new(
             Provider::Claude,
             vec![UsageWindow::new(WindowKind::Weekly, 42.0, None).unwrap()],
