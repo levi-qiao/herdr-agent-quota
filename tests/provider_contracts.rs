@@ -1,5 +1,6 @@
-use herdr_agent_quota::model::{ResetAt, WindowKind};
-use herdr_agent_quota::providers::{agy, claude, codex, grok};
+use herdr_agent_quota::model::{BillingTarget, Provider, ResetAt, WindowKind};
+use herdr_agent_quota::presentation::MetadataTokens;
+use herdr_agent_quota::providers::{agy, claude, codex, grok, omp};
 use serde_json::Value;
 
 fn fixture(value: &str) -> Value {
@@ -97,4 +98,73 @@ fn agy_fixture_aggregates_gemini_and_third_party_windows() {
             .abs()
             < 1e-9
     );
+}
+
+/// Recorded from a live `omp usage --json --redact` (omp 18.0.11) against a
+/// real credential pool: a SuperGrok login, a ChatGPT login, a Cursor plan,
+/// and Antigravity. It is the contract the omp collector reads.
+fn omp_usage() -> Value {
+    fixture(include_str!("fixtures/omp/usage-redacted.json"))
+}
+
+#[test]
+fn omp_reports_the_supergrok_weekly_pool_and_not_its_per_product_twin() {
+    let usage = omp::parse_usage(&omp_usage(), "xai-oauth", 1);
+    let account = &usage.accounts[0];
+    assert_eq!(account.windows.len(), 1);
+    let weekly = &account.windows[0];
+    assert_eq!(weekly.kind, WindowKind::Weekly);
+    assert_eq!(weekly.remaining_percent, 41.0);
+    assert_eq!(
+        weekly.resets_at,
+        Some(ResetAt::from_unix_seconds(1_788_701_555))
+    );
+    // Both the pool and `grokbuild` report the same duration; the unqualified
+    // id is the one a sidebar row can be explained by.
+    assert!(account.pin.is_some());
+}
+
+#[test]
+fn omp_reports_both_codex_windows() {
+    let usage = omp::parse_usage(&omp_usage(), "openai-codex", 1);
+    let windows = &usage.accounts[0].windows;
+    assert_eq!(windows.len(), 2);
+    assert_eq!(windows[0].kind, WindowKind::FiveHour);
+    assert_eq!(windows[0].remaining_percent, 100.0);
+    assert_eq!(windows[1].kind, WindowKind::Weekly);
+    assert_eq!(windows[1].remaining_percent, 86.0);
+}
+
+/// omp owns its normalization contract. The plugin keeps the labels from its
+/// capacity report instead of maintaining provider-specific period guesses.
+#[test]
+fn omp_windows_keep_omps_normalized_labels() {
+    let antigravity = omp::parse_usage(&omp_usage(), "google-antigravity", 1);
+    let daily = &antigravity.accounts[0].windows[0];
+    assert_eq!(daily.kind, WindowKind::FiveHour);
+    assert_eq!(daily.display_label(), "1d");
+    assert_eq!(daily.duration_seconds, Some(86_400));
+
+    let cursor = omp::parse_usage(&omp_usage(), "cursor", 1);
+    let monthly = &cursor.accounts[0].windows[0];
+    assert_eq!(monthly.kind, WindowKind::Monthly);
+    assert_eq!(monthly.display_label(), "Monthly");
+    assert_eq!(monthly.remaining_percent, 0.0);
+}
+
+#[test]
+fn omp_daily_is_rendered_as_1d_instead_of_being_dropped_or_renamed() {
+    let usage = omp::parse_usage(&omp_usage(), "google-antigravity", 1);
+    let snapshot = omp::snapshot(&BillingTarget::omp(Provider::Agy), &usage.accounts[0]);
+    let tokens = MetadataTokens::from_snapshot(&snapshot, 1_788_220_000);
+    assert!(tokens.quota_5h.starts_with("1d 100%"), "{tokens:?}");
+    assert_eq!(tokens.quota_week, "");
+}
+
+/// A provider nobody is signed in to reads as unknown, never as empty quota.
+#[test]
+fn omp_reports_nothing_for_an_absent_provider() {
+    let usage = omp::parse_usage(&omp_usage(), "anthropic", 1);
+    assert!(usage.accounts.is_empty());
+    assert!(!usage.has_api_key);
 }

@@ -225,21 +225,30 @@ fn context_is_the_penultimate_row_and_model_shares_provider_style() {
     assert_eq!(limit_index + 1, rows.len());
 
     for (provider, color, dim) in [
-        ("claude", "#e88461", Some("#f0a080")),
-        ("codex", "#c4d7f5", Some("#aab9d0")),
-        ("grok", "#d5d5d8", Some("#acb0b7")),
-        ("agy", "#8ab4f8", Some("#a7c7fa")),
-        ("opencode", "#bba3e8", None),
-        ("pi", "#d4a0c8", None),
+        ("claude", Some("#e88461"), Some("#f0a080")),
+        ("codex", Some("#c4d7f5"), Some("#aab9d0")),
+        ("grok", Some("#d5d5d8"), Some("#acb0b7")),
+        ("agy", Some("#8ab4f8"), Some("#a7c7fa")),
+        ("opencode", None, None),
+        ("pi", Some("#d4a0c8"), None),
+        ("omp", Some("#bba3e8"), None),
     ] {
         let provider_rows = agents["rows_by_agent"][provider].as_value().unwrap();
         let rendered = provider_rows.to_string();
-        let needle = format!("fg = \"{color}\"");
-        assert_eq!(
-            rendered.matches(needle.as_str()).count(),
-            1,
-            "wrong brand color for {provider}: {rendered}"
-        );
+        if let Some(color) = color {
+            let needle = format!("fg = \"{color}\"");
+            assert_eq!(
+                rendered.matches(needle.as_str()).count(),
+                1,
+                "wrong brand color for {provider}: {rendered}"
+            );
+        } else {
+            assert!(
+                rendered
+                    .starts_with(" [[\"state_icon\", { token = \"$quota_provider_model\", bold"),
+                "{provider} should use the neutral identity style: {rendered}"
+            );
+        }
         if let Some(dim) = dim {
             assert!(
                 !rendered.contains(dim),
@@ -1358,7 +1367,7 @@ fn installing_one_agent_leaves_every_other_agent_untouched() {
 
     let sidebar = homes.sidebar();
     assert!(sidebar.contains("claude ="), "{sidebar}");
-    for other in ["codex =", "grok =", "agy =", "opencode =", "pi ="] {
+    for other in ["codex =", "grok =", "agy =", "opencode =", "pi =", "omp ="] {
         assert!(!sidebar.contains(other), "{other} was written: {sidebar}");
     }
 
@@ -1387,7 +1396,14 @@ fn installing_only_pi_adds_only_its_sidebar_style() {
     );
     let sidebar = homes.sidebar();
     assert!(sidebar.contains("pi ="), "{sidebar}");
-    for other in ["claude =", "codex =", "grok =", "agy =", "opencode ="] {
+    for other in [
+        "claude =",
+        "codex =",
+        "grok =",
+        "agy =",
+        "opencode =",
+        "omp =",
+    ] {
         assert!(!sidebar.contains(other), "{other} was written: {sidebar}");
     }
     assert!(!homes.claude_settings.exists());
@@ -1411,7 +1427,14 @@ fn uninstalling_one_agent_keeps_the_rest_working() {
 
     let sidebar = homes.sidebar();
     assert!(!sidebar.contains("grok ="), "grok survived: {sidebar}");
-    for kept in ["claude =", "codex =", "agy =", "opencode =", "pi ="] {
+    for kept in [
+        "claude =",
+        "codex =",
+        "agy =",
+        "opencode =",
+        "pi =",
+        "omp =",
+    ] {
         assert!(sidebar.contains(kept), "{kept} was lost: {sidebar}");
     }
     assert!(
@@ -1493,6 +1516,7 @@ fn an_unusable_environment_selection_still_installs_everything() {
         "agy =",
         "opencode =",
         "pi =",
+        "omp =",
     ] {
         assert!(sidebar.contains(expected), "{expected} missing: {sidebar}");
     }

@@ -3,7 +3,7 @@ name = "herdr-agent-quota"
 version = "1.2.0"
 edition = "2021"
 rust-version = "1.95"
-description = "Credential-scoped AI quota and context in Herdr for Claude, Codex, Grok, Agy, OpenCode, and Pi"
+description = "Credential-scoped AI quota and context in Herdr for Claude, Codex, Grok, Agy, OpenCode, Pi, and omp"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/levi-qiao/herdr-agent-quota"
@@ -18,6 +18,9 @@ clap = { version = "4.5", features = ["derive"] }
 crossterm = "0.28"
 directories = "5.0"
 serde = { version = "1.0", features = ["derive"] }
+# omp records the account serving a session as a sha256 of its identity; the
+# same digest is recomputed here to match a pane to one account's quota.
+sha2 = "0.10"
 # `preserve_order` keeps a user's own key order when `configure` rewrites
 # ~/.claude/settings.json; without it every apply silently re-sorts their file.
 serde_json = { version = "1.0", features = ["preserve_order"] }

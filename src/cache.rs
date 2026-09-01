@@ -77,6 +77,57 @@ impl CacheStore {
         Ok(Some(snapshot))
     }
 
+    /// Load the snapshot of a target that is not a canonical collector.
+    ///
+    /// Scoped targets share a [`Provider`] with the canonical store they are
+    /// distinct from, so they are addressed by [`BillingTarget::cache_identity`]
+    /// rather than by provider alone.
+    pub fn load_target(&self, target: &BillingTarget) -> Result<Option<ProviderSnapshot>> {
+        let path = self.target_snapshot_path(target);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+        let snapshot = serde_json::from_slice(&bytes)
+            .with_context(|| format!("parse cached {} snapshot", target.cache_identity()))?;
+        Ok(Some(snapshot))
+    }
+
+    pub fn save_target(&self, target: &BillingTarget, snapshot: &ProviderSnapshot) -> Result<()> {
+        self.ensure()?;
+        let identity = target.cache_identity();
+        let destination = self.target_snapshot_path(target);
+        let temporary = self
+            .root
+            .join(format!(".{identity}.{}.tmp", std::process::id()));
+        let bytes = serde_json::to_vec_pretty(snapshot).context("serialize quota snapshot")?;
+        Self::atomic_replace(&destination, &temporary, bytes)
+    }
+
+    pub fn should_debounce_target(
+        &self,
+        target: &BillingTarget,
+        now_unix: u64,
+        interval_seconds: u64,
+    ) -> Result<bool> {
+        let Ok(contents) = fs::read_to_string(self.target_refresh_marker_path(target)) else {
+            return Ok(false);
+        };
+        let Ok(last) = contents.trim().parse::<u64>() else {
+            return Ok(false);
+        };
+        Ok(now_unix.saturating_sub(last) < interval_seconds)
+    }
+
+    pub fn mark_refresh_target(&self, target: &BillingTarget, now_unix: u64) -> Result<()> {
+        self.ensure()?;
+        fs::write(
+            self.target_refresh_marker_path(target),
+            now_unix.to_string(),
+        )
+        .context("write refresh marker")
+    }
+
     pub fn save(&self, snapshot: &ProviderSnapshot) -> Result<()> {
         self.ensure()?;
         let destination = self.snapshot_path(snapshot.provider);
@@ -646,6 +697,15 @@ impl CacheStore {
 
     fn snapshot_path(&self, provider: Provider) -> PathBuf {
         self.root.join(format!("{}.json", provider.source()))
+    }
+
+    fn target_snapshot_path(&self, target: &BillingTarget) -> PathBuf {
+        self.root.join(format!("{}.json", target.cache_identity()))
+    }
+
+    fn target_refresh_marker_path(&self, target: &BillingTarget) -> PathBuf {
+        self.root
+            .join(format!("{}.refresh", target.cache_identity()))
     }
 
     fn statusline_observation_path(&self, provider: Provider) -> PathBuf {

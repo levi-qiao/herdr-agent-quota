@@ -81,7 +81,7 @@ Concretely, this means:
 |---|---|---|
 | `startup` | Herdr's `[[startup]]` hook | No |
 | `refresh` | manual action, `startup` | No |
-| `event` | `pane.agent_detected`, `pane.agent_status_changed` | Only the pane named in `HERDR_PLUGIN_EVENT_JSON` |
+| `event` | `pane.agent_detected`, `pane.agent_status_changed` | Only the pane named in `HERDR_PLUGIN_EVENT_JSON`, and never a Pi or omp pane — their transcripts carry the evidence |
 | `focus` | `pane.focused` | No |
 | `watch` | detached from a working status event | No (agent metadata only) |
 
@@ -99,6 +99,42 @@ once per configured interval, refreshes every working provider in that pass,
 publishes without reading pane output, and exits after all agents settle. The
 interval defaults to 60 seconds and is bounded to 30 seconds–1 hour. Uninstall
 writes a stop marker so a detached watcher cannot survive a restore.
+
+## omp's quota does not come from a provider endpoint
+
+Every other collector either reads a local credential and calls the provider
+(`codex`, `grok`, `opencode_go`) or waits for a statusLine hook (`claude`,
+`agy`). omp is the exception: it keeps its own credential store and ships its
+own usage layer, so `src/providers/omp.rs` shells out to
+`omp usage --json --provider <id>` and reads the answer.
+
+Three properties hold that together, and each one is load bearing:
+
+1. **One provider, never the pool.** The call always names the provider the
+   pane's transcript is talking to. Asking for everything would poll every
+   subscription the user has in omp, on a pane event.
+2. **Two caches, deliberately.** omp answers from its own five-minute usage
+   cache in `agent.db`; on top of that this plugin debounces to 60 seconds per
+   target and stores the resulting snapshot. Neither layer may be removed on
+   the theory that the other covers it — omp's cache is what stops a provider
+   request, ours is what stops a process spawn.
+3. **`agent.db` is never opened.** It holds live OAuth tokens. Everything
+   needed — the account identity and the quota — is in the CLI's output.
+   `models.db` is opened read-only, because the context window is the one thing
+   the CLI cannot give cheaply.
+
+An omp pane is billed in `CredentialScope::OMP_STORE`, not the canonical scope.
+An omp Claude pane and a Claude Code pane can be two different subscriptions,
+so they must never share a cache file; `BillingTarget::cache_identity` is what
+keeps them apart, and it is the reason that function appends a scope.
+
+Attribution is by omp's `credential_pin`: the transcript records
+`sha256(provider\0accountId\0email\0orgId\0projectId)` of the serving
+account, and `providers::omp::account_pin` recomputes it from the usage
+report's identity. That digest is omp's persisted contract — if it changes
+upstream, every pin is orphaned and multi-account panes silently fall back to
+"no quota". The pinned-digest test exists to make that a test failure rather
+than a wrong number.
 
 ## Herdr state this plugin owns outside a pane
 

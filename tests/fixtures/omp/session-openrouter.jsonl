@@ -1,0 +1,3 @@
+{"type":"session","version":3,"id":"session-openrouter","timestamp":"2099-01-01T00:00:00.000Z","cwd":"/workspace"}
+{"type":"model_change","id":"entry-1","parentId":null,"timestamp":"2099-01-01T00:00:01.000Z","provider":"openrouter","modelId":"model-z"}
+{"type":"message","id":"entry-2","parentId":"entry-1","timestamp":"2099-01-01T00:00:02.000Z","message":{"role":"assistant","provider":"openrouter","model":"model-z","content":[],"stopReason":"stop","timestamp":4070908801000,"usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"totalTokens":15,"cost":{"total":0}}}}

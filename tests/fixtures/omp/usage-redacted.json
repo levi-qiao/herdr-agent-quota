@@ -1,0 +1,338 @@
+{
+  "generatedAt": 1788224726922,
+  "reports": [
+    {
+      "provider": "xai-oauth",
+      "fetchedAt": 1788224726917,
+      "limits": [
+        {
+          "id": "xai-oauth:credits:1w",
+          "label": "SuperGrok Weekly Credits",
+          "scope": {
+            "provider": "xai-oauth",
+            "accountId": "ae*",
+            "windowId": "1w",
+            "shared": true
+          },
+          "window": {
+            "id": "1w",
+            "label": "Weekly",
+            "durationMs": 604800000,
+            "resetsAt": 1788701555463
+          },
+          "amount": {
+            "used": 59,
+            "limit": 100,
+            "remaining": 41,
+            "usedFraction": 0.59,
+            "remainingFraction": 0.41000000000000003,
+            "unit": "percent"
+          },
+          "status": "ok"
+        },
+        {
+          "id": "xai-oauth:product:grokbuild:1w",
+          "label": "Grok Build (Weekly)",
+          "scope": {
+            "provider": "xai-oauth",
+            "accountId": "ae*",
+            "windowId": "1w",
+            "shared": true
+          },
+          "window": {
+            "id": "1w",
+            "label": "Weekly",
+            "durationMs": 604800000,
+            "resetsAt": 1788701555463
+          },
+          "amount": {
+            "used": 59,
+            "limit": 100,
+            "remaining": 41,
+            "usedFraction": 0.59,
+            "remainingFraction": 0.41000000000000003,
+            "unit": "percent"
+          },
+          "status": "ok"
+        }
+      ],
+      "metadata": {
+        "endpoint": "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+        "source": "cli-chat-proxy.grok.com/v1/billing",
+        "billingKind": "weekly",
+        "accountId": "ae*",
+        "email": "gu*2*"
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "fetchedAt": 1788224724864,
+      "limits": [
+        {
+          "id": "openai-codex:primary",
+          "label": "5 hours",
+          "scope": {
+            "provider": "openai-codex",
+            "windowId": "5h",
+            "shared": true
+          },
+          "window": {
+            "id": "5h",
+            "label": "5 hours",
+            "durationMs": 18000000,
+            "resetsAt": 1788242459000
+          },
+          "amount": {
+            "used": 0,
+            "limit": 100,
+            "remaining": 100,
+            "usedFraction": 0,
+            "remainingFraction": 1,
+            "unit": "percent"
+          },
+          "status": "ok"
+        },
+        {
+          "id": "openai-codex:secondary",
+          "label": "7 days",
+          "scope": {
+            "provider": "openai-codex",
+            "windowId": "7d",
+            "shared": true
+          },
+          "window": {
+            "id": "7d",
+            "label": "7 days",
+            "durationMs": 604800000,
+            "resetsAt": 1788748111000
+          },
+          "amount": {
+            "used": 14,
+            "limit": 100,
+            "remaining": 86,
+            "usedFraction": 0.14,
+            "remainingFraction": 0.86,
+            "unit": "percent"
+          },
+          "status": "ok"
+        }
+      ],
+      "resetCredits": {
+        "availableCount": 0
+      },
+      "metadata": {
+        "planType": "plus",
+        "allowed": true,
+        "limitReached": false,
+        "email": "gu*u@*",
+        "accountId": "1e*",
+        "meterStates": {
+          "chat": {
+            "allowed": true,
+            "limitReached": false
+          }
+        },
+        "orgId": "1e*",
+        "orgName": "pl*"
+      }
+    },
+    {
+      "provider": "cursor",
+      "fetchedAt": 1788224724865,
+      "limits": [
+        {
+          "id": "cursor:requests:gpt-4",
+          "label": "gpt-4 requests",
+          "scope": {
+            "provider": "cursor",
+            "windowId": "monthly"
+          },
+          "window": {
+            "id": "monthly",
+            "label": "Monthly",
+            "resetsAt": 1788338535000
+          },
+          "amount": {
+            "used": 0,
+            "unit": "requests"
+          }
+        },
+        {
+          "id": "cursor:usd:individual-auto",
+          "label": "Cursor Models",
+          "scope": {
+            "provider": "cursor",
+            "windowId": "monthly"
+          },
+          "window": {
+            "id": "monthly",
+            "label": "Monthly",
+            "resetsAt": 1788338535000
+          },
+          "amount": {
+            "used": 100,
+            "usedFraction": 1,
+            "unit": "percent"
+          },
+          "status": "exhausted"
+        },
+        {
+          "id": "cursor:usd:individual-api",
+          "label": "Other Models",
+          "scope": {
+            "provider": "cursor",
+            "windowId": "monthly"
+          },
+          "window": {
+            "id": "monthly",
+            "label": "Monthly",
+            "resetsAt": 1788338535000
+          },
+          "amount": {
+            "used": 20,
+            "limit": 20,
+            "remaining": 0,
+            "usedFraction": 1,
+            "remainingFraction": 0,
+            "unit": "usd"
+          },
+          "status": "exhausted"
+        }
+      ],
+      "metadata": {
+        "email": "aa*"
+      }
+    },
+    {
+      "provider": "google-antigravity",
+      "fetchedAt": 1788224724865,
+      "limits": [
+        {
+          "id": "google-antigravity:google:default:daily",
+          "label": "Usage (Google)",
+          "scope": {
+            "provider": "google-antigravity",
+            "projectId": "ai*",
+            "windowId": "daily"
+          },
+          "window": {
+            "id": "daily",
+            "label": "Daily",
+            "durationMs": 86400000,
+            "resetsAt": 1788242725000
+          },
+          "amount": {
+            "unit": "percent",
+            "remainingFraction": 1,
+            "usedFraction": 0,
+            "remaining": 100,
+            "used": 0,
+            "limit": 100
+          },
+          "status": "ok"
+        },
+        {
+          "id": "google-antigravity:anthropic:default:daily",
+          "label": "Usage (Anthropic)",
+          "scope": {
+            "provider": "google-antigravity",
+            "projectId": "ai*",
+            "windowId": "daily"
+          },
+          "window": {
+            "id": "daily",
+            "label": "Daily",
+            "durationMs": 86400000,
+            "resetsAt": 1788242725000
+          },
+          "amount": {
+            "unit": "percent",
+            "remainingFraction": 1,
+            "usedFraction": 0,
+            "remaining": 100,
+            "used": 0,
+            "limit": 100
+          },
+          "status": "ok"
+        },
+        {
+          "id": "google-antigravity:openai:default:daily",
+          "label": "Usage (OpenAI)",
+          "scope": {
+            "provider": "google-antigravity",
+            "projectId": "ai*",
+            "windowId": "daily"
+          },
+          "window": {
+            "id": "daily",
+            "label": "Daily",
+            "durationMs": 86400000,
+            "resetsAt": 1788242725000
+          },
+          "amount": {
+            "unit": "percent",
+            "remainingFraction": 1,
+            "usedFraction": 0,
+            "remaining": 100,
+            "used": 0,
+            "limit": 100
+          },
+          "status": "ok"
+        }
+      ],
+      "metadata": {
+        "endpoint": "https://daily-cloudcode-pa.googleapis.com",
+        "projectId": "ai*",
+        "email": "gu*3*"
+      }
+    }
+  ],
+  "accountsWithoutUsage": [],
+  "disabledCredentials": [],
+  "capacity": {
+    "xai-oauth": [
+      {
+        "window": "7d",
+        "durationMs": 604800000,
+        "accounts": 1,
+        "usedAccounts": 0.59,
+        "remainingAccounts": 0.41000000000000003
+      }
+    ],
+    "openai-codex": [
+      {
+        "window": "5h",
+        "durationMs": 18000000,
+        "meter": "chat",
+        "accounts": 1,
+        "usedAccounts": 0,
+        "remainingAccounts": 1
+      },
+      {
+        "window": "7d",
+        "durationMs": 604800000,
+        "meter": "chat",
+        "accounts": 1,
+        "usedAccounts": 0.14,
+        "remainingAccounts": 0.86
+      }
+    ],
+    "cursor": [
+      {
+        "window": "Monthly",
+        "accounts": 1,
+        "usedAccounts": 1,
+        "remainingAccounts": 0
+      }
+    ],
+    "google-antigravity": [
+      {
+        "window": "1d",
+        "durationMs": 86400000,
+        "accounts": 1,
+        "usedAccounts": 0,
+        "remainingAccounts": 1
+      }
+    ]
+  }
+}

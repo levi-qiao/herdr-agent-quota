@@ -73,6 +73,7 @@ pub enum Harness {
     Agy,
     OpenCode,
     Pi,
+    Omp,
 }
 
 impl Harness {
@@ -86,6 +87,7 @@ impl Harness {
             "agy" | "antigravity" | "antigravity-cli" => Some(Self::Agy),
             "opencode" => Some(Self::OpenCode),
             "pi" => Some(Self::Pi),
+            "omp" => Some(Self::Omp),
             _ => None,
         }
     }
@@ -98,7 +100,7 @@ impl Harness {
             Self::Grok => Some(Provider::Grok),
             Self::Claude => Some(Provider::Claude),
             Self::Agy => Some(Provider::Agy),
-            Self::OpenCode | Self::Pi => None,
+            Self::OpenCode | Self::Pi | Self::Omp => None,
         }
     }
 
@@ -116,6 +118,10 @@ impl CredentialScope {
     pub const CANONICAL: Self = Self("canonical");
     /// OpenCode default data store (`$XDG_DATA_HOME/opencode` or `~/.local/share/opencode`).
     pub const OPENCODE_STORE: Self = Self("opencode-store");
+    /// omp's own credential store (`<agent dir>/agent.db`). An omp pane is
+    /// billed to a subscription this plugin can also collect canonically, so
+    /// the scope is what keeps the two apart.
+    pub const OMP_STORE: Self = Self("omp-store");
 
     pub fn as_str(self) -> &'static str {
         self.0
@@ -144,6 +150,14 @@ impl BillingTarget {
         }
     }
 
+    /// An omp-scoped target for a subscription omp routes a pane to.
+    pub fn omp(billing: Provider) -> Self {
+        Self {
+            billing,
+            credential_scope: CredentialScope::OMP_STORE,
+        }
+    }
+
     /// The billing identity when it is one of the original four collectors.
     ///
     /// Those are refreshed through the provider list; anything else is fetched
@@ -160,7 +174,17 @@ impl BillingTarget {
     /// ids, and a scoped target carries its credential scope in the stem so it
     /// cannot collide with them.
     pub fn cache_identity(self) -> String {
-        self.billing.source().to_string()
+        let source = self.billing.source();
+        // OpenCode Go's 0.2 source id already carries its scope; the original
+        // four carry none because canonical is the absence of one. Anything
+        // else appends its scope so an omp-billed Claude can never overwrite
+        // the canonical Claude snapshot.
+        if self.credential_scope == CredentialScope::CANONICAL
+            || source.ends_with(self.credential_scope.as_str())
+        {
+            return source.to_string();
+        }
+        format!("{source}.{}", self.credential_scope.as_str())
     }
 }
 
@@ -270,6 +294,15 @@ pub struct UsageWindow {
     pub used_percent: f64,
     pub remaining_percent: f64,
     pub resets_at: Option<ResetAt>,
+    /// Provider-normalized period label. Most collectors use `kind`; omp
+    /// supplies its own labels (`1d`, `7d`, `Monthly`) and those must survive
+    /// without this plugin reinterpreting the upstream provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_label: Option<String>,
+    /// Provider-normalized duration, when supplied. Kept for deterministic
+    /// ordering of omp windows; it is not used to rewrite their labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<u64>,
 }
 
 impl UsageWindow {
@@ -286,7 +319,26 @@ impl UsageWindow {
             used_percent,
             remaining_percent: (100.0 - used_percent).clamp(0.0, 100.0),
             resets_at,
+            source_label: None,
+            duration_seconds: None,
         })
+    }
+
+    pub fn with_source_window(
+        mut self,
+        label: impl Into<String>,
+        duration_seconds: Option<u64>,
+    ) -> Self {
+        let label = label.into();
+        self.source_label = (!label.trim().is_empty()).then_some(label);
+        self.duration_seconds = duration_seconds;
+        self
+    }
+
+    pub fn display_label(&self) -> &str {
+        self.source_label
+            .as_deref()
+            .unwrap_or_else(|| self.kind.label())
     }
 }
 

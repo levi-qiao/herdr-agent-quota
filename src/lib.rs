@@ -8,6 +8,7 @@ pub mod process;
 pub mod configure;
 pub mod dashboard;
 pub mod herdr;
+pub mod omp;
 pub mod opencode;
 pub mod pi;
 pub mod providers;

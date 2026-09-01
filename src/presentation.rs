@@ -91,19 +91,37 @@ impl MetadataTokens {
     ) -> Self {
         let quota_provider = snapshot.provider.display_name().to_string();
         let quota_model = model.unwrap_or_default().to_string();
-        let quota_5h = five_hour_slot(windows, snapshot.provider, now_unix, style);
+        let omp_windows = snapshot.source.starts_with("omp.");
+        let short_window = if omp_windows {
+            window_in(windows, WindowKind::FiveHour)
+        } else {
+            None
+        };
+        let long = long_window(windows);
+        let quota_5h = if omp_windows {
+            short_window
+                .map(|window| compact_window_parts(window, now_unix, style).rendered())
+                .unwrap_or_default()
+        } else {
+            five_hour_slot(windows, snapshot.provider, now_unix, style)
+        };
         Self {
             quota_provider_model: provider_model_label(&quota_provider, &quota_model),
             quota_provider,
             quota_model,
-            quota_5h_severity: window_severity(windows, WindowKind::FiveHour, now_unix)
-                .or_else(|| missing_five_hour_severity(snapshot.provider, &quota_5h)),
+            quota_5h_severity: short_window
+                .map(|window| Severity::for_window(window, now_unix))
+                .or_else(|| window_severity(windows, WindowKind::FiveHour, now_unix))
+                .or_else(|| {
+                    (!omp_windows)
+                        .then(|| missing_five_hour_severity(snapshot.provider, &quota_5h))
+                        .flatten()
+                }),
             quota_5h,
-            quota_week: long_window(windows)
+            quota_week: long
                 .map(|window| compact_window_parts(window, now_unix, style).rendered())
                 .unwrap_or_default(),
-            quota_week_severity: long_window(windows)
-                .map(|window| Severity::for_window(window, now_unix)),
+            quota_week_severity: long.map(|window| Severity::for_window(window, now_unix)),
             quota_context: sidebar_context(context),
             quota_cache: sidebar_cache(context),
             quota_cache_ttl: sidebar_cache_ttl(context, now_unix),
@@ -297,7 +315,7 @@ fn format_window(
     } else {
         String::new()
     };
-    let label = format!("{} {percent}{suffix}", window.kind.label());
+    let label = format!("{} {percent}{suffix}", window.display_label());
     let Some(reset) = window.resets_at else {
         return label;
     };
@@ -325,7 +343,7 @@ impl WindowParts {
 
 fn compact_window_parts(window: &UsageWindow, now_unix: u64, style: PercentStyle) -> WindowParts {
     WindowParts {
-        label: window.kind.label().to_string(),
+        label: window.display_label().to_string(),
         percent: format!("{}%", format_percent(style.percent_of(window))),
         eta: window
             .resets_at

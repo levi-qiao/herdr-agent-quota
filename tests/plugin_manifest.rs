@@ -30,11 +30,10 @@ fn exited_panes_do_not_trigger_a_quota_refresh() {
     assert!(!manifest.contains("on = \"pane.exited\""));
 }
 
-/// The settings pane writes configuration by re-invoking `configure`, so it
-/// needs the plugin environment Herdr injects into a pane. It must therefore
-/// stay a pane entry rather than becoming an action with a fixed command.
+/// Settings remains a pane so it receives the plugin environment, while a
+/// small action exposes that pane in Herdr's menu.
 #[test]
-fn settings_are_edited_in_a_pane_that_inherits_the_plugin_environment() {
+fn settings_are_a_menu_action_backed_by_a_plugin_pane() {
     let manifest = include_str!("../herdr-plugin.toml");
     let pane = manifest
         .split("[[panes]]")
@@ -42,6 +41,12 @@ fn settings_are_edited_in_a_pane_that_inherits_the_plugin_environment() {
         .unwrap();
     assert!(pane.contains(" settings\"]"), "{pane}");
     assert!(pane.contains("placement = \"popup\""), "{pane}");
+    let action = manifest
+        .split("[[actions]]")
+        .find(|action| action.contains("id = \"open-settings\""))
+        .expect("settings action");
+    assert!(action.contains("plugin pane open"), "{action}");
+    assert!(action.contains("--entrypoint settings"), "{action}");
 }
 
 /// The pane draws one row per option and cannot fold them, so the popup has to
@@ -61,9 +66,9 @@ fn the_settings_popup_is_tall_enough_for_every_option() {
         .trim()
         .parse()
         .unwrap();
-    // Three section headers, seven choices, seven fields, six agents, and the
-    // six lines of chrome `render` reserves.
-    assert!(height >= 3 + 7 + 7 + 6 + 6, "height = {height}");
+    // Three section headers, seven choices, seven fields, seven agents, and
+    // the six lines of chrome `render` reserves.
+    assert!(height >= 3 + 7 + 7 + 7 + 6, "height = {height}");
 }
 
 /// Herdr accepts a plugin-owned agent view only from `plugin:<manifest id>`

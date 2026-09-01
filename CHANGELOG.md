@@ -6,6 +6,50 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- omp (oh-my-pi) is a supported harness: `--agent omp`, its own settings row,
+  and automatic installation of Herdr's `omp` integration when selected. Model,
+  context, and cache come from the same transcript reader Pi uses — omp is a
+  fork of Pi and still writes JSONL v3 — with two field renames handled in the
+  shared parser (`cttl.ephemeral1h` for Anthropic's one-hour cache writes, and
+  omp's authoritative `contextTokens`). The agent directory is recovered from
+  the absolute session path Herdr reports rather than from this process's
+  environment, so a pane started under `PI_CONFIG_DIR` or `--profile` is read
+  against its own state.
+- omp quota comes from omp's own usage layer, `omp usage --json --provider
+  <id>`, and is cached in a credential scope of its own: an omp pane billed to
+  Claude never reads (or writes) the canonical Claude snapshot, because the two
+  can be different subscriptions. The call is debounced to once a minute per
+  provider and omp answers it from its own five-minute usage cache, so it is
+  not a provider request per event. `omp usage` is asked only about the one
+  provider the pane is talking to, never about the whole credential pool.
+- omp records the account that served a session as a `credential_pin`; the same
+  digest is recomputed from the usage report's identity, so two accounts on one
+  provider each get their own quota. With several accounts and no pin the pane
+  shows no quota rather than a peer account's, and a provider that only holds
+  an API key in omp is confirmed pay-as-you-go and clears stale quota.
+- `HERDR_AGENT_QUOTA_OMP_BIN` overrides the `omp` executable.
+- An omp OAuth login that is attributable to the pane but has no usage report
+  now renders quota as `N/A` instead of looking unsupported. A last-good
+  snapshot for that same account is still preserved, and failed first fetches
+  now honor the one-minute debounce instead of spawning `omp usage` again on
+  every pane event.
+- OMP quota windows are rendered with OMP's normalized labels instead of a
+  second set of per-provider rules. Daily and monthly reports such as `1d` and
+  `Monthly` now reach the existing short/long sidebar rows rather than being
+  dropped.
+- **Open agent quota settings** is a plugin action, so the settings popup is
+  available from Herdr's menu as well as `herdr plugin pane open`.
+
+### Changed
+
+- OMP now uses the previous OpenCode violet brand color; OpenCode uses the
+  neutral identity color OMP previously inherited.
+- Both READMEs were reduced to feature, support, settings, integration, and
+  troubleshooting tables, and now include the full settings-pane screenshot
+  and copy-ready commands.
+
 ## [1.2.0] - 2026-09-01
 
 ### Added

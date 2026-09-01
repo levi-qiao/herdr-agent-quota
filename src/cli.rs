@@ -162,6 +162,7 @@ pub enum AgentSelection {
     Agy,
     Opencode,
     Pi,
+    Omp,
 }
 
 /// How quota tokens are arranged in Herdr's agent sidebar.
@@ -662,13 +663,14 @@ impl SidebarLayout {
 
 impl AgentSelection {
     /// Every agent `configure` supports, in the order they are reported.
-    pub const SUPPORTED: [Harness; 6] = [
+    pub const SUPPORTED: [Harness; 7] = [
         Harness::Claude,
         Harness::Codex,
         Harness::Grok,
         Harness::Agy,
         Harness::OpenCode,
         Harness::Pi,
+        Harness::Omp,
     ];
 
     fn harness(self) -> Option<Harness> {
@@ -680,6 +682,7 @@ impl AgentSelection {
             Self::Agy => Some(Harness::Agy),
             Self::Opencode => Some(Harness::OpenCode),
             Self::Pi => Some(Harness::Pi),
+            Self::Omp => Some(Harness::Omp),
         }
     }
 
@@ -725,6 +728,7 @@ impl AgentSelection {
             "agy" => Some(Self::Agy),
             "opencode" => Some(Self::Opencode),
             "pi" => Some(Self::Pi),
+            "omp" => Some(Self::Omp),
             _ => None,
         }
     }

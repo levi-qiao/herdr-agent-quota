@@ -2,7 +2,7 @@ id = "herdr-agent-quota"
 name = "Herdr Agent Quota"
 version = "1.2.0"
 min_herdr_version = "0.8.0"
-description = "Credential-scoped AI quota and context for Claude, Codex, Grok, Agy, OpenCode, and Pi."
+description = "Credential-scoped AI quota and context for Claude, Codex, Grok, Agy, OpenCode, Pi, and omp."
 platforms = ["macos", "linux"]
 
 [[build]]
@@ -20,6 +20,11 @@ command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-quo
 id = "configure"
 title = "Install / repair agent quota"
 command = ["sh", "-c", "\"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-quota\" configure --apply && herdr server reload-config"]
+
+[[actions]]
+id = "open-settings"
+title = "Open agent quota settings"
+command = ["sh", "-c", "exec \"$HERDR_BIN_PATH\" plugin pane open --plugin herdr-agent-quota --entrypoint settings --focus"]
 
 [[actions]]
 id = "uninstall"
@@ -53,7 +58,7 @@ title = "Agent quota settings"
 command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-quota\" settings"]
 placement = "popup"
 # Every option on screen at once. The default half-size popup is 24 rows and
-# the list needs 29, so without this the agents section opens below the fold.
+# the list needs 30, so without this the agents section opens below the fold.
 # Herdr clamps to the terminal, and the pane still scrolls when it has to.
 width = 78
-height = 30
+height = 31

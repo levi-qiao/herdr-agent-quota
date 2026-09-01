@@ -1,4 +1,10 @@
 //! Conservative local resolution for the Pi coding-agent harness.
+//!
+//! The session-file reader below is shared with omp (`src/omp.rs`): omp is a
+//! fork of Pi and still writes the same JSONL v3 transcript, so the branch
+//! walk, model evidence, and usage counters are one implementation with two
+//! callers. Only the credential store and the model catalog diverged, and
+//! those stay in each harness's own module.
 
 use crate::model::{BillingTarget, CacheTotals, CacheUsage, ContextUsage, Provider, Resolution};
 use serde::Deserialize;
@@ -174,33 +180,44 @@ pub fn lookup_session(paths: &PiPaths, supplied_path: &Path) -> SessionLookup {
 }
 
 #[derive(Debug)]
-struct ParsedSession {
-    evidence: SessionEvidence,
-    message_provider_id: Option<String>,
-    session_id: String,
-    context_tokens: Option<u64>,
-    latest_usage: UsageCounters,
-    usage_totals: UsageCounters,
-    cache_activity: Option<CacheActivity>,
+pub(crate) struct ParsedSession {
+    pub(crate) evidence: SessionEvidence,
+    pub(crate) message_provider_id: Option<String>,
+    pub(crate) session_id: String,
+    pub(crate) context_tokens: Option<u64>,
+    pub(crate) latest_usage: UsageCounters,
+    pub(crate) usage_totals: UsageCounters,
+    pub(crate) cache_activity: Option<CacheActivity>,
+    /// Latest `credential_pin` hash on the active branch, for the provider the
+    /// session is talking to. omp writes it; Pi does not.
+    pub(crate) credential_pin: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct CacheActivity {
-    ttl_seconds: u64,
-    last_activity_unix: u64,
+pub(crate) struct CacheActivity {
+    pub(crate) ttl_seconds: u64,
+    pub(crate) last_activity_unix: u64,
 }
 
-enum DetailedSessionLookup {
+pub(crate) enum DetailedSessionLookup {
     Found(Box<ParsedSession>),
     Missing,
     Unreadable,
 }
 
 fn lookup_session_detailed(paths: &PiPaths, supplied_path: &Path) -> DetailedSessionLookup {
+    lookup_session_in(&paths.sessions, supplied_path)
+}
+
+/// Read one transcript, refusing anything outside `sessions_root`.
+pub(crate) fn lookup_session_in(
+    sessions_root: &Path,
+    supplied_path: &Path,
+) -> DetailedSessionLookup {
     if !supplied_path.is_absolute() {
         return DetailedSessionLookup::Unreadable;
     }
-    let root = match fs::canonicalize(&paths.sessions) {
+    let root = match fs::canonicalize(sessions_root) {
         Ok(root) => root,
         Err(_) => return DetailedSessionLookup::Missing,
     };
@@ -258,6 +275,10 @@ fn parse_session_file(path: &Path) -> DetailedSessionLookup {
                 };
                 header_id = Some(id.to_string());
             }
+            // omp opens its transcripts with a padded `title` record that
+            // carries no id and no parent. It is a header, not a branch entry:
+            // pushing it would fail the id/parentId walk for every omp session.
+            Some("title") => {}
             _ => entries.push(entry),
         }
     }
@@ -283,6 +304,7 @@ fn parse_session_file(path: &Path) -> DetailedSessionLookup {
     });
     let context_tokens = context_tokens(&branch);
     let cache_activity = cache_activity(&branch, &evidence.provider_id);
+    let credential_pin = credential_pin(&branch, &evidence.provider_id);
     let latest_usage = branch
         .iter()
         .rev()
@@ -302,7 +324,23 @@ fn parse_session_file(path: &Path) -> DetailedSessionLookup {
         latest_usage,
         usage_totals,
         cache_activity,
+        credential_pin,
     }))
+}
+
+/// Latest account pin recorded for `provider_id` on the active branch.
+///
+/// omp appends a `credential_pin` entry whenever the serving OAuth account
+/// changes, so the last one on the branch names the account that is paying for
+/// this session. Pi writes none, which reads back as `None`.
+fn credential_pin(branch: &[&Value], provider_id: &str) -> Option<String> {
+    branch.iter().rev().find_map(|entry| {
+        (entry.get("type").and_then(Value::as_str) == Some("credential_pin")
+            && entry.get("provider").and_then(Value::as_str) == Some(provider_id))
+        .then(|| nonempty_string(entry.get("hash")))
+        .flatten()
+        .map(str::to_string)
+    })
 }
 
 fn active_branch(entries: &[Value]) -> Option<Vec<&Value>> {
@@ -336,11 +374,9 @@ fn active_model(branch: &[&Value]) -> Option<SessionEvidence> {
     for entry in branch {
         match entry.get("type").and_then(Value::as_str) {
             Some("model_change") => {
-                let provider = nonempty_string(entry.get("provider"))?;
-                active = Some(SessionEvidence {
-                    provider_id: provider.to_string(),
-                    model_id: nonempty_string(entry.get("modelId")).map(str::to_string),
-                });
+                if let Some(evidence) = model_change_evidence(entry) {
+                    active = Some(evidence);
+                }
             }
             Some("message")
                 if entry.pointer("/message/role").and_then(Value::as_str) == Some("assistant") =>
@@ -357,6 +393,30 @@ fn active_model(branch: &[&Value]) -> Option<SessionEvidence> {
     active
 }
 
+/// The model a `model_change` selects, in either harness's spelling.
+///
+/// Pi writes `provider` and `modelId` as separate fields; omp writes one
+/// `provider/modelId` selector and tags the entry with the role it changed, so
+/// a switch of the `smol` or `plan` model is not a switch of the pane's own.
+/// An entry in neither shape is skipped rather than treated as evidence.
+fn model_change_evidence(entry: &Value) -> Option<SessionEvidence> {
+    match entry.get("role").and_then(Value::as_str) {
+        None | Some("default") => {}
+        Some(_) => return None,
+    }
+    if let Some(provider) = nonempty_string(entry.get("provider")) {
+        return Some(SessionEvidence {
+            provider_id: provider.to_string(),
+            model_id: nonempty_string(entry.get("modelId")).map(str::to_string),
+        });
+    }
+    let (provider, model) = nonempty_string(entry.get("model"))?.split_once('/')?;
+    (!provider.is_empty() && !model.is_empty()).then(|| SessionEvidence {
+        provider_id: provider.to_string(),
+        model_id: Some(model.to_string()),
+    })
+}
+
 fn context_tokens(branch: &[&Value]) -> Option<u64> {
     let after_compaction = branch
         .iter()
@@ -370,17 +430,23 @@ fn context_tokens(branch: &[&Value]) -> Option<u64> {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct UsageCounters {
+pub(crate) struct UsageCounters {
     input: u64,
     output: u64,
     cache_read: u64,
     cache_write: u64,
     cache_write_1h: Option<u64>,
     total_tokens: u64,
+    context_tokens: u64,
 }
 
 impl UsageCounters {
     fn context_tokens(self) -> u64 {
+        // omp reports the occupied context directly when the provider makes it
+        // authoritative; Pi never does, and both fall back to the sum.
+        if self.context_tokens > 0 {
+            return self.context_tokens;
+        }
         if self.total_tokens > 0 {
             self.total_tokens
         } else {
@@ -404,6 +470,7 @@ impl UsageCounters {
             );
         }
         self.total_tokens = self.total_tokens.saturating_add(other.total_tokens);
+        self.context_tokens = self.context_tokens.saturating_add(other.context_tokens);
     }
 }
 
@@ -442,9 +509,18 @@ fn usage_counters(usage: &Value) -> Option<UsageCounters> {
         output: usage.get("output").and_then(Value::as_u64).unwrap_or(0),
         cache_read: usage.get("cacheRead").and_then(Value::as_u64).unwrap_or(0),
         cache_write: usage.get("cacheWrite").and_then(Value::as_u64).unwrap_or(0),
-        cache_write_1h: usage.get("cacheWrite1h").and_then(Value::as_u64),
+        // Pi writes `cacheWrite1h`; omp writes the same split under
+        // `cttl.ephemeral1h`. Neither writes the other's spelling.
+        cache_write_1h: usage
+            .get("cacheWrite1h")
+            .and_then(Value::as_u64)
+            .or_else(|| usage.pointer("/cttl/ephemeral1h").and_then(Value::as_u64)),
         total_tokens: usage
             .get("totalTokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        context_tokens: usage
+            .get("contextTokens")
             .and_then(Value::as_u64)
             .unwrap_or(0),
     })
@@ -554,6 +630,18 @@ fn session_context(
         .find(|model| model.id == model_id)?
         .context_window
         .filter(|window| *window > 0)?;
+    context_usage(parsed, context_tokens, context_window)
+}
+
+/// Assemble the published context/cache view from an already resolved window.
+///
+/// Split out because omp reads the same transcript but resolves its context
+/// window from its own catalog.
+pub(crate) fn context_usage(
+    parsed: &ParsedSession,
+    context_tokens: u64,
+    context_window: u64,
+) -> Option<ContextUsage> {
     let used_percent = (context_tokens as f64 / context_window as f64 * 100.0).clamp(0.0, 100.0);
     let cache = if parsed.usage_totals.cache_read > 0 || parsed.usage_totals.cache_write > 0 {
         CacheUsage::from_token_counts(

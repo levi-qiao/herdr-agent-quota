@@ -300,6 +300,7 @@ fn agent_name(harness: Harness) -> &'static str {
         Harness::Agy => "agy",
         Harness::OpenCode => "opencode",
         Harness::Pi => "pi",
+        Harness::Omp => "omp",
     }
 }
 
@@ -695,7 +696,7 @@ mod tests {
                 "configure",
                 "--apply",
                 "--agent",
-                "claude,codex,grok,agy,opencode",
+                "claude,codex,grok,agy,opencode,omp",
                 "--quota-percent",
                 "used",
                 "--sidebar-layout",

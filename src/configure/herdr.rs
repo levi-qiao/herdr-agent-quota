@@ -65,13 +65,16 @@ const MUTED_COLOR: &str = "#969eae";
 const QUOTA_SAFE_COLOR: &str = "#82d978";
 const QUOTA_WARNING_COLOR: &str = "#e4b957";
 const QUOTA_DANGER_COLOR: &str = "#f16f7e";
-const PROVIDER_STYLES: [(Harness, &str, Option<&str>, Option<&str>); 6] = [
+const PROVIDER_STYLES: [(Harness, &str, Option<&str>, Option<&str>); 7] = [
     (Harness::Claude, "claude", Some("#e88461"), Some("#f0a080")),
     (Harness::Codex, "codex", Some("#c4d7f5"), Some("#aab9d0")),
     (Harness::Grok, "grok", Some("#d5d5d8"), Some("#acb0b7")),
     (Harness::Agy, "agy", Some("#8ab4f8"), Some("#a7c7fa")),
-    (Harness::OpenCode, "opencode", Some("#bba3e8"), None),
+    // omp takes the previous OpenCode violet; OpenCode now uses the neutral
+    // color omp inherited before it had a plugin-owned row.
+    (Harness::OpenCode, "opencode", None, None),
     (Harness::Pi, "pi", Some("#d4a0c8"), None),
+    (Harness::Omp, "omp", Some("#bba3e8"), None),
 ];
 const THEME_SELECTION_KEYS: [&str; 2] = ["selection_bg", "active_row_bg"];
 
@@ -1645,6 +1648,19 @@ mod field_tests {
         assert!(plain.contains(QUOTA_DANGER_COLOR), "{plain}");
         let branded = applied(FieldSet::all(), BrandColors::On);
         assert!(branded.contains("rows_by_agent"), "{branded}");
+    }
+
+    #[test]
+    fn omp_uses_the_previous_opencode_violet_and_opencode_is_neutral() {
+        let branded = applied(FieldSet::all(), BrandColors::On);
+        let omp = branded.split("omp =").nth(1).expect("omp row");
+        assert!(omp.lines().next().unwrap_or_default().contains("#bba3e8"));
+        let opencode = branded.split("opencode =").nth(1).expect("opencode row");
+        assert!(!opencode
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .contains("#bba3e8"));
     }
 
     /// Switching brand colours off and back on must land exactly where it

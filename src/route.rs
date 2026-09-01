@@ -20,6 +20,10 @@ pub struct ResolvedPane {
     pub resolution: Resolution,
     pub identity: Option<PaneIdentity>,
     pub context: Option<ContextUsage>,
+    /// Present only for omp panes. The omp-scoped billing target says which
+    /// subscription is paying; this says which of omp's accounts, and where to
+    /// ask omp about it.
+    pub omp: Option<crate::omp::OmpEvidence>,
 }
 
 pub fn resolve_with_identity(pane: &AgentPane) -> ResolvedPane {
@@ -43,11 +47,28 @@ pub fn resolve_with_identity(pane: &AgentPane) -> ResolvedPane {
                 codex::current_account_id,
             )
         }
+        Harness::Omp => {
+            return resolve_omp_with_identity(
+                pane.session.as_ref().and_then(|session| session.path()),
+            )
+        }
     };
     ResolvedPane {
         resolution,
         identity: None,
         context: None,
+        omp: None,
+    }
+}
+
+fn resolve_omp_with_identity(session_path: Option<&str>) -> ResolvedPane {
+    let route = crate::omp::resolve_with_session(session_path, crate::omp::context_window);
+    ResolvedPane {
+        resolution: route.resolution,
+        // omp inherited Pi's provider ids, so one mapping serves both.
+        identity: route.session.as_ref().and_then(pi_identity),
+        context: route.context,
+        omp: route.evidence,
     }
 }
 
@@ -65,14 +86,23 @@ fn resolve_pi_with_identity(
         resolution: route.resolution,
         identity: route.session.as_ref().and_then(pi_identity),
         context: route.context,
+        omp: None,
     }
 }
 
+/// Display identity for the Pi-family harnesses.
+///
+/// Shared with omp, which inherited Pi's provider ids and added its own
+/// auth-scoped spellings (`xai-oauth` for the SuperGrok login,
+/// `google-antigravity`). Names the sidebar already has a colour and a column
+/// width for are used where they mean the same subscription; anything else is
+/// shown as the harness spells it.
 fn pi_identity(session: &crate::pi::SessionEvidence) -> Option<PaneIdentity> {
     let provider = match session.provider_id.as_str() {
         "openai-codex" => "Codex".to_string(),
-        "xai" => "Grok".to_string(),
+        "xai" | "xai-oauth" => "Grok".to_string(),
         "anthropic" => "Claude".to_string(),
+        "google-antigravity" => "Agy".to_string(),
         value => safe_identity_part(value)?,
     };
     let model = match session.model_id.as_deref() {
@@ -114,6 +144,7 @@ fn resolve_opencode_with_identity(
         resolution,
         identity,
         context,
+        omp: None,
     }
 }
 
@@ -122,6 +153,7 @@ fn indeterminate_pane() -> ResolvedPane {
         resolution: Resolution::Indeterminate,
         identity: None,
         context: None,
+        omp: None,
     }
 }
 
@@ -184,6 +216,150 @@ mod tests {
         fs::write(data.join("auth.json"), auth).unwrap();
         crate::opencode::write_fixture_db(&data.join("opencode.db"), rows).unwrap();
         OpenCodePaths::from_dir(data)
+    }
+
+    /// An omp transcript is copied into a real `<agent dir>/sessions` tree so
+    /// the containment check and the agent-directory walk are both exercised.
+    fn omp_session(dir: &std::path::Path, fixture: &str) -> String {
+        let sessions = dir.join(".omp/agent/sessions/-workspace");
+        fs::create_dir_all(&sessions).unwrap();
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/omp")
+            .join(fixture);
+        // omp names a transcript `<timestamp>_<session id>.jsonl`, and the
+        // reader checks the id against the header before trusting the file.
+        let id = std::fs::read_to_string(&source)
+            .unwrap()
+            .lines()
+            .find_map(|line| {
+                let entry: serde_json::Value = serde_json::from_str(line).ok()?;
+                (entry.get("type")?.as_str()? == "session")
+                    .then(|| entry.get("id")?.as_str().map(str::to_string))
+                    .flatten()
+            })
+            .expect("the fixture has a session header");
+        let destination = sessions.join(format!("2099-01-01_{id}.jsonl"));
+        fs::copy(source, &destination).unwrap();
+        destination.to_string_lossy().into_owned()
+    }
+
+    fn omp_pane(session_path: &str) -> AgentPane {
+        let mut pane = pane(Harness::Omp, Some(session_path));
+        pane.session.as_mut().unwrap().kind = Some("path".to_string());
+        pane
+    }
+
+    /// The omp route is scoped to omp's own credential store: it names the
+    /// subscription that pays, and the account the transcript pinned, without
+    /// ever borrowing the canonical Claude snapshot.
+    #[test]
+    fn an_omp_pane_resolves_to_its_own_credential_scope() {
+        let dir = tempdir().unwrap();
+        let path = omp_session(dir.path(), "session-anthropic.jsonl");
+        // Through the harness dispatch, so an omp pane's path-kind session is
+        // what actually reaches the reader.
+        let resolved = resolve_with_identity(&omp_pane(&path));
+        assert_eq!(
+            resolved.resolution,
+            Resolution::Subscription(BillingTarget::omp(Provider::Claude))
+        );
+        let identity = resolved.identity.expect("identity");
+        assert_eq!(identity.provider, "Claude");
+        assert_eq!(identity.model, "model-a");
+        let evidence = resolved.omp.expect("evidence");
+        assert_eq!(evidence.provider_id, "anthropic");
+        assert_eq!(evidence.account_pin.as_deref(), Some("pin-account-one"));
+        assert_eq!(evidence.paths.agent_dir, dir.path().join(".omp/agent"));
+        // No models.db in the fixture tree yet, so there is no window to divide
+        // by and no context percentage is invented.
+        assert_eq!(resolved.context, None);
+
+        // With the catalog in place the same transcript reports its context:
+        // omp's authoritative 500 context tokens against a 200k window.
+        write_omp_catalog(&dir.path().join(".omp/agent/models.db"));
+        let context = resolve_omp_with_identity(Some(&path))
+            .context
+            .expect("context");
+        assert!((context.used_percent - 0.25).abs() < 1e-9);
+        let cache = context.cache.expect("cache");
+        assert_eq!(cache.ttl_seconds, Some(60 * 60));
+    }
+
+    fn write_omp_catalog(path: &std::path::Path) {
+        let connection = rusqlite::Connection::open(path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE model_cache (provider_id TEXT PRIMARY KEY, models TEXT NOT NULL);",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO model_cache (provider_id, models) VALUES (?1, ?2)",
+                rusqlite::params!["anthropic", r#"[{"id":"model-a","contextWindow":200000}]"#],
+            )
+            .unwrap();
+    }
+
+    /// The shape of this fixture is copied from a live omp v18 transcript
+    /// (content stripped): the padded `title` header with no id, the
+    /// `provider/modelId` selector on `model_change`, `xai-oauth` as the
+    /// provider, and two `credential_pin` entries. Every one of those is a
+    /// difference from Pi that would otherwise read as "unreadable session".
+    #[test]
+    fn a_live_shaped_omp_transcript_resolves_to_grok() {
+        let dir = tempdir().unwrap();
+        let path = omp_session(dir.path(), "session-xai-oauth.jsonl");
+        let resolved = resolve_with_identity(&omp_pane(&path));
+        assert_eq!(
+            resolved.resolution,
+            Resolution::Subscription(BillingTarget::omp(Provider::Grok))
+        );
+        let identity = resolved.identity.expect("identity");
+        assert_eq!(identity.provider, "Grok");
+        assert_eq!(identity.model, "grok-4.6");
+        let evidence = resolved.omp.expect("evidence");
+        assert_eq!(evidence.provider_id, "xai-oauth");
+        // The later of the two pins, and the one recorded for this provider.
+        assert_eq!(
+            evidence.account_pin.as_deref(),
+            Some("bd751891daabc13cfac0194c5ee2078650a9ff08ba1292460627f4d7a0f86e15")
+        );
+    }
+
+    /// A provider this plugin has no collector for still gets its identity
+    /// row; what it must not get is somebody else's quota.
+    #[test]
+    fn an_unmapped_omp_provider_carries_identity_without_a_subscription() {
+        let dir = tempdir().unwrap();
+        let path = omp_session(dir.path(), "session-openrouter.jsonl");
+        let resolved = resolve_omp_with_identity(Some(&path));
+        assert_eq!(resolved.resolution, Resolution::Indeterminate);
+        assert_eq!(
+            resolved.identity.map(|identity| identity.provider),
+            Some("openrouter".to_string())
+        );
+    }
+
+    /// A path outside the agent directory that named it is not evidence.
+    #[test]
+    fn an_omp_session_outside_its_sessions_tree_resolves_to_nothing() {
+        let dir = tempdir().unwrap();
+        let stray = dir.path().join("session.jsonl");
+        fs::write(&stray, "{}\n").unwrap();
+        let resolved = resolve_omp_with_identity(Some(&stray.to_string_lossy()));
+        assert_eq!(resolved.resolution, Resolution::Indeterminate);
+        assert!(resolved.omp.is_none());
+    }
+
+    /// An omp pane routed to Claude must never read the canonical Claude
+    /// snapshot, or a Pro seat in omp would display the Max seat's quota.
+    #[test]
+    fn an_omp_target_caches_apart_from_the_canonical_collector() {
+        let omp = BillingTarget::omp(Provider::Claude);
+        let canonical = BillingTarget::original_four(Provider::Claude);
+        assert_ne!(omp.cache_identity(), canonical.cache_identity());
+        assert_eq!(omp.credential_scope, CredentialScope::OMP_STORE);
+        assert_eq!(omp.original_provider(), Some(Provider::Claude));
     }
 
     #[test]

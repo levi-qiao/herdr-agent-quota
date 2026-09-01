@@ -4,11 +4,14 @@ use crate::herdr::{
     current_focused_pane, list_agent_panes, list_agent_state, plugin_quota_present,
     publish_pane_tokens, refresh_pane_topic, AgentPane, PaneQuotaUpdate, PaneTokens,
 };
-use crate::model::{BillingTarget, Harness, Provider, ProviderSnapshot, Resolution};
+use crate::model::{
+    BillingTarget, CredentialScope, Harness, Provider, ProviderSnapshot, Resolution,
+};
+use crate::omp::OmpEvidence;
 use crate::opencode::OpenCodePaths;
 use crate::presentation::MetadataTokens;
 use crate::providers::statusline::enrich_cache_session;
-use crate::providers::{codex, grok, opencode_go};
+use crate::providers::{codex, grok, omp as omp_provider, opencode_go};
 use crate::route;
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -184,9 +187,9 @@ pub fn event() -> Result<()> {
     };
 
     let status = find_status(event);
-    // Pi's exact session file carries the routing evidence. Reading its pane
-    // would add a visible repaint without improving attribution.
-    let topic_pane = (harness != Harness::Pi).then_some(pane_id);
+    // Pi's and omp's exact session files carry the routing evidence. Reading
+    // their panes would add a visible repaint without improving attribution.
+    let topic_pane = (!matches!(harness, Harness::Pi | Harness::Omp)).then_some(pane_id);
     let result = handle_named_pane(&cache, pane, topic_pane);
     // OpenCode (and other non-collector harnesses) must not start the
     // original-four all-provider watch.
@@ -268,8 +271,14 @@ fn resolved_pane_tokens(
         resolution,
         identity,
         context,
+        omp,
     } = resolved;
     let mut quota = match resolution {
+        Resolution::Subscription(target)
+            if target.credential_scope == CredentialScope::OMP_STORE =>
+        {
+            omp_quota(cache, &target, omp.as_ref(), now, style)
+        }
         Resolution::Subscription(target) => {
             if let Some(provider) = target.original_provider() {
                 let snapshot = cache.load(provider)?;
@@ -325,6 +334,115 @@ fn resolved_pane_tokens(
         identity,
         context,
     }))
+}
+
+/// Quota for an omp pane, from omp's own usage layer.
+///
+/// One `omp usage --json` per debounce window, for the one provider the pane
+/// is actually talking to — never a fan-out over omp's whole credential pool.
+/// Without an account to attribute the numbers to, the pane keeps what it
+/// already published rather than showing a peer account's quota.
+fn omp_quota(
+    cache: &CacheStore,
+    target: &BillingTarget,
+    evidence: Option<&OmpEvidence>,
+    now: u64,
+    style: PercentStyle,
+) -> Option<PaneQuotaUpdate> {
+    let evidence = evidence?;
+    omp_quota_with_refresh(cache, target, evidence, now, style, refresh_omp_target)
+}
+
+fn omp_quota_with_refresh(
+    cache: &CacheStore,
+    target: &BillingTarget,
+    evidence: &OmpEvidence,
+    now: u64,
+    style: PercentStyle,
+    refresh: impl FnOnce(&CacheStore, &BillingTarget, &OmpEvidence, u64) -> OmpUsage,
+) -> Option<PaneQuotaUpdate> {
+    let pin = evidence.account_pin.as_deref();
+    let cached = cache
+        .load_target(target)
+        .ok()
+        .flatten()
+        .filter(|snapshot| snapshot.usable_for_account(pin, None));
+    let debounced = cache
+        .should_debounce_target(target, now, 60)
+        .unwrap_or(false);
+    if debounced {
+        return cached.as_ref().and_then(|snapshot| {
+            tokens_for_provider(Some(snapshot), now, None, style)
+                .map(|values| PaneQuotaUpdate::Replace(Box::new(values)))
+        });
+    }
+    match refresh(cache, target, evidence, now) {
+        OmpUsage::Account(snapshot) => tokens_for_provider(Some(&snapshot), now, None, style)
+            .map(|values| PaneQuotaUpdate::Replace(Box::new(values))),
+        // omp holds an API key for this provider and no subscription account
+        // at all, so any subscription numbers still on the pane belong to a
+        // login that is not paying for it.
+        OmpUsage::PayAsYouGo => Some(PaneQuotaUpdate::Clear),
+        OmpUsage::Unavailable if cached.is_none() => Some(PaneQuotaUpdate::Replace(Box::new(
+            MetadataTokens::unavailable(target.billing, "omp reported no quota data"),
+        ))),
+        OmpUsage::Unavailable | OmpUsage::Unknown => cached.as_ref().and_then(|snapshot| {
+            tokens_for_provider(Some(snapshot), now, None, style)
+                .map(|values| PaneQuotaUpdate::Replace(Box::new(values)))
+        }),
+    }
+}
+
+/// What one `omp usage --json` call established about a pane's provider.
+enum OmpUsage {
+    Account(Box<ProviderSnapshot>),
+    PayAsYouGo,
+    Unavailable,
+    Unknown,
+}
+
+/// Ask omp for one provider's usage, and cache the account this pane pins.
+///
+/// Process and parse failures remain silent and preserve the last good value.
+/// A successful CLI response that explicitly lists this OAuth account under
+/// `accountsWithoutUsage` is different: without an older snapshot it renders
+/// N/A so a failed upstream quota fetch is not mistaken for missing support.
+fn refresh_omp_target(
+    cache: &CacheStore,
+    target: &BillingTarget,
+    evidence: &OmpEvidence,
+    now: u64,
+) -> OmpUsage {
+    let Ok(Some(_lease)) = cache.try_lock_target_refresh(target) else {
+        return OmpUsage::Unknown;
+    };
+    // Marked before the call so a failing binary cannot be retried on every
+    // event; the window applies to attempts, not to successes.
+    if cache.mark_refresh_target(target, now).is_err() {
+        return OmpUsage::Unknown;
+    }
+    let Ok(usage) = omp_provider::fetch(&evidence.paths, &evidence.provider_id, now) else {
+        return OmpUsage::Unknown;
+    };
+    let Some(account) = omp_provider::select_account(&usage, evidence.account_pin.as_deref())
+    else {
+        if omp_provider::oauth_without_usage_matches(&usage, evidence.account_pin.as_deref()) {
+            return OmpUsage::Unavailable;
+        }
+        // Several accounts and no pin is not a coin flip either: only a
+        // provider that has an API key and nothing else is proved to be
+        // pay-as-you-go.
+        return if usage.accounts.is_empty() && usage.has_api_key {
+            OmpUsage::PayAsYouGo
+        } else {
+            OmpUsage::Unknown
+        };
+    };
+    let snapshot = omp_provider::snapshot(target, account);
+    if cache.save_target(target, &snapshot).is_err() {
+        return OmpUsage::Unknown;
+    }
+    OmpUsage::Account(Box::new(snapshot))
 }
 
 /// Refresh a billing target that has no 1:1 harness collector.
@@ -906,6 +1024,99 @@ mod tests {
     fn missing_snapshot_does_not_overwrite_sidebar_with_unavailable() {
         let values = tokens_for_provider(None, 1, None, PercentStyle::default());
         assert!(values.is_none());
+    }
+
+    #[test]
+    fn an_omp_oauth_account_without_usage_is_explicit_on_the_first_fetch() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        let target = BillingTarget::omp(Provider::Claude);
+        let evidence = crate::omp::OmpEvidence {
+            paths: crate::omp::OmpPaths {
+                agent_dir: directory.path().join(".omp/agent"),
+                sessions: directory.path().join(".omp/agent/sessions"),
+            },
+            provider_id: "anthropic".to_string(),
+            account_pin: Some("account-pin".to_string()),
+        };
+        let update = omp_quota_with_refresh(
+            &cache,
+            &target,
+            &evidence,
+            100,
+            PercentStyle::default(),
+            |_, _, _, _| OmpUsage::Unavailable,
+        )
+        .expect("explicit unavailable update");
+        let PaneQuotaUpdate::Replace(values) = update else {
+            panic!("expected replacement");
+        };
+        assert_eq!(values.quota_week, "7d N/A");
+        assert_eq!(
+            values.quota_error.as_deref(),
+            Some("omp reported no quota data")
+        );
+    }
+
+    #[test]
+    fn an_omp_failed_first_fetch_is_debounced_without_a_snapshot() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        let target = BillingTarget::omp(Provider::Claude);
+        cache.mark_refresh_target(&target, 100).unwrap();
+        let evidence = crate::omp::OmpEvidence {
+            paths: crate::omp::OmpPaths {
+                agent_dir: directory.path().join(".omp/agent"),
+                sessions: directory.path().join(".omp/agent/sessions"),
+            },
+            provider_id: "anthropic".to_string(),
+            account_pin: Some("account-pin".to_string()),
+        };
+        let update = omp_quota_with_refresh(
+            &cache,
+            &target,
+            &evidence,
+            120,
+            PercentStyle::default(),
+            |_, _, _, _| panic!("debounced refresh must not run"),
+        );
+        assert!(update.is_none());
+    }
+
+    #[test]
+    fn an_omp_usage_failure_keeps_the_same_accounts_last_good_snapshot() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        let target = BillingTarget::omp(Provider::Claude);
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![UsageWindow::new(WindowKind::Weekly, 42.0, None).unwrap()],
+            90,
+        )
+        .with_account_id(Some("account-pin".to_string()));
+        cache.save_target(&target, &snapshot).unwrap();
+        let evidence = crate::omp::OmpEvidence {
+            paths: crate::omp::OmpPaths {
+                agent_dir: directory.path().join(".omp/agent"),
+                sessions: directory.path().join(".omp/agent/sessions"),
+            },
+            provider_id: "anthropic".to_string(),
+            account_pin: Some("account-pin".to_string()),
+        };
+        let update = omp_quota_with_refresh(
+            &cache,
+            &target,
+            &evidence,
+            200,
+            PercentStyle::default(),
+            |_, _, _, _| OmpUsage::Unavailable,
+        )
+        .expect("last good update");
+        let PaneQuotaUpdate::Replace(values) = update else {
+            panic!("expected replacement");
+        };
+        assert_eq!(values.quota_week, "7d 58%");
+        assert_eq!(values.quota_error, None);
     }
 
     #[test]
