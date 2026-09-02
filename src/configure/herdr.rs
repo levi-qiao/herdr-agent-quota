@@ -57,13 +57,10 @@ const REFRESH_ACTION: &str = "herdr-agent-quota.refresh";
 const SETTINGS_KEY: &str = "prefix+shift+q";
 const SETTINGS_ACTION: &str = "herdr-agent-quota.open-settings";
 const CONFIG_PRESENCE_FILE: &str = "herdr-config.original.present";
-// Brand answers "who"; status answers "how much is left". Selected state
-// may change background only — never the provider hue. Herdr 0.8.0 rejects
-// selection_bg / active_row_bg (0.8.2 added them); intended selected fill
-// is #42474f when those keys exist.
-const TEXT_COLOR: &str = "#eceef2";
-const BODY_COLOR: &str = "#c8cdd6";
-const MUTED_COLOR: &str = "#969eae";
+// Brand answers "who"; status answers "how much is left". All other text
+// inherits Herdr's active theme. Selected state may change background only —
+// never the provider hue. Herdr 0.8.0 rejects selection_bg / active_row_bg
+// (0.8.2 added them); intended selected fill is #42474f when those keys exist.
 const QUOTA_SAFE_COLOR: &str = "#82d978";
 const QUOTA_WARNING_COLOR: &str = "#e4b957";
 const QUOTA_DANGER_COLOR: &str = "#f16f7e";
@@ -654,7 +651,7 @@ fn is_tab_token(value: &Value) -> bool {
 }
 
 fn styled_tab() -> Value {
-    styled_token("tab", Some(TEXT_COLOR), Some(true), Some(false))
+    styled_token("tab", None, Some(true), Some(false))
 }
 
 fn normalize_official_row(row: Array) -> Array {
@@ -764,7 +761,7 @@ fn append_quota_rows(rows: &mut Array, layout: SidebarLayout) {
 
     rows.push(Value::Array(styled_row(
         "$quota_topic",
-        Some(BODY_COLOR),
+        None,
         Some(false),
         Some(false),
     )));
@@ -833,12 +830,7 @@ fn stacked_identity_row(row: &Array) -> Array {
 fn append_packed_quota_rows(rows: &mut Array) {
     append_cache_row(rows);
 
-    let mut context_row = styled_row(
-        "$quota_context",
-        Some(MUTED_COLOR),
-        Some(false),
-        Some(false),
-    );
+    let mut context_row = styled_row("$quota_context", None, Some(false), Some(false));
     append_window_style_tokens(&mut context_row, "quota_week_inline");
     rows.push(Value::Array(context_row));
 
@@ -848,13 +840,13 @@ fn append_packed_quota_rows(rows: &mut Array) {
 fn append_stacked_quota_rows(rows: &mut Array) {
     rows.push(Value::Array(styled_row(
         "$quota_cache",
-        Some(MUTED_COLOR),
+        None,
         Some(false),
         Some(false),
     )));
     rows.push(Value::Array(styled_row(
         "$quota_cache_ttl",
-        Some(MUTED_COLOR),
+        None,
         Some(false),
         Some(false),
     )));
@@ -872,7 +864,7 @@ fn append_stacked_quota_rows(rows: &mut Array) {
     )));
     rows.push(Value::Array(styled_row(
         "$quota_context",
-        Some(MUTED_COLOR),
+        None,
         Some(false),
         Some(false),
     )));
@@ -944,13 +936,8 @@ fn field_for_token(token: &str) -> Option<SidebarField> {
 
 fn append_cache_row(rows: &mut Array) {
     rows.push(Value::Array(Array::from_iter([
-        styled_token("$quota_cache", Some(MUTED_COLOR), Some(false), Some(false)),
-        styled_token(
-            "$quota_cache_ttl",
-            Some(MUTED_COLOR),
-            Some(false),
-            Some(false),
-        ),
+        styled_token("$quota_cache", None, Some(false), Some(false)),
+        styled_token("$quota_cache_ttl", None, Some(false), Some(false)),
         styled_token(
             "$quota_cache_state",
             Some(QUOTA_WARNING_COLOR),
@@ -973,14 +960,14 @@ fn append_window_style_tokens(row: &mut Array, base: &str) {
     // "caution" row: that variant was unreachable, so the token could never
     // be filled and only ever consumed a slot.
     for (suffix, color) in [
-        ("normal", QUOTA_SAFE_COLOR),
-        ("warning", QUOTA_WARNING_COLOR),
-        ("danger", QUOTA_DANGER_COLOR),
-        ("unknown", MUTED_COLOR),
+        ("normal", Some(QUOTA_SAFE_COLOR)),
+        ("warning", Some(QUOTA_WARNING_COLOR)),
+        ("danger", Some(QUOTA_DANGER_COLOR)),
+        ("unknown", None),
     ] {
         row.push(styled_token(
             &format!("${base}_{suffix}"),
-            Some(color),
+            color,
             Some(false),
             Some(false),
         ));
@@ -1273,7 +1260,7 @@ rows = [["state_icon", "agent"]]
     }
 
     #[test]
-    fn tab_labels_use_primary_text_instead_of_herdr_dim_gray() {
+    fn tab_labels_inherit_herdr_theme_and_remain_bold() {
         let updated =
             add_quota_row("[ui.sidebar.agents]\nrows = [[\"state_icon\", \"tab\", \"agent\"]]\n")
                 .unwrap();
@@ -1295,7 +1282,7 @@ rows = [["state_icon", "agent"]]
             .find(|item| configured_token_name(item) == Some("tab"))
             .and_then(Value::as_inline_table)
             .unwrap();
-        assert_eq!(tab.get("fg").and_then(Value::as_str), Some(TEXT_COLOR));
+        assert!(!tab.contains_key("fg"));
         assert_eq!(tab.get("bold").and_then(Value::as_bool), Some(true));
         assert_eq!(tab.get("dim").and_then(Value::as_bool), Some(false));
     }

@@ -184,14 +184,14 @@ fn default_herdr_rows_become_plane_provider_usage_and_topic_lines() {
     assert!(applied.contains("$quota_topic"));
     assert!(applied.contains("$quota_context"));
     assert!(applied.contains("$quota_provider_model"));
-    assert!(applied.contains("fg = \"#969eae\""));
+    assert!(!applied.contains("fg = \"#969eae\""));
     assert!(applied.find("$quota_provider_model").unwrap() < applied.find("$quota_topic").unwrap());
     assert!(applied.contains("$quota_cache"));
     assert!(applied.contains("$quota_cache_ttl"));
     assert!(applied.contains("$quota_cache_state"));
     assert!(!applied.contains("$quota_5h_label"));
     assert!(!applied.contains("$quota_5h_eta"));
-    assert!(applied.contains("fg = \"#969eae\""));
+    assert!(!applied.contains("fg = \"#c8cdd6\""));
     assert!(applied.contains("row_gap = 1 # herdr-agent-quota"));
     assert!(applied.find("$quota_topic").unwrap() < applied.find("$quota_5h_normal").unwrap());
     assert!(applied.contains("fg = \"#82d978\""));
@@ -199,7 +199,7 @@ fn default_herdr_rows_become_plane_provider_usage_and_topic_lines() {
     assert!(!applied.contains("fg = \"#c6d768\""));
     assert!(!applied.contains("fg = \"#e2bd58\""));
     assert!(applied.contains("fg = \"#f16f7e\""));
-    assert!(applied.contains("fg = \"#eceef2\""));
+    assert!(!applied.contains("fg = \"#eceef2\""));
     assert!(!applied.contains("selection_bg"));
     assert!(!applied.contains("active_row_bg"));
     assert!(applied.contains("[ui.sidebar.agents.rows_by_agent]"));
@@ -209,6 +209,45 @@ fn default_herdr_rows_become_plane_provider_usage_and_topic_lines() {
     assert!(applied.contains("fg = \"#8ab4f8\""));
     assert!(applied.contains("fg = \"#bba3e8\""));
     assert!(applied.contains("fg = \"#d4a0c8\""));
+}
+
+#[test]
+fn non_semantic_text_inherits_the_active_herdr_theme() {
+    let applied = add_quota_row(concat!(
+        "[theme]\n",
+        "name = \"one-light\"\n\n",
+        "[ui.sidebar.agents]\n",
+        "rows = [[\"state_icon\", \"tab\", \"agent\"]]\n",
+    ))
+    .unwrap();
+    let document = applied.parse::<toml_edit::DocumentMut>().unwrap();
+    let rows = document["ui"]["sidebar"]["agents"]["rows"]
+        .as_array()
+        .unwrap();
+    let inherited = [
+        "tab",
+        "$quota_topic",
+        "$quota_cache",
+        "$quota_cache_ttl",
+        "$quota_context",
+        "$quota_5h_unknown",
+        "$quota_week_unknown",
+        "$quota_week_inline_unknown",
+    ];
+
+    for token in inherited {
+        let style = rows
+            .iter()
+            .filter_map(toml_edit::Value::as_array)
+            .flat_map(|row| row.iter())
+            .find(|item| configured_token(item) == Some(token))
+            .and_then(toml_edit::Value::as_inline_table)
+            .unwrap_or_else(|| panic!("missing styled token {token}"));
+        assert!(
+            !style.contains_key("fg"),
+            "{token} must inherit Herdr's foreground: {style}"
+        );
+    }
 }
 
 #[test]

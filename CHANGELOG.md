@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Sidebar tab names, topics, cache details, context, and unknown quota states
+  now inherit Herdr's active theme instead of using text colors tuned for a
+  dark background. Provider brand hues and quota severity colors remain
+  plugin-owned because they carry plugin-specific meaning.
+
 ## [1.3.0] - 2026-09-01
 
 ### Added
