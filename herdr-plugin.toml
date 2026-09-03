@@ -3,7 +3,7 @@ name = "Herdr Agent Quota"
 version = "1.3.0"
 min_herdr_version = "0.8.0"
 description = "Credential-scoped AI quota and context for Claude, Codex, Grok, Agy, OpenCode, Pi, and omp."
-platforms = ["macos", "linux"]
+platforms = ["macos", "linux", "windows"]
 
 [[build]]
 command = ["cargo", "build", "--release"]
