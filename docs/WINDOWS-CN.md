@@ -3,6 +3,8 @@
 **日期**: 2026-09-03  
 **状态**: Phase 1 完成并可用
 
+> ⚠️ **重要提示**: 插件代码完全支持 Windows，但 Herdr 的插件系统在 Windows 上有限制。详见 [WINDOWS-LIMITATIONS-CN.md](WINDOWS-LIMITATIONS-CN.md)
+
 ## 快速开始
 
 ### 系统要求
@@ -69,7 +71,32 @@ pub fn home_dir() -> Option<PathBuf>
 
 ## 使用说明
 
-### 启用插件
+### ⚠️ Herdr UI 集成限制
+
+由于 Herdr 插件系统在 Windows 上的限制，以下 Herdr UI 功能暂时无法使用：
+- ❌ `herdr action invoke herdr-agent-quota ...` 命令
+- ❌ 插件设置面板
+- ❌ 配额仪表板弹窗
+
+**解决方案**: 直接运行可执行文件（见下方）
+
+### 手动使用方法
+
+```powershell
+# 查看配额仪表板
+.\target\release\herdr-agent-quota.exe dashboard
+
+# 查看设置
+.\target\release\herdr-agent-quota.exe settings
+
+# 手动刷新配额
+.\target\release\herdr-agent-quota.exe refresh --provider all
+
+# 查看帮助
+.\target\release\herdr-agent-quota.exe --help
+```
+
+### 启用插件（仅供参考）
 ```powershell
 # 插件已自动链接，只需启动 Herdr
 herdr
@@ -97,9 +124,13 @@ notepad $env:USERPROFILE\.config\herdr\plugins\herdr-agent-quota\agents.json
 
 ## 已知限制
 
-1. **测试套件**: 3 个测试在 Windows 上失败（非插件问题）
-2. **Shell 脚本**: 插件配置中仍使用 `sh -c`（通过 Git Bash 工作）
-3. **平台列表**: manifest 显示 `["macos", "linux"]` 但实际也支持 Windows
+1. **Herdr 插件系统**: Herdr UI 集成暂时不工作（详见 [WINDOWS-LIMITATIONS-CN.md](WINDOWS-LIMITATIONS-CN.md)）
+   - 原因：Herdr 使用 `sh -c` 执行插件命令，在 Windows 上找不到 `sh`
+   - 影响：无法通过 Herdr UI 调用插件功能
+   - 解决方案：直接运行可执行文件
+
+2. **测试套件**: 3 个测试在 Windows 上失败（非插件问题）
+3. **平台列表**: Manifest 现在正确显示支持 Windows
 
 ## 文件更改
 
@@ -155,6 +186,7 @@ Phase 1 已完成！如需进一步优化：
 ## 相关文档
 
 - [英文文档](WINDOWS.md)
+- [限制说明](WINDOWS-LIMITATIONS-CN.md) - **必读：Herdr UI 集成限制**
 - [实现计划](plans/windows-support-implementation.md)
 - [Phase 1 完成报告](plans/PHASE-1-COMPLETE.md)
 - [快速测试指南](plans/QUICK-TEST.md)
