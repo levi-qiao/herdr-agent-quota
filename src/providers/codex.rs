@@ -673,8 +673,7 @@ pub fn auth_path() -> Result<PathBuf> {
 }
 
 fn codex_home() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME").context("HOME is not set")?;
-    let home = PathBuf::from(home);
+    let home = crate::home_dir()?;
     Ok(std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".codex")))

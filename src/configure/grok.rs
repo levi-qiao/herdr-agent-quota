@@ -55,8 +55,8 @@ fn hook_path() -> Result<PathBuf> {
     if let Some(home) = std::env::var_os("GROK_HOME") {
         return Ok(PathBuf::from(home).join("hooks").join(HOOK_FILE));
     }
-    let home = std::env::var_os("HOME").context("HOME is not set")?;
-    Ok(PathBuf::from(home).join(".grok/hooks").join(HOOK_FILE))
+    let home = crate::home_dir()?;
+    Ok(home.join(".grok/hooks").join(HOOK_FILE))
 }
 
 fn is_managed_hook(path: &Path) -> bool {

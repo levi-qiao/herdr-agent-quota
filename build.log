@@ -1,0 +1,51 @@
+    Updating crates.io index
+     Locking 3 packages to latest compatible versions
+      Adding autocfg v1.5.1
+      Adding memoffset v0.9.1
+      Adding uds_windows v1.2.1
+ Downloading crates ...
+  Downloaded memoffset v0.9.1
+  Downloaded uds_windows v1.2.1
+  Downloaded autocfg v1.5.1
+   Compiling windows-sys v0.61.2
+   Compiling autocfg v1.5.1
+   Compiling getrandom v0.4.3
+   Compiling fastrand v2.5.0
+   Compiling windows v0.52.0
+   Compiling memoffset v0.9.1
+   Compiling anstyle-wincon v3.0.11
+   Compiling anstyle-query v1.1.5
+   Compiling tempfile v3.27.0
+   Compiling anstream v1.0.0
+   Compiling uds_windows v1.2.1
+   Compiling clap_builder v4.6.6
+   Compiling clap v4.6.6
+   Compiling herdr-agent-quota v1.3.0 (D:\work\project\herdr-agent-quota\.claude\worktrees\fervent-hertz-92be3d)
+error[E0554]: `#![feature]` may not be used on the stable release channel
+ --> src\lib.rs:1:22
+  |
+1 | #![cfg_attr(windows, feature(windows_unix_domain_sockets))]
+  |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `windows::Win32::System::Threading::PROCESS_INFORMATION`
+  --> src\process_group.rs:63:9
+   |
+63 |     use windows::Win32::System::Threading::PROCESS_INFORMATION;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+  --> src\process_group.rs:67:13
+   |
+67 |         let mut child = cmd.spawn()?;
+   |             ----^^^^^
+   |             |
+   |             help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0554`.
+warning: `herdr-agent-quota` (lib) generated 2 warnings
+error: could not compile `herdr-agent-quota` (lib) due to 1 previous error; 2 warnings emitted
+warning: build failed, waiting for other jobs to finish...
