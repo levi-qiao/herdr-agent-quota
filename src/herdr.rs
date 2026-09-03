@@ -224,7 +224,15 @@ fn socket_request(payload: &Value) -> Result<Option<Value>> {
     let Some(path) = std::env::var_os("HERDR_SOCKET_PATH") else {
         return Ok(None);
     };
-    let stream = std::os::unix::net::UnixStream::connect(&path)
+
+    // Windows 10 1803+ supports Unix domain sockets
+    // On Windows, we use uds_windows crate; on Unix, we use std::os::unix
+    #[cfg(unix)]
+    use std::os::unix::net::UnixStream;
+    #[cfg(windows)]
+    use uds_windows::UnixStream;
+
+    let stream = UnixStream::connect(&path)
         .with_context(|| format!("connect to Herdr at {}", path.to_string_lossy()))?;
     stream.set_read_timeout(Some(SOCKET_TIMEOUT))?;
     stream.set_write_timeout(Some(SOCKET_TIMEOUT))?;

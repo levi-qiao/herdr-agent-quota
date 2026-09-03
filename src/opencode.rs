@@ -93,16 +93,34 @@ fn opencode_cache_dir() -> Option<PathBuf> {
     if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME") {
         return Some(PathBuf::from(xdg).join("opencode"));
     }
-    let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join(".cache/opencode"))
+    #[cfg(unix)]
+    {
+        let home = std::env::var_os("HOME")?;
+        return Some(PathBuf::from(home).join(".cache/opencode"));
+    }
+    #[cfg(windows)]
+    {
+        use directories::BaseDirs;
+        let dirs = BaseDirs::new()?;
+        return Some(dirs.cache_dir().join("opencode"));
+    }
 }
 
 fn opencode_data_dir() -> Option<PathBuf> {
     if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
         return Some(PathBuf::from(xdg).join("opencode"));
     }
-    let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join(".local/share/opencode"))
+    #[cfg(unix)]
+    {
+        let home = std::env::var_os("HOME")?;
+        return Some(PathBuf::from(home).join(".local/share/opencode"));
+    }
+    #[cfg(windows)]
+    {
+        use directories::BaseDirs;
+        let dirs = BaseDirs::new()?;
+        return Some(dirs.data_local_dir().join("opencode"));
+    }
 }
 
 pub fn env_go_key_present() -> bool {

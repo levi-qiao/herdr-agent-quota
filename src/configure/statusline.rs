@@ -194,8 +194,8 @@ pub(crate) fn settings_path(environment: &str, relative: &str) -> Result<PathBuf
     if let Some(path) = std::env::var_os(environment) {
         return Ok(PathBuf::from(path));
     }
-    let home = std::env::var_os("HOME").context("HOME is not set")?;
-    Ok(PathBuf::from(home).join(relative))
+    let home = crate::home_dir()?;
+    Ok(home.join(relative))
 }
 
 fn read_settings(path: &Path, label: &str) -> Result<Value> {

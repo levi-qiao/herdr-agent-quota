@@ -198,8 +198,8 @@ pub fn config_path() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("HERDR_CONFIG_FILE") {
         return Ok(PathBuf::from(path));
     }
-    let home = std::env::var_os("HOME").context("HOME is not set")?;
-    Ok(PathBuf::from(home).join(".config/herdr/config.toml"))
+    let home = crate::home_dir()?;
+    Ok(home.join(".config/herdr/config.toml"))
 }
 
 fn backup_path() -> Result<Option<PathBuf>> {

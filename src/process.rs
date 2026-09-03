@@ -9,6 +9,21 @@ use std::time::Duration;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
+/// Create a shell command that works across platforms
+#[cfg(unix)]
+fn shell_command(script: &str) -> Command {
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg(script);
+    cmd
+}
+
+#[cfg(windows)]
+fn shell_command(script: &str) -> Command {
+    let mut cmd = Command::new("cmd");
+    cmd.arg("/C").arg(script);
+    cmd
+}
+
 /// A statusLine command must never consume the refresh interval itself.
 pub const STATUSLINE_COMMAND_BUDGET: Duration = Duration::from_secs(2);
 
@@ -30,9 +45,8 @@ pub fn run_shell_with_deadline(
     input: &[u8],
     budget: Duration,
 ) -> Result<CommandOutput> {
-    let mut child = Command::new("sh");
+    let mut child = shell_command(command);
     child
-        .args(["-c", command])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -102,7 +116,16 @@ fn terminate_and_reap(child: &Mutex<Option<Child>>) -> Result<Option<ExitStatus>
         // setpgid in the child setup makes this include shell descendants.
         let _ = libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
     }
-    let _ = child.kill();
+    #[cfg(windows)]
+    {
+        // On Windows, just kill the child process directly
+        // (JobObjects would handle descendants if we used them)
+        let _ = child.kill();
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = child.kill();
+    }
     child.wait().map(Some).context("reap previous statusLine")
 }
 
