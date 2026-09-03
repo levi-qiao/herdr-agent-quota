@@ -49,7 +49,11 @@ pub fn report_missing(agents: &[Harness]) {
 /// Install the omp integration when omp is selected and Herdr explicitly says
 /// it is absent. A missing `herdr` binary or an unrecognized status format is
 /// not guessed at; the existing advisory remains the fallback.
-pub fn ensure_omp(agents: &[Harness]) -> Result<()> {
+///
+/// `full_selection` is the every-agent default a Herdr plugin action always
+/// runs with. There, a machine without omp skips the omp collector and keeps
+/// configuring the others; only an explicit omp selection fails.
+pub fn ensure_omp(agents: &[Harness], full_selection: bool) -> Result<()> {
     let Some(status) = read_status() else {
         return Ok(());
     };
@@ -62,10 +66,20 @@ pub fn ensure_omp(agents: &[Harness]) -> Result<()> {
         .output()?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr);
-        bail!("install Herdr omp integration: {}", detail.trim());
+        return omp_install_failed(full_selection, detail.trim());
     }
     println!("Installed Herdr's omp integration. Restart already-running omp panes once.");
     Ok(())
+}
+
+fn omp_install_failed(full_selection: bool, detail: &str) -> Result<()> {
+    if full_selection {
+        println!(
+            "Skipped omp: {detail}. Once omp is installed, select it in the settings pane or run configure with --agent omp."
+        );
+        return Ok(());
+    }
+    bail!("install Herdr omp integration: {detail}");
 }
 
 fn needs_omp_install(agents: &[Harness], status: &str) -> bool {
@@ -131,6 +145,19 @@ grok: outdated (v0) (/home/u/.grok/hooks/herdr-agent-state.sh)
         assert_eq!(integration_id(Harness::OpenCode), Some("opencode"));
         assert_eq!(integration_id(Harness::Pi), Some("pi"));
         assert_eq!(integration_id(Harness::Omp), Some("omp"));
+    }
+
+    /// The marketplace `configure` action runs a fixed command line, so it
+    /// always selects every supported agent. A machine without omp must still
+    /// get its other collectors instead of a hard failure.
+    #[test]
+    fn a_failed_omp_install_only_aborts_an_explicit_omp_selection() {
+        let detail =
+            "omp extension directory not found at /home/u/.omp/agent/extensions. install omp first";
+        assert!(omp_install_failed(true, detail).is_ok());
+        let explicit =
+            omp_install_failed(false, detail).expect_err("explicit omp must fail loudly");
+        assert!(explicit.to_string().contains(detail), "{explicit}");
     }
 
     #[test]
