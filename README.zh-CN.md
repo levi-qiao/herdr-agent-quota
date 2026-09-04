@@ -94,7 +94,7 @@ herdr plugin action invoke refresh --plugin herdr-agent-quota
 
 | 维度 | 来源与行为 |
 | --- | --- |
-| 供应商 / 模型 | 当前 pane 精确 session 的路由和模型。Devin 在有 CLI 当前配置模型时使用它，否则回退到额度 API 的 `planInfo.planName`。只有拿到 session 级证据时才按 session 归属模型。 |
+| 供应商 / 模型 | 当前 pane 精确 session 的路由和模型。Devin 每个 pane 都用 `config.json` 的 `agent.model`，包括从未执行 `/model` 的新 session。 |
 | Topic | 当前可见的用户问题；滚出屏幕后保留已发布主题。 |
 | Context | 当前模型上下文窗口的已用比例。 |
 | Cache | 上游提供可信计数时显示 session 缓存命中率。 |
@@ -111,7 +111,7 @@ herdr plugin action invoke refresh --plugin herdr-agent-quota
 | OpenCode | OpenCode Go 5h + 7d；dashboard 含 30d | 精确本地 session 的 model/context |
 | Pi | 只有账户精确匹配时复用规范 Codex 额度 | model、context、cache、可支持的 TTL |
 | omp（oh-my-pi） | 原样展示 `omp usage` 归一化窗口，如 `5h`、`1d`、`7d`、`Monthly` | model、context、cache、可支持的 TTL |
-| Devin CLI | 1d + 7d | CLI 当前配置模型来自 `~/.config/devin/config.json`，否则回退到 API `planInfo.planName`（例如 `Pro`）。没有 session 级证据时不按 session 归属 |
+| Devin CLI | 1d + 7d | 模型来自 `~/.config/devin/config.json` 的 `agent.model`（Issue #53），有 `devin-models.json` 时映射为显示名。新 session 不切 `/model` 也用这个默认值。不使用 API 的 `planName`。 |
 
 OMP 是通用适配，不为内部每个供应商维护第二套规则。插件只调用
 `omp usage --json --provider <id>`，保留 OMP 给出的窗口标签，再用 session 的

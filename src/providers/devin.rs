@@ -14,6 +14,16 @@
 //! or included in error messages or pane metadata. Cache identity is
 //! `sha256("devin\0" || key)` so a credential swap cannot keep the previous
 //! account's last-good snapshot.
+//!
+//! Model comes from Devin's own files, not from the quota API:
+//!
+//! - `~/.config/devin/config.json` `agent.model` is the CLI default / current
+//!   configured model (Issue #53). New sessions that never run `/model` use
+//!   this value. It is published as `snapshot.model` and shown on every Devin
+//!   pane.
+//! - `devin-models.json` maps that id to a display label. Missing or malformed
+//!   catalog leaves the raw id; quota fetch is unaffected.
+//! - `planInfo.planName` is the subscription plan, not a model.
 
 use crate::cache::CacheStore;
 use crate::model::{Provider, ProviderSnapshot, ResetAt, UsageWindow, WindowKind};
@@ -28,6 +38,9 @@ use std::time::Duration;
 
 const DEFAULT_API_SERVER_URL: &str = "https://server.codeium.com";
 const GET_USER_STATUS_PATH: &str = "/exa.seat_management_pb.SeatManagementService/GetUserStatus";
+/// Same bound OpenCode uses for its local models catalog. A huge file is
+/// treated as absent so a corrupt dump cannot stall a quota refresh.
+const MAX_MODELS_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Build the full GetUserStatus URL from an optional `api_server_url`
 /// override. Falls back to `DEFAULT_API_SERVER_URL` when the override is
@@ -62,13 +75,13 @@ impl std::fmt::Debug for DevinCredentials {
     }
 }
 
-/// Fetch Devin CLI's quota. The CLI config's active model is process-global,
-/// so it is published as `snapshot.model`, not as per-session evidence.
-pub fn fetch_for_sessions(session_ids: &[String]) -> Result<ProviderSnapshot> {
+/// Fetch Devin CLI's quota. The model is the CLI `config.json` default, shared
+/// across panes, so it is published as `snapshot.model`.
+pub fn fetch_for_sessions(_session_ids: &[String]) -> Result<ProviderSnapshot> {
     let path = auth_path().context("resolve Devin credentials path")?;
     let credentials = read_credentials(&path).map_err(anyhow::Error::from)?;
     let account_id = account_pin(&credentials.windsurf_api_key);
-    let active_model = active_model_from_config();
+    let configured_model = configured_model_from_config();
     let url = build_url(credentials.api_server_url.as_deref())?;
     let body = serde_json::json!({
         "metadata": {
@@ -93,23 +106,27 @@ pub fn fetch_for_sessions(session_ids: &[String]) -> Result<ProviderSnapshot> {
     let value: Value = response
         .into_json()
         .context("decode Devin GetUserStatus response")?;
-    let mut snapshot = parse_user_status(&value, active_model.as_deref(), CacheStore::now_unix())
-        .map_err(anyhow::Error::from)?;
-    apply_configured_model(&mut snapshot, active_model, session_ids);
+    let mut snapshot =
+        parse_user_status(&value, CacheStore::now_unix()).map_err(anyhow::Error::from)?;
+    apply_configured_model(
+        &mut snapshot,
+        configured_model.as_deref(),
+        load_models_catalog().as_ref(),
+    );
     Ok(snapshot.with_account_id(Some(account_id)))
 }
 
-/// `config.json` names the CLI's current default model, not each session's
-/// model. Until a Devin session file exposes per-session evidence, keep that
-/// name on `snapshot.model` and leave `session_models` empty.
+/// Issue #53: `config.json` `agent.model` is Devin's model. Map it through the
+/// local catalog when possible, then store it on `snapshot.model`.
 fn apply_configured_model(
     snapshot: &mut ProviderSnapshot,
-    active_model: Option<String>,
-    _session_ids: &[String],
+    configured_model: Option<&str>,
+    catalog: Option<&Value>,
 ) {
-    if let Some(model) = active_model {
-        snapshot.model = Some(model);
-    }
+    let Some(model_id) = configured_model.map(str::trim).filter(|id| !id.is_empty()) else {
+        return;
+    };
+    snapshot.model = Some(display_name_for_model(model_id, catalog));
 }
 
 /// Resolve the credentials file path.
@@ -167,30 +184,199 @@ fn devin_config_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".config/devin"))
 }
 
-/// Devin CLI's `config.json`.
-#[derive(Debug, Clone, Deserialize)]
-struct DevinConfig {
-    agent: AgentConfig,
+/// Read `agent.model` from `~/.config/devin/config.json` (or `$XDG_CONFIG_HOME`).
+/// Missing, commented-unparseable, or empty values yield `None`.
+fn configured_model_from_config() -> Option<String> {
+    configured_model_from_path(&devin_config_dir().ok()?.join("config.json"))
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct AgentConfig {
-    model: String,
+fn configured_model_from_path(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    configured_model_from_text(&text)
 }
 
-/// Read the active model from `~/.config/devin/config.json` (or
-/// `$XDG_CONFIG_HOME/devin/config.json`). Returns `None` if the file is
-/// missing or malformed so that the quota API's `planName` is used as a
-/// fallback.
-fn active_model_from_config() -> Option<String> {
-    let path = devin_config_dir().ok()?.join("config.json");
-    let text = fs::read_to_string(&path).ok()?;
-    let config: DevinConfig = serde_json::from_str(&text).ok()?;
-    let model = config.agent.model.trim();
-    if model.is_empty() {
+fn configured_model_from_text(text: &str) -> Option<String> {
+    let value = parse_jsonc_value(text)?;
+    let model = value
+        .get("agent")
+        .and_then(|agent| agent.get("model"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())?;
+    Some(model.to_string())
+}
+
+/// Local `devin-models.json` catalog from Issue #53. First readable file wins:
+/// `DEVIN_MODELS_FILE`, then the Devin config dir, data dir, and `data/cli`.
+fn load_models_catalog() -> Option<Value> {
+    for path in models_catalog_candidates() {
+        if let Some(catalog) = load_models_catalog_from_path(&path) {
+            return Some(catalog);
+        }
+    }
+    None
+}
+
+fn models_catalog_candidates() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(path) = std::env::var_os("DEVIN_MODELS_FILE") {
+        let path = PathBuf::from(path);
+        if !path.as_os_str().is_empty() {
+            paths.push(path);
+        }
+    }
+    if let Ok(dir) = devin_config_dir() {
+        paths.push(dir.join("devin-models.json"));
+    }
+    if let Ok(dir) = devin_data_dir() {
+        paths.push(dir.join("devin-models.json"));
+        paths.push(dir.join("cli").join("devin-models.json"));
+    }
+    paths
+}
+
+fn load_models_catalog_from_path(path: &Path) -> Option<Value> {
+    let metadata = fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_MODELS_BYTES {
         return None;
     }
-    Some(model.to_string())
+    let text = fs::read_to_string(path).ok()?;
+    let value = parse_jsonc_value(&text)?;
+    value.get("families")?.as_array()?;
+    Some(value)
+}
+
+fn display_name_for_model(model_id: &str, catalog: Option<&Value>) -> String {
+    let trimmed = model_id.trim();
+    catalog
+        .and_then(|catalog| lookup_model_label(catalog, trimmed))
+        .unwrap_or_else(|| trimmed.to_string())
+}
+
+fn lookup_model_label(catalog: &Value, model_id: &str) -> Option<String> {
+    let families = catalog.get("families")?.as_array()?;
+    variant_label(families, model_id, true)
+        .or_else(|| variant_label(families, model_id, false))
+        .or_else(|| family_label(families, model_id, true))
+        .or_else(|| family_label(families, model_id, false))
+}
+
+fn json_str(value: Option<&Value>) -> Option<&str> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+}
+
+fn variant_label(families: &[Value], model_id: &str, exact: bool) -> Option<String> {
+    for family in families {
+        let Some(variants) = family.get("variants").and_then(Value::as_array) else {
+            continue;
+        };
+        for variant in variants {
+            let Some(label) = json_str(variant.get("label")) else {
+                continue;
+            };
+            if eq_model_key(json_str(variant.get("model_uid")), model_id, exact)
+                || eq_model_key(Some(label), model_id, exact)
+            {
+                return Some(label.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn family_label(families: &[Value], model_id: &str, exact: bool) -> Option<String> {
+    for family in families {
+        let mut aliases = family
+            .get("aliases")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|value| json_str(Some(value)));
+        let hit = eq_model_key(json_str(family.get("slug")), model_id, exact)
+            || eq_model_key(json_str(family.get("family_uid")), model_id, exact)
+            || aliases.any(|alias| eq_model_key(Some(alias), model_id, exact));
+        if hit {
+            if let Some(label) = json_str(family.get("family_label")) {
+                return Some(label.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn eq_model_key(candidate: Option<&str>, model_id: &str, exact: bool) -> bool {
+    let Some(candidate) = candidate.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    if exact {
+        candidate == model_id
+    } else {
+        candidate.eq_ignore_ascii_case(model_id)
+    }
+}
+
+/// Devin config files are JSON with `//` and `/* */` comments. Try strict
+/// JSON first; strip comments only when that fails. Strings are left intact.
+fn parse_jsonc_value(text: &str) -> Option<Value> {
+    if let Ok(value) = serde_json::from_str(text) {
+        return Some(value);
+    }
+    serde_json::from_str(&strip_json_comments(text)).ok()
+}
+
+fn strip_json_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+    while let Some(c) = chars.next() {
+        if in_string {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if c == '"' {
+            in_string = true;
+            out.push(c);
+            continue;
+        }
+        if c == '/' {
+            match chars.peek() {
+                Some('/') => {
+                    chars.next();
+                    for next in chars.by_ref() {
+                        if next == '\n' {
+                            out.push('\n');
+                            break;
+                        }
+                    }
+                }
+                Some('*') => {
+                    chars.next();
+                    let mut prev = '\0';
+                    for next in chars.by_ref() {
+                        if prev == '*' && next == '/' {
+                            break;
+                        }
+                        prev = next;
+                    }
+                }
+                _ => out.push(c),
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn read_credentials(path: &Path) -> std::result::Result<DevinCredentials, ProviderError> {
@@ -223,11 +409,10 @@ fn map_request_error(error: &ureq::Error) -> ProviderError {
 /// The response carries remaining percentages for daily and weekly windows.
 /// Those are flipped to used: `used = 100 - remaining`. Reset timestamps are
 /// strings of Unix seconds. Missing or malformed fields yield no window
-/// rather than a guessed number. `active_model` is preferred for the model
-/// field; if it is `None`, the API's `planInfo.planName` is used instead.
+/// rather than a guessed number. `planInfo.planName` is the subscription
+/// plan, not a model, and is ignored here.
 pub fn parse_user_status(
     value: &Value,
-    active_model: Option<&str>,
     now: u64,
 ) -> std::result::Result<ProviderSnapshot, ProviderError> {
     let plan_status = value
@@ -252,15 +437,7 @@ pub fn parse_user_status(
         ));
     }
 
-    let mut snapshot = ProviderSnapshot::new(Provider::Devin, windows, now);
-    snapshot.model = active_model.map(str::to_string).or_else(|| {
-        plan_status
-            .get("planInfo")
-            .and_then(|info| info.get("planName"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-    });
-    Ok(snapshot)
+    Ok(ProviderSnapshot::new(Provider::Devin, windows, now))
 }
 
 /// Daily window: remaining percent → used, string timestamp → Unix seconds.
@@ -331,11 +508,16 @@ mod tests {
         .expect("fixture is valid JSON")
     }
 
+    fn catalog_fixture() -> Value {
+        serde_json::from_str(include_str!("../../tests/fixtures/devin/devin-models.json"))
+            .expect("catalog fixture is valid JSON")
+    }
+
     #[test]
     fn pro_fixture_flips_remaining_to_used() {
-        let snapshot = parse_user_status(&pro_fixture(), None, 1).expect("snapshot");
+        let snapshot = parse_user_status(&pro_fixture(), 1).expect("snapshot");
         assert_eq!(snapshot.provider, Provider::Devin);
-        assert_eq!(snapshot.model.as_deref(), Some("Pro"));
+        assert_eq!(snapshot.model, None);
 
         let daily = snapshot.window(WindowKind::FiveHour).expect("daily window");
         // 99 remaining → 1 used
@@ -368,47 +550,194 @@ mod tests {
                 }
             }
         });
-        let snapshot = parse_user_status(&value, None, 1).expect("snapshot");
+        let snapshot = parse_user_status(&value, 1).expect("snapshot");
         assert!(snapshot.window(WindowKind::FiveHour).is_none());
         let weekly = snapshot.window(WindowKind::Weekly).expect("weekly");
         assert_eq!(weekly.used_percent, 50.0);
     }
 
     #[test]
-    fn active_model_overrides_plan_name() {
-        let snapshot =
-            parse_user_status(&pro_fixture(), Some("swe-1-7-medium"), 1).expect("snapshot");
-        assert_eq!(snapshot.model.as_deref(), Some("swe-1-7-medium"));
+    fn plan_name_is_not_used_as_model() {
+        let snapshot = parse_user_status(&pro_fixture(), 1).expect("snapshot");
+        assert_eq!(snapshot.model, None);
+        assert_ne!(snapshot.model.as_deref(), Some("Pro"));
     }
 
     #[test]
-    fn devin_global_model_is_not_written_as_session_model() {
-        let mut snapshot = parse_user_status(&pro_fixture(), None, 1).expect("snapshot");
+    fn valid_config_model_is_the_configured_default() {
+        assert_eq!(
+            configured_model_from_text(r#"{"agent":{"model":"swe-1-7-medium"}}"#).as_deref(),
+            Some("swe-1-7-medium")
+        );
+    }
+
+    #[test]
+    fn missing_config_file_yields_no_model() {
+        let dir = tempdir().unwrap();
+        assert_eq!(
+            configured_model_from_path(&dir.path().join("config.json")),
+            None
+        );
+    }
+
+    #[test]
+    fn malformed_config_yields_no_model() {
+        assert_eq!(configured_model_from_text("{not json"), None);
+        assert_eq!(configured_model_from_text("[]"), None);
+        assert_eq!(configured_model_from_text(r#"{"agent":"nope"}"#), None);
+        assert_eq!(configured_model_from_text(r#"{"agent":{"model":1}}"#), None);
+    }
+
+    #[test]
+    fn empty_config_model_yields_no_model() {
+        assert_eq!(
+            configured_model_from_text(r#"{"agent":{"model":""}}"#),
+            None
+        );
+        assert_eq!(
+            configured_model_from_text(r#"{"agent":{"model":"   "}}"#),
+            None
+        );
+        assert_eq!(configured_model_from_text(r#"{"agent":{}}"#), None);
+        assert_eq!(configured_model_from_text("{}"), None);
+    }
+
+    #[test]
+    fn commented_config_json_still_reads_the_default_model() {
+        let text = r#"
+        {
+          // user-wide default, not the session /model
+          "agent": {
+            "model": "swe-1-7-medium" // Default AI model
+          }
+        }
+        "#;
+        assert_eq!(
+            configured_model_from_text(text).as_deref(),
+            Some("swe-1-7-medium")
+        );
+    }
+
+    #[test]
+    fn catalog_maps_model_uid_to_variant_label() {
+        let catalog = catalog_fixture();
+        assert_eq!(
+            display_name_for_model("swe-1-7-medium", Some(&catalog)),
+            "SWE-1.7 Medium"
+        );
+    }
+
+    #[test]
+    fn catalog_maps_family_slug_to_family_label_not_a_variant() {
+        let catalog = catalog_fixture();
+        assert_eq!(display_name_for_model("swe", Some(&catalog)), "SWE-1.7");
+        assert_eq!(
+            display_name_for_model("opus", Some(&catalog)),
+            "Claude Opus"
+        );
+    }
+
+    #[test]
+    fn missing_catalog_keeps_the_raw_id() {
+        assert_eq!(
+            display_name_for_model("swe-1-7-medium", None),
+            "swe-1-7-medium"
+        );
+    }
+
+    #[test]
+    fn malformed_catalog_file_is_skipped() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("devin-models.json");
+        fs::write(&path, "{not json").unwrap();
+        assert!(load_models_catalog_from_path(&path).is_none());
+        fs::write(&path, r#"{"not":"families"}"#).unwrap();
+        assert!(load_models_catalog_from_path(&path).is_none());
+    }
+
+    #[test]
+    fn unknown_model_id_falls_back_to_raw_id() {
+        let catalog = catalog_fixture();
+        assert_eq!(
+            display_name_for_model("not-a-real-model", Some(&catalog)),
+            "not-a-real-model"
+        );
+    }
+
+    #[test]
+    fn configured_model_is_not_written_as_session_model() {
+        let mut snapshot = parse_user_status(&pro_fixture(), 1).expect("snapshot");
         apply_configured_model(
             &mut snapshot,
-            Some("swe-1-7-medium".to_string()),
-            &["session-a".to_string(), "session-b".to_string()],
+            Some("swe-1-7-medium"),
+            Some(&catalog_fixture()),
         );
+        assert_eq!(snapshot.model.as_deref(), Some("SWE-1.7 Medium"));
+        assert!(snapshot.session_models.is_empty());
+    }
+
+    #[test]
+    fn configured_model_without_catalog_stays_raw() {
+        let mut snapshot = parse_user_status(&pro_fixture(), 1).expect("snapshot");
+        apply_configured_model(&mut snapshot, Some("swe-1-7-medium"), None);
         assert_eq!(snapshot.model.as_deref(), Some("swe-1-7-medium"));
         assert!(snapshot.session_models.is_empty());
     }
 
     #[test]
-    fn plan_name_is_used_when_active_model_is_absent() {
-        let snapshot = parse_user_status(&pro_fixture(), None, 1).expect("snapshot");
-        assert_eq!(snapshot.model.as_deref(), Some("Pro"));
+    fn applying_no_configured_model_leaves_plan_name_out() {
+        let mut snapshot = parse_user_status(&pro_fixture(), 1).expect("snapshot");
+        apply_configured_model(&mut snapshot, None, None);
+        assert_eq!(snapshot.model, None);
+        assert!(snapshot.session_models.is_empty());
+    }
+
+    #[test]
+    fn comment_markers_inside_strings_are_kept() {
+        assert_eq!(
+            configured_model_from_text(r#"{"agent":{"model":"foo//bar"}}"#).as_deref(),
+            Some("foo//bar")
+        );
+    }
+
+    #[test]
+    fn oversized_catalog_file_is_skipped() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("devin-models.json");
+        let mut bytes = br#"{"families":[]}"#.to_vec();
+        bytes.resize(MAX_MODELS_BYTES as usize + 1, b' ');
+        fs::write(&path, bytes).unwrap();
+        assert!(load_models_catalog_from_path(&path).is_none());
+    }
+
+    #[test]
+    fn catalog_file_override_loads_from_devin_models_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("devin-models.json");
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/devin/devin-models.json"),
+            &path,
+        )
+        .unwrap();
+        std::env::set_var("DEVIN_MODELS_FILE", &path);
+        let catalog = load_models_catalog();
+        std::env::remove_var("DEVIN_MODELS_FILE");
+        assert_eq!(
+            display_name_for_model("swe-1-7-medium", catalog.as_ref()),
+            "SWE-1.7 Medium"
+        );
     }
 
     #[test]
     fn missing_all_windows_is_an_error() {
         let value = json!({"userStatus": {"planStatus": {}}});
-        assert!(parse_user_status(&value, None, 1).is_err());
+        assert!(parse_user_status(&value, 1).is_err());
     }
 
     #[test]
     fn missing_plan_status_is_an_error() {
         let value = json!({"userStatus": {}});
-        assert!(parse_user_status(&value, None, 1).is_err());
+        assert!(parse_user_status(&value, 1).is_err());
     }
 
     #[test]
@@ -421,7 +750,7 @@ mod tests {
                 }
             }
         });
-        assert!(parse_user_status(&value, None, 1).is_err());
+        assert!(parse_user_status(&value, 1).is_err());
     }
 
     #[test]
@@ -510,7 +839,7 @@ mod tests {
                 }
             }
         });
-        assert!(parse_user_status(&value, None, 1).is_err());
+        assert!(parse_user_status(&value, 1).is_err());
     }
 
     #[test]

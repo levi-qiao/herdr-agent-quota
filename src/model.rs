@@ -557,6 +557,8 @@ pub struct ProviderSnapshot {
     ///
     /// StatusLine providers also keep the per-session value below so panes
     /// running the same provider can be distinguished from one another.
+    /// Devin stores the CLI `config.json` model here. Panes read it through
+    /// [`Self::model_for_session`] when they have no per-session entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default)]
@@ -612,8 +614,13 @@ impl ProviderSnapshot {
         self
     }
 
-    /// Return the model for a pane's session. A known session never falls back
-    /// to provider-level data, because that value may belong to another pane.
+    /// Return the model for a pane's session.
+    ///
+    /// A known Claude/Agy/Codex/Grok session never borrows the provider-level
+    /// value, because that may belong to another pane. Devin's `snapshot.model`
+    /// is the CLI `config.json` default, so a pane without a `session_models`
+    /// entry still shows it — including a brand-new session that never ran
+    /// `/model`.
     pub fn model_for_session(&self, session_id: Option<&str>) -> Option<&str> {
         let Some(session_id) = session_id else {
             return self.model.as_deref();
@@ -621,7 +628,10 @@ impl ProviderSnapshot {
         if let Some(model) = self.session_models.get(session_id) {
             return Some(model);
         }
-        None
+        match self.provider {
+            Provider::Devin => self.model.as_deref(),
+            _ => None,
+        }
     }
 
     /// Return context/cache diagnostics for a pane's session. A known session
@@ -1290,6 +1300,47 @@ mod tests {
         );
         current.merge_omitted_windows(&previous);
         assert!(current.window(WindowKind::FiveHour).is_none());
+    }
+
+    #[test]
+    fn claude_known_session_does_not_borrow_the_provider_model() {
+        let mut snapshot = ProviderSnapshot::new(Provider::Claude, vec![], 0)
+            .with_model(Some("latest".to_string()));
+        snapshot
+            .session_models
+            .insert("session-1".to_string(), "Sonnet".to_string());
+        assert_eq!(
+            snapshot.model_for_session(Some("session-1")),
+            Some("Sonnet")
+        );
+        assert_eq!(snapshot.model_for_session(Some("session-2")), None);
+        assert_eq!(snapshot.model_for_session(None), Some("latest"));
+    }
+
+    #[test]
+    fn devin_new_session_without_model_switch_uses_config_default() {
+        let mut snapshot = ProviderSnapshot::new(Provider::Devin, vec![], 0)
+            .with_model(Some("SWE-1.7 Medium".to_string()));
+        // A brand-new Devin session has a Herdr session id but no /model entry.
+        assert_eq!(
+            snapshot.model_for_session(Some("session-a")),
+            Some("SWE-1.7 Medium")
+        );
+        assert_eq!(
+            snapshot.model_for_session(Some("session-b")),
+            Some("SWE-1.7 Medium")
+        );
+        snapshot
+            .session_models
+            .insert("session-a".to_string(), "Opus 4.6".to_string());
+        assert_eq!(
+            snapshot.model_for_session(Some("session-a")),
+            Some("Opus 4.6")
+        );
+        assert_eq!(
+            snapshot.model_for_session(Some("session-b")),
+            Some("SWE-1.7 Medium")
+        );
     }
 
     #[test]

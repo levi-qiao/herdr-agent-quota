@@ -655,6 +655,24 @@ mod tests {
     }
 
     #[test]
+    fn devin_pane_uses_configured_default_when_session_model_is_unknown() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Devin,
+            vec![window(WindowKind::Weekly, 10.0, 183_600)],
+            0,
+        )
+        .with_model(Some("SWE-1.7 Medium".to_string()));
+        let pane = MetadataTokens::from_snapshot_for_pane(
+            &snapshot,
+            0,
+            Some("session-a"),
+            PercentStyle::default(),
+        );
+        assert_eq!(pane.quota_model, "SWE-1.7 Medium");
+        assert_eq!(pane.quota_provider_model, "Devin/SWE-1.7 Medium");
+    }
+
+    #[test]
     fn metadata_uses_context_and_cache_for_the_pane_session() {
         let mut snapshot = ProviderSnapshot::new(Provider::Codex, vec![], 0);
         snapshot.session_contexts.insert(
