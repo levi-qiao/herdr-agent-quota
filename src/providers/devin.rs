@@ -17,13 +17,16 @@
 //!
 //! Model fields are scoped, not interchangeable:
 //!
+//! - Herdr's official Devin integration reports a native session id (used for
+//!   `devin --resume`). That id is real. It is **not** a model name.
 //! - `snapshot.model` is the CLI **configured/default** model from
 //!   `~/.config/devin/config.json` `agent.model` (officially "Default AI
-//!   model"). A session can still switch with `/model`, so this is never
-//!   copied into `session_models`.
+//!   model"). Issue #53's live `config.json` is the same file. A session can
+//!   still switch with `/model`; we have not live-tested whether that write
+//!   goes back to `config.json`, so this is a display fallback, not per-session
+//!   evidence, and it is never copied into `session_models`.
 //! - `session_models` stays empty until a Devin session file exposes
-//!   per-session evidence. There is no official read-only session-model
-//!   contract today, so we do not guess.
+//!   per-session evidence that we can match to Herdr's session id.
 //! - `planInfo.planName` is the subscription plan (`Pro`), not a model.
 //! - `devin-models.json` is display metadata only: raw id → `variant.label`.
 //!   A missing, oversized, or malformed catalog leaves the raw id in place
@@ -122,10 +125,12 @@ pub fn fetch_for_sessions(session_ids: &[String]) -> Result<ProviderSnapshot> {
 }
 
 /// `config.json` names the CLI's configured/default model, not each session's
-/// `/model` selection. Until a Devin session file exposes per-session
-/// evidence, keep that name on `snapshot.model` and leave `session_models`
-/// empty. `session_ids` is accepted so callers cannot "forget" the sessions
-/// they asked about; they are never written here.
+/// `/model` selection. Keep it on `snapshot.model` and leave `session_models`
+/// empty. Display may fall back to this value for a Herdr session id (see
+/// `ProviderSnapshot::model_for_session`); that fallback must not be written
+/// here as if it were per-session evidence. `session_ids` is accepted so
+/// callers cannot "forget" the sessions they asked about; they are never
+/// written here.
 fn apply_configured_model(
     snapshot: &mut ProviderSnapshot,
     configured_model: Option<&str>,

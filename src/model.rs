@@ -557,9 +557,10 @@ pub struct ProviderSnapshot {
     ///
     /// StatusLine providers also keep the per-session value below so panes
     /// running the same provider can be distinguished from one another.
-    /// Devin stores the CLI configured/default model here (`agent.model`);
-    /// it is not a session's `/model` selection and is never copied into
-    /// `session_models`.
+    /// Devin stores the CLI configured/default model here (`agent.model`).
+    /// That is the only local model source we have verified; a pane with a
+    /// Herdr session id still uses it as a display fallback until real
+    /// session-model evidence exists. It is never copied into `session_models`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default)]
@@ -615,8 +616,15 @@ impl ProviderSnapshot {
         self
     }
 
-    /// Return the model for a pane's session. A known session never falls back
-    /// to provider-level data, because that value may belong to another pane.
+    /// Return the model for a pane's session.
+    ///
+    /// StatusLine and local-file providers never fall back to provider-level
+    /// data for a known session, because that value may belong to another pane.
+    /// Devin is the exception: `snapshot.model` is the CLI configured/default
+    /// from `config.json`, not "the last pane that reported". Herdr's official
+    /// Devin integration gives us a session id for resume, but we have no
+    /// verified per-session model file, so the configured default is the
+    /// display fallback until `session_models` has an exact hit.
     pub fn model_for_session(&self, session_id: Option<&str>) -> Option<&str> {
         let Some(session_id) = session_id else {
             return self.model.as_deref();
@@ -624,7 +632,10 @@ impl ProviderSnapshot {
         if let Some(model) = self.session_models.get(session_id) {
             return Some(model);
         }
-        None
+        match self.provider {
+            Provider::Devin => self.model.as_deref(),
+            _ => None,
+        }
     }
 
     /// Return context/cache diagnostics for a pane's session. A known session
@@ -1293,6 +1304,46 @@ mod tests {
         );
         current.merge_omitted_windows(&previous);
         assert!(current.window(WindowKind::FiveHour).is_none());
+    }
+
+    #[test]
+    fn claude_known_session_does_not_borrow_the_provider_model() {
+        let mut snapshot = ProviderSnapshot::new(Provider::Claude, vec![], 0)
+            .with_model(Some("latest".to_string()));
+        snapshot
+            .session_models
+            .insert("session-1".to_string(), "Sonnet".to_string());
+        assert_eq!(
+            snapshot.model_for_session(Some("session-1")),
+            Some("Sonnet")
+        );
+        assert_eq!(snapshot.model_for_session(Some("session-2")), None);
+        assert_eq!(snapshot.model_for_session(None), Some("latest"));
+    }
+
+    #[test]
+    fn devin_known_session_falls_back_to_configured_default() {
+        let mut snapshot = ProviderSnapshot::new(Provider::Devin, vec![], 0)
+            .with_model(Some("SWE-1.7 Medium".to_string()));
+        assert_eq!(
+            snapshot.model_for_session(Some("session-a")),
+            Some("SWE-1.7 Medium")
+        );
+        assert_eq!(
+            snapshot.model_for_session(Some("session-b")),
+            Some("SWE-1.7 Medium")
+        );
+        snapshot
+            .session_models
+            .insert("session-a".to_string(), "Opus 4.6".to_string());
+        assert_eq!(
+            snapshot.model_for_session(Some("session-a")),
+            Some("Opus 4.6")
+        );
+        assert_eq!(
+            snapshot.model_for_session(Some("session-b")),
+            Some("SWE-1.7 Medium")
+        );
     }
 
     #[test]
