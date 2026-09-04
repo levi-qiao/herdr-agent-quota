@@ -14,7 +14,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   from `~/.local/share/devin/credentials.toml` (or `$DEVIN_CREDENTIALS_FILE`).
   Daily and weekly remaining percentages are flipped to used. The active model
   comes from `~/.config/devin/config.json` when present, otherwise the API
-  `planInfo.planName`. Snapshots are stamped with `sha256("devin\0" || key)`
+  `planInfo.planName`. That name is the CLI's current default, not per-session
+  evidence, so it is published as `snapshot.model` rather than `session_models`.
+  Snapshots are stamped with `sha256("devin\0" || key)`
   so a credential swap cannot keep the previous account's last-good value.
   The API key is never logged, stored, or included in error messages.
 - `configure --apply` rewrites the shared `ui.sidebar.agents.rows` array only
@@ -31,6 +33,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `configure` no longer runs `normalize_official_row` when generating
+  `rows_by_agent` from user-owned shared rows, so tokens such as `pane` and
+  `terminal_title_stripped` stay intact. With brand colors off, those custom
+  shared rows still get plugin-managed per-agent quota rows — only the brand
+  hue is omitted. Default Herdr rows are unchanged: brand off still writes no
+  `rows_by_agent` copies.
+- `configure` prints which user-owned `rows_by_agent` entries it left alone,
+  instead of succeeding silently without installing quota for those agents.
 - Sidebar tab names, topics, cache details, context, and unknown quota states
   now inherit Herdr's active theme instead of using text colors tuned for a
   dark background. Provider brand hues and quota severity colors remain

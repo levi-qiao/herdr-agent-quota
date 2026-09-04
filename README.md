@@ -98,7 +98,7 @@ herdr plugin action invoke refresh --plugin herdr-agent-quota
 
 | Dimension | Source and behavior |
 | --- | --- |
-| Provider / model | Exact route and active model for the pane's session. Devin CLI uses the active model from `~/.config/devin/config.json` (or `$XDG_CONFIG_HOME/devin/config.json`) and falls back to the quota API's `planInfo.planName` when unavailable. |
+| Provider / model | Exact route and active model for the pane's session. Devin uses the CLI's configured active model when available, with `planInfo.planName` as a fallback. Session-specific model attribution is only used when session-level evidence is available. |
 | Topic | Current visible user prompt; the previous topic survives when it scrolls away. |
 | Context | Used percentage of the active model's context window. |
 | Cache | Session cache hit rate when the agent exposes trustworthy counters. |
@@ -115,7 +115,7 @@ herdr plugin action invoke refresh --plugin herdr-agent-quota
 | OpenCode | OpenCode Go 5h + 7d; 30d in dashboard | exact local session model/context |
 | Pi | Canonical Codex quota on an exact account match | model, context, cache, supported TTL data |
 | omp (oh-my-pi) | OMP-normalized windows such as `5h`, `1d`, `7d`, `Monthly` | model, context, cache, supported TTL data |
-| Devin CLI | 1d + 7d | active model from `~/.config/devin/config.json`, falling back to the API `planInfo.planName` (e.g. `Pro`) |
+| Devin CLI | 1d + 7d | CLI configured active model from `~/.config/devin/config.json`, falling back to the API `planInfo.planName` (e.g. `Pro`). Not per-session unless session evidence exists. |
 
 OMP is a generic adapter, not a second set of provider adapters. The plugin runs
 `omp usage --json --provider <id>`, retains OMP's window labels, and attributes
