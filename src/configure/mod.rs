@@ -82,7 +82,7 @@ pub fn run(
             }
         }
     } else if apply {
-        integration::ensure_omp(agents)?;
+        integration::ensure_omp(agents, full)?;
         let cache = CacheStore::from_env()?;
         cache.clear_turn_watcher_stop()?;
         let interval = options
