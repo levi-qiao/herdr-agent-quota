@@ -50,6 +50,7 @@ const QUOTA_ROW_MARKERS: [&str; 40] = [
     "$quota_week_inline_unknown",
 ];
 const ROW_GAP_MARKER: &str = "herdr-agent-quota";
+const MANAGED_ROW_MARKER: &str = "herdr-agent-quota-row";
 
 const PROVIDER_STYLE_MARKER: &str = "herdr-agent-quota-provider";
 const REFRESH_KEY: &str = "prefix+shift+r";
@@ -345,15 +346,44 @@ pub fn add_quota_row_with(
         gap.decor_mut().set_suffix(format!(" # {ROW_GAP_MARKER}"));
         table.insert("row_gap", Item::Value(gap));
     }
-    let rows = table["rows"].or_insert(Item::Value(Value::Array(Array::new())));
-    let rows = rows
-        .as_array_mut()
-        .context("Herdr ui.sidebar.agents.rows must be an array")?;
+    let original_rows = table.get("rows").and_then(Item::as_array);
+    let rows_managed = table
+        .get("rows")
+        .and_then(Item::as_value)
+        .is_some_and(has_rows_marker);
+    let rows_safe = rows_managed || original_rows.is_none_or(is_safe_to_take_over);
+    let managed_rows = build_managed_rows(original_rows, layout, fields)?;
+    if brand.is_on() {
+        add_provider_rows(table, &managed_rows, agents)?;
+    } else {
+        // Without brand hues a per-agent row set would be identical to the
+        // shared one, so the plugin removes its own entries rather than
+        // writing copies Herdr would have to keep in sync.
+        remove_managed_provider_rows(table, agents);
+    }
+    if rows_safe {
+        let mut rows_value = Value::Array(managed_rows);
+        rows_value
+            .decor_mut()
+            .set_suffix(format!(" # {MANAGED_ROW_MARKER}"));
+        table.insert("rows", Item::Value(rows_value));
+    }
+    remove_managed_selection_theme(&mut document);
+    Ok(document.to_string())
+}
+
+fn build_managed_rows(
+    original: Option<&Array>,
+    layout: SidebarLayout,
+    fields: FieldSet,
+) -> Result<Array> {
     let mut updated_rows = Array::new();
-    for row in rows.iter() {
-        let cleaned = normalize_official_row(strip_quota_tokens(row, true));
-        if !cleaned.is_empty() {
-            updated_rows.push(Value::Array(cleaned));
+    if let Some(rows) = original {
+        for row in rows.iter() {
+            let cleaned = normalize_official_row(strip_quota_tokens(row, true));
+            if !cleaned.is_empty() {
+                updated_rows.push(Value::Array(cleaned));
+            }
         }
     }
 
@@ -364,18 +394,39 @@ pub fn add_quota_row_with(
     }
     append_quota_rows(&mut updated_rows, layout);
     retain_selected_fields(&mut updated_rows, fields);
-    *rows = updated_rows;
-    let rows = rows.clone();
-    if brand.is_on() {
-        add_provider_rows(table, &rows, agents)?;
-    } else {
-        // Without brand hues a per-agent row set would be identical to the
-        // shared one, so the plugin removes its own entries rather than
-        // writing copies Herdr would have to keep in sync.
-        remove_managed_provider_rows(table, agents);
+    Ok(updated_rows)
+}
+
+fn has_rows_marker(value: &Value) -> bool {
+    value
+        .decor()
+        .suffix()
+        .and_then(|suffix| suffix.as_str())
+        .is_some_and(|suffix| suffix.contains(MANAGED_ROW_MARKER))
+}
+
+fn is_safe_to_take_over(rows: &Array) -> bool {
+    rows.iter().all(is_safe_to_take)
+}
+
+fn is_safe_to_take(row: &Value) -> bool {
+    let cleaned = strip_quota_tokens(row, false);
+    if cleaned.is_empty() {
+        return true;
     }
-    remove_managed_selection_theme(&mut document);
-    Ok(document.to_string())
+    is_default_state_equivalent(&cleaned)
+}
+
+fn is_default_state_equivalent(row: &Array) -> bool {
+    let mut has_state_icon = false;
+    for item in row.iter() {
+        match configured_token_name(item) {
+            Some("state_icon") => has_state_icon = true,
+            Some("agent" | "tab" | "workspace" | "pane") => {}
+            _ => return false,
+        }
+    }
+    has_state_icon
 }
 
 /// Full-installation form, used by callers that remove every agent.
@@ -430,14 +481,6 @@ pub fn remove_quota_row_for(input: &str, agents: &[Harness], full: bool) -> Resu
         let mut retained = Array::new();
         for row in rows.iter() {
             let cleaned = strip_quota_tokens(row, false);
-            if cleaned.len() == 1
-                && matches!(
-                    cleaned.iter().next().and_then(Value::as_str),
-                    Some("terminal_title_stripped") | Some("$quota_topic")
-                )
-            {
-                continue;
-            }
             if !cleaned.is_empty() {
                 retained.push(Value::Array(cleaned));
             }
@@ -1579,6 +1622,93 @@ opencode = [["state_icon", "agent"]]
         let removed = remove_quota_row(&applied).unwrap();
         assert!(removed.contains("name = \"terminal\""));
         assert!(!removed.contains("[theme.custom]"));
+    }
+
+    #[test]
+    fn preserves_custom_user_sidebar_rows() {
+        let original = r#"[ui.sidebar.agents]
+rows = [["state_icon", "pane", "terminal_title_stripped"]]
+"#;
+        let updated = add_quota_row(original).unwrap();
+        let document = updated.parse::<DocumentMut>().unwrap();
+        let rows = document["ui"]["sidebar"]["agents"]["rows"]
+            .as_array()
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        let items = rows.iter().next().unwrap().as_array().unwrap();
+        assert_eq!(items.len(), 3);
+        assert!(items.iter().any(|item| item.as_str() == Some("state_icon")));
+        assert!(items.iter().any(|item| item.as_str() == Some("pane")));
+        assert!(items
+            .iter()
+            .any(|item| item.as_str() == Some("terminal_title_stripped")));
+        assert!(updated.contains("claude =") || updated.contains("codex ="));
+        assert!(updated.contains(REFRESH_ACTION));
+        assert!(updated.contains("row_gap"));
+    }
+
+    #[test]
+    fn preserves_sidebar_rows_from_another_plugin() {
+        let original = r#"[ui.sidebar.agents]
+rows = [["lantern_status"], ["state_icon", "my_plugin_token"]]
+"#;
+        let updated = add_quota_row(original).unwrap();
+        let document = updated.parse::<DocumentMut>().unwrap();
+        let rows = document["ui"]["sidebar"]["agents"]["rows"]
+            .as_array()
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(updated.contains("lantern_status"));
+        assert!(updated.contains("my_plugin_token"));
+        assert!(updated.contains("claude =") || updated.contains("grok ="));
+        assert!(updated.contains(REFRESH_ACTION));
+    }
+
+    #[test]
+    fn idempotent_reapply_does_not_grow_rows() {
+        let original = "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"agent\"]]\n";
+        let once = add_quota_row(original).unwrap();
+        let document = once.parse::<DocumentMut>().unwrap();
+        let rows = document["ui"]["sidebar"]["agents"]["rows"]
+            .as_array()
+            .unwrap();
+        let first_count = rows.len();
+        let twice = add_quota_row(&once).unwrap();
+        let document = twice.parse::<DocumentMut>().unwrap();
+        let rows = document["ui"]["sidebar"]["agents"]["rows"]
+            .as_array()
+            .unwrap();
+        assert_eq!(rows.len(), first_count);
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn uninstall_leaves_unmanaged_user_rows_intact() {
+        let original = r#"[ui.sidebar.agents]
+rows = [["state_icon", "pane", "terminal_title_stripped"], ["agent", "$quota_icon", "$quota_5h"], ["$quota_week"]]
+"#;
+        let updated = remove_quota_row(original).unwrap();
+        let document = updated.parse::<DocumentMut>().unwrap();
+        let rows = document["ui"]["sidebar"]["agents"]["rows"]
+            .as_array()
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|row| {
+            row.as_array().is_some_and(|items| {
+                items.len() == 3
+                    && items.iter().any(|item| item.as_str() == Some("state_icon"))
+                    && items.iter().any(|item| item.as_str() == Some("pane"))
+                    && items
+                        .iter()
+                        .any(|item| item.as_str() == Some("terminal_title_stripped"))
+            })
+        }));
+        assert!(rows.iter().any(|row| {
+            row.as_array().is_some_and(|items| {
+                items.len() == 1 && items.iter().any(|item| item.as_str() == Some("agent"))
+            })
+        }));
+        assert!(!updated.contains("$quota_"));
     }
 }
 

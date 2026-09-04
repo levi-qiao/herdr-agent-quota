@@ -35,6 +35,12 @@ Restart already-running agent panes once. To install only a subset:
 ./install.sh --agent claude,codex,omp
 ```
 
+`install.sh` only rewrites the shared `ui.sidebar.agents.rows` array when it is
+empty, contains only rows already managed by the plugin, or matches Herdr's
+default `["state_icon", "agent"]` row. Existing rows from another plugin or the
+user are preserved, while `rows_by_agent` for the selected agents is still
+added or updated.
+
 Supported values: `all`, `claude`, `codex`, `grok`, `agy`, `opencode`, `pi`, `omp`, `devin`.
 
 ## Settings
