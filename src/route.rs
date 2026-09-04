@@ -28,7 +28,7 @@ pub struct ResolvedPane {
 
 pub fn resolve_with_identity(pane: &AgentPane) -> ResolvedPane {
     let resolution = match pane.harness {
-        Harness::Codex | Harness::Grok | Harness::Claude | Harness::Agy => pane
+        Harness::Codex | Harness::Grok | Harness::Claude | Harness::Agy | Harness::Devin => pane
             .harness
             .billing()
             .map(BillingTarget::original_four)

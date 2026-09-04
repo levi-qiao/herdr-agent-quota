@@ -243,7 +243,11 @@ fn missing_five_hour_label(provider: Provider) -> Option<&'static str> {
     // Claude/Agy keep a visible placeholder on their separate limits row.
     match provider {
         Provider::Claude | Provider::Agy => Some("5h N/A"),
-        Provider::Codex | Provider::Grok | Provider::OpenCodeGo | Provider::Omp => None,
+        Provider::Codex
+        | Provider::Grok
+        | Provider::OpenCodeGo
+        | Provider::Omp
+        | Provider::Devin => None,
     }
 }
 

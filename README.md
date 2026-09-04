@@ -35,7 +35,13 @@ Restart already-running agent panes once. To install only a subset:
 ./install.sh --agent claude,codex,omp
 ```
 
-Supported values: `all`, `claude`, `codex`, `grok`, `agy`, `opencode`, `pi`, `omp`.
+`install.sh` only rewrites the shared `ui.sidebar.agents.rows` array when it is
+empty, contains only rows already managed by the plugin, or matches Herdr's
+default `["state_icon", "agent"]` row. Existing rows from another plugin or the
+user are preserved, while `rows_by_agent` for the selected agents is still
+added or updated.
+
+Supported values: `all`, `claude`, `codex`, `grok`, `agy`, `opencode`, `pi`, `omp`, `devin`.
 
 ## Settings
 
@@ -61,7 +67,7 @@ conflict is preserved rather than overwritten; use the command above instead.
 | Agent order | `default`, `quota` | Optionally puts the lowest-headroom agent first. |
 | Low quota alert | `off`, 5–50% | Notifies once when a provider crosses the threshold. |
 | Fields | topic, model, cache, TTL, context, short/long quota | Hides optional dimensions. |
-| Agents | seven supported harnesses | Installs or removes collectors and sidebar rows. |
+| Agents | eight supported harnesses | Installs or removes collectors and sidebar rows. |
 
 Use `↑/↓` to move, `←/→` or Space to change, `a` to apply, and `q` to close.
 A `*` means there are unapplied changes.
@@ -92,7 +98,7 @@ herdr plugin action invoke refresh --plugin herdr-agent-quota
 
 | Dimension | Source and behavior |
 | --- | --- |
-| Provider / model | Exact route and active model for the pane's session. |
+| Provider / model | Exact route and active model for the pane's session. Devin CLI uses the active model from `~/.config/devin/config.json` (or `$XDG_CONFIG_HOME/devin/config.json`) and falls back to the quota API's `planInfo.planName` when unavailable. |
 | Topic | Current visible user prompt; the previous topic survives when it scrolls away. |
 | Context | Used percentage of the active model's context window. |
 | Cache | Session cache hit rate when the agent exposes trustworthy counters. |
@@ -109,6 +115,7 @@ herdr plugin action invoke refresh --plugin herdr-agent-quota
 | OpenCode | OpenCode Go 5h + 7d; 30d in dashboard | exact local session model/context |
 | Pi | Canonical Codex quota on an exact account match | model, context, cache, supported TTL data |
 | omp (oh-my-pi) | OMP-normalized windows such as `5h`, `1d`, `7d`, `Monthly` | model, context, cache, supported TTL data |
+| Devin CLI | 1d + 7d | active model from `~/.config/devin/config.json`, falling back to the API `planInfo.planName` (e.g. `Pro`) |
 
 OMP is a generic adapter, not a second set of provider adapters. The plugin runs
 `omp usage --json --provider <id>`, retains OMP's window labels, and attributes
@@ -172,4 +179,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and
 
 ## License
 
-MIT. Not affiliated with Herdr, OpenAI, Anthropic, xAI, Google, or OpenCode.
+MIT. Not affiliated with Herdr, OpenAI, Anthropic, xAI, Google, OpenCode, or Cognition.

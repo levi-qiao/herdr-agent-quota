@@ -24,6 +24,9 @@ pub enum Provider {
     /// Quota reported by omp's own provider-agnostic usage layer. This is a
     /// scoped collector only; it is never part of a bare provider refresh.
     Omp,
+    /// Quota reported by Devin CLI's Connect RPC API. A 1:1 harness→billing
+    /// mapping like the original four, refreshed through `--provider all`.
+    Devin,
 }
 
 /// Quota collector identity. The original four keep the historical
@@ -33,7 +36,13 @@ pub type Billing = Provider;
 impl Provider {
     /// The collectors a bare `--provider all` refreshes. OpenCode Go is not
     /// here on purpose; see the variant's note.
-    pub const ALL: [Self; 4] = [Self::Codex, Self::Grok, Self::Claude, Self::Agy];
+    pub const ALL: [Self; 5] = [
+        Self::Codex,
+        Self::Grok,
+        Self::Claude,
+        Self::Agy,
+        Self::Devin,
+    ];
 
     /// Collectors fetched only for a pane that resolved to them.
     ///
@@ -51,6 +60,7 @@ impl Provider {
             Self::Agy => "Agy",
             Self::OpenCodeGo => "OpenCode Go",
             Self::Omp => "OMP",
+            Self::Devin => "Devin",
         }
     }
 
@@ -64,6 +74,7 @@ impl Provider {
             // with the original four's 0.2 filenames.
             Self::OpenCodeGo => "opencode-go.opencode-store",
             Self::Omp => "omp-usage",
+            Self::Devin => "devin-cli-billing",
         }
     }
 }
@@ -80,6 +91,7 @@ pub enum Harness {
     OpenCode,
     Pi,
     Omp,
+    Devin,
 }
 
 impl Harness {
@@ -94,6 +106,7 @@ impl Harness {
             "opencode" => Some(Self::OpenCode),
             "pi" => Some(Self::Pi),
             "omp" => Some(Self::Omp),
+            "devin" | "devin-cli" => Some(Self::Devin),
             _ => None,
         }
     }
@@ -106,6 +119,7 @@ impl Harness {
             Self::Grok => Some(Provider::Grok),
             Self::Claude => Some(Provider::Claude),
             Self::Agy => Some(Provider::Agy),
+            Self::Devin => Some(Provider::Devin),
             Self::OpenCode | Self::Pi | Self::Omp => None,
         }
     }
@@ -710,7 +724,8 @@ impl ProviderSnapshot {
             | Provider::Claude
             | Provider::Agy
             | Provider::OpenCodeGo
-            | Provider::Omp => {
+            | Provider::Omp
+            | Provider::Devin => {
                 window_in(windows, WindowKind::FiveHour).or_else(|| long_window(windows))
             }
         };
@@ -1106,6 +1121,11 @@ mod tests {
         );
         assert_eq!(Harness::billing_for_agent("codex"), Some(Provider::Codex));
         assert_eq!(Harness::billing_for_agent("grok"), Some(Provider::Grok));
+        assert_eq!(Harness::billing_for_agent("devin"), Some(Provider::Devin));
+        assert_eq!(
+            Harness::billing_for_agent("devin-cli"),
+            Some(Provider::Devin)
+        );
     }
 
     #[test]

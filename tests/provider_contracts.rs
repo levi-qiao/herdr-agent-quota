@@ -1,6 +1,6 @@
 use herdr_agent_quota::model::{BillingTarget, ResetAt, WindowKind};
 use herdr_agent_quota::presentation::MetadataTokens;
-use herdr_agent_quota::providers::{agy, claude, codex, grok, omp};
+use herdr_agent_quota::providers::{agy, claude, codex, devin, grok, omp};
 use serde_json::Value;
 
 fn fixture(value: &str) -> Value {
@@ -170,4 +170,32 @@ fn omp_reports_nothing_for_an_absent_provider() {
     let usage = omp::parse_usage(&omp_usage(), "anthropic", 1);
     assert!(usage.accounts.is_empty());
     assert!(!usage.has_api_key);
+}
+
+/// Recorded from a live Devin CLI Connect RPC `GetUserStatus` call. The
+/// response carries remaining percentages; the collector flips them to used.
+#[test]
+fn devin_fixture_flips_remaining_to_used_for_daily_and_weekly() {
+    let value = fixture(include_str!("fixtures/devin/getuserstatus-pro.json"));
+    let snapshot = devin::parse_user_status(&value, None, 1).expect("snapshot");
+    assert_eq!(snapshot.windows.len(), 2);
+
+    let daily = snapshot.window(WindowKind::FiveHour).expect("daily window");
+    // 99 remaining → 1 used
+    assert_eq!(daily.used_percent, 1.0);
+    assert_eq!(daily.remaining_percent, 99.0);
+    assert_eq!(daily.display_label(), "1d");
+    assert_eq!(
+        daily.resets_at.map(|reset| reset.unix_seconds()),
+        Some(1_788_508_800)
+    );
+
+    let weekly = snapshot.window(WindowKind::Weekly).expect("weekly window");
+    // 34 remaining → 66 used
+    assert_eq!(weekly.used_percent, 66.0);
+    assert_eq!(weekly.remaining_percent, 34.0);
+    assert_eq!(
+        weekly.resets_at.map(|reset| reset.unix_seconds()),
+        Some(1_788_681_600)
+    );
 }

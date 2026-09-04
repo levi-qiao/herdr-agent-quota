@@ -11,7 +11,7 @@ use crate::omp::OmpEvidence;
 use crate::opencode::OpenCodePaths;
 use crate::presentation::MetadataTokens;
 use crate::providers::statusline::enrich_cache_session;
-use crate::providers::{codex, grok, omp as omp_provider, opencode_go};
+use crate::providers::{codex, devin, grok, omp as omp_provider, opencode_go};
 use crate::route;
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -560,6 +560,7 @@ fn refresh_provider(
     let fetched = match provider {
         Provider::Codex => codex::fetch_for_sessions(&session_ids).map(FetchedSnapshot::direct),
         Provider::Grok => grok::fetch_for_sessions(&session_ids).map(FetchedSnapshot::direct),
+        Provider::Devin => devin::fetch_for_sessions(&session_ids).map(FetchedSnapshot::direct),
         Provider::Claude | Provider::Agy => load_statusline_snapshot(cache, provider),
         // OpenCode Go is fetched for a resolved pane, never through the
         // provider list; see `fetch_opencode_go`.
@@ -577,7 +578,7 @@ fn refresh_provider(
             } = fetched;
             if preserve_context {
                 cache.save_preserving_context_for_session(snapshot, session_id.as_deref())?;
-            } else if matches!(provider, Provider::Codex | Provider::Grok) {
+            } else if matches!(provider, Provider::Codex | Provider::Grok | Provider::Devin) {
                 let (_, mtime) = current_account_gate(provider);
                 cache.save_preserving_diagnostics_for_sessions(
                     &mut snapshot,
@@ -646,7 +647,11 @@ fn current_account_gate(provider: Provider) -> (Option<String>, Option<u64>) {
             (account_id, mtime)
         }
         Provider::Codex => (codex::current_account_id(), codex::auth_mtime_unix()),
-        Provider::Claude | Provider::Agy | Provider::OpenCodeGo | Provider::Omp => (None, None),
+        Provider::Claude
+        | Provider::Agy
+        | Provider::OpenCodeGo
+        | Provider::Omp
+        | Provider::Devin => (None, None),
     }
 }
 

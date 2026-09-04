@@ -25,6 +25,7 @@ fn integration_id(harness: Harness) -> Option<&'static str> {
         Harness::OpenCode => Some("opencode"),
         Harness::Pi => Some("pi"),
         Harness::Omp => Some("omp"),
+        Harness::Devin => Some("devin"),
         Harness::Agy => None,
     }
 }
@@ -145,6 +146,7 @@ grok: outdated (v0) (/home/u/.grok/hooks/herdr-agent-state.sh)
         assert_eq!(integration_id(Harness::OpenCode), Some("opencode"));
         assert_eq!(integration_id(Harness::Pi), Some("pi"));
         assert_eq!(integration_id(Harness::Omp), Some("omp"));
+        assert_eq!(integration_id(Harness::Devin), Some("devin"));
     }
 
     /// The marketplace `configure` action runs a fixed command line, so it

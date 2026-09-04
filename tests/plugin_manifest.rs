@@ -66,9 +66,9 @@ fn the_settings_popup_is_tall_enough_for_every_option() {
         .trim()
         .parse()
         .unwrap();
-    // Three section headers, seven choices, seven fields, seven agents, four
+    // Three section headers, seven choices, seven fields, eight agents, four
     // lines of TUI chrome, and the two rows consumed by Herdr's pane border.
-    assert!(height >= 3 + 7 + 7 + 7 + 4 + 2, "height = {height}");
+    assert!(height >= 3 + 7 + 7 + 8 + 4 + 2, "height = {height}");
 }
 
 /// Herdr accepts a plugin-owned agent view only from `plugin:<manifest id>`

@@ -2,7 +2,7 @@ id = "herdr-agent-quota"
 name = "Herdr Agent Quota"
 version = "1.3.0"
 min_herdr_version = "0.8.0"
-description = "Credential-scoped AI quota and context for Claude, Codex, Grok, Agy, OpenCode, Pi, and omp."
+description = "Credential-scoped AI quota and context for Claude, Codex, Grok, Agy, OpenCode, Pi, omp, and Devin."
 platforms = ["macos", "linux"]
 
 [[build]]
@@ -62,4 +62,4 @@ placement = "popup"
 # section opens below the fold.
 # Herdr clamps to the terminal, and the pane still scrolls when it has to.
 width = 78
-height = 30
+height = 31
