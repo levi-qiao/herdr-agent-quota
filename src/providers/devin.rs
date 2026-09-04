@@ -51,7 +51,7 @@ struct DevinCredentials {
 /// Fetch Devin CLI's quota and return a snapshot. `session_ids` is accepted
 /// for parity with the other provider fetchers but is not used yet — session
 /// enrichment is deferred, matching Grok's initial implementation.
-pub fn fetch_for_sessions(_session_ids: &[String]) -> Result<ProviderSnapshot> {
+pub fn fetch_for_sessions(session_ids: &[String]) -> Result<ProviderSnapshot> {
     let path = auth_path().context("resolve Devin credentials path")?;
     let credentials = read_credentials(&path).map_err(anyhow::Error::from)?;
     let active_model = active_model_from_config();
@@ -79,8 +79,19 @@ pub fn fetch_for_sessions(_session_ids: &[String]) -> Result<ProviderSnapshot> {
     let value: Value = response
         .into_json()
         .context("decode Devin GetUserStatus response")?;
-    parse_user_status(&value, active_model.as_deref(), CacheStore::now_unix())
-        .map_err(anyhow::Error::from)
+    let mut snapshot = parse_user_status(&value, active_model.as_deref(), CacheStore::now_unix())
+        .map_err(anyhow::Error::from)?;
+    // Devin CLI's active model is global (from config.json), so attribute it to
+    // every requested session. Panes without a session id still fall back to
+    // snapshot.model.
+    if let Some(model) = active_model {
+        for session_id in session_ids {
+            snapshot
+                .session_models
+                .insert(session_id.clone(), model.clone());
+        }
+    }
+    Ok(snapshot)
 }
 
 /// Resolve the credentials file path.
