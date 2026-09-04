@@ -99,7 +99,8 @@ pub fn check(
 ) -> Result<()> {
     let path = config_path()?;
     let original = fs::read_to_string(&path).unwrap_or_default();
-    let updated = add_quota_row_with(&original, agents, layout, row_gap, fields, brand)?;
+    let (updated, skipped) =
+        rewrite_quota_sidebar(&original, agents, layout, row_gap, fields, brand)?;
     if updated == original {
         println!(
             "Herdr sidebar already contains quota tokens: {}",
@@ -112,6 +113,9 @@ pub fn check(
             path.display()
         );
         print_diff_hint(layout, fields, brand);
+    }
+    if let Some(line) = skipped_provider_notice(&skipped) {
+        println!("{line}");
     }
     Ok(())
 }
@@ -126,7 +130,11 @@ pub fn apply(
     let path = config_path()?;
     let existed = path.exists();
     let original = fs::read_to_string(&path).unwrap_or_default();
-    let updated = add_quota_row_with(&original, agents, layout, row_gap, fields, brand)?;
+    let (updated, skipped) =
+        rewrite_quota_sidebar(&original, agents, layout, row_gap, fields, brand)?;
+    if let Some(line) = skipped_provider_notice(&skipped) {
+        println!("{line}");
+    }
     if updated == original {
         return Ok(());
     }
@@ -315,6 +323,17 @@ pub fn add_quota_row_with(
     fields: FieldSet,
     brand: BrandColors,
 ) -> Result<String> {
+    Ok(rewrite_quota_sidebar(input, agents, layout, row_gap, fields, brand)?.0)
+}
+
+fn rewrite_quota_sidebar(
+    input: &str,
+    agents: &[Harness],
+    layout: SidebarLayout,
+    row_gap: SidebarRowGap,
+    fields: FieldSet,
+    brand: BrandColors,
+) -> Result<(String, Vec<&'static str>)> {
     let mut document = if input.trim().is_empty() {
         DocumentMut::new()
     } else {
@@ -352,15 +371,24 @@ pub fn add_quota_row_with(
         .and_then(Item::as_value)
         .is_some_and(has_rows_marker);
     let rows_safe = rows_managed || original_rows.is_none_or(is_safe_to_take_over);
-    let managed_rows = build_managed_rows(original_rows, layout, fields)?;
-    if brand.is_on() {
-        add_provider_rows(table, &managed_rows, agents)?;
+    let managed_rows = build_managed_rows(
+        original_rows,
+        layout,
+        fields,
+        if rows_safe {
+            RowRewrite::Takeover
+        } else {
+            RowRewrite::Preserve
+        },
+    )?;
+    let skipped = if !rows_safe || brand.is_on() {
+        add_provider_rows(table, &managed_rows, agents, brand.is_on())?
     } else {
-        // Without brand hues a per-agent row set would be identical to the
-        // shared one, so the plugin removes its own entries rather than
-        // writing copies Herdr would have to keep in sync.
+        // Shared rows already carry quota. Per-agent copies would be identical
+        // without brand hues, so the plugin removes its own entries.
         remove_managed_provider_rows(table, agents);
-    }
+        Vec::new()
+    };
     if rows_safe {
         let mut rows_value = Value::Array(managed_rows);
         rows_value
@@ -369,18 +397,28 @@ pub fn add_quota_row_with(
         table.insert("rows", Item::Value(rows_value));
     }
     remove_managed_selection_theme(&mut document);
-    Ok(document.to_string())
+    Ok((document.to_string(), skipped))
+}
+
+#[derive(Clone, Copy)]
+enum RowRewrite {
+    Takeover,
+    Preserve,
 }
 
 fn build_managed_rows(
     original: Option<&Array>,
     layout: SidebarLayout,
     fields: FieldSet,
+    rewrite: RowRewrite,
 ) -> Result<Array> {
     let mut updated_rows = Array::new();
     if let Some(rows) = original {
         for row in rows.iter() {
-            let cleaned = normalize_official_row(strip_quota_tokens(row, true));
+            let cleaned = match rewrite {
+                RowRewrite::Takeover => normalize_official_row(strip_quota_tokens(row, true)),
+                RowRewrite::Preserve => strip_quota_tokens(row, false),
+            };
             if !cleaned.is_empty() {
                 updated_rows.push(Value::Array(cleaned));
             }
@@ -389,10 +427,10 @@ fn build_managed_rows(
 
     // If an older version replaced every row with quota-only rows, restore
     // Herdr's official state/tab row before adding provider, usage, and topic.
-    if updated_rows.is_empty() {
+    if updated_rows.is_empty() && matches!(rewrite, RowRewrite::Takeover) {
         updated_rows.push(Value::Array(default_state_row()));
     }
-    append_quota_rows(&mut updated_rows, layout);
+    append_quota_rows(&mut updated_rows, layout, rewrite);
     retain_selected_fields(&mut updated_rows, fields);
     Ok(updated_rows)
 }
@@ -598,28 +636,36 @@ fn configured_token_name(value: &Value) -> Option<&str> {
     })
 }
 
-fn add_provider_rows(table: &mut Table, rows: &Array, agents: &[Harness]) -> Result<()> {
+fn add_provider_rows(
+    table: &mut Table,
+    rows: &Array,
+    agents: &[Harness],
+    color: bool,
+) -> Result<Vec<&'static str>> {
     let rows_by_agent = table
         .entry("rows_by_agent")
         .or_insert(Item::Table(Table::new()))
         .as_table_mut()
         .context("Herdr ui.sidebar.agents.rows_by_agent must be a table")?;
 
+    let mut skipped = Vec::new();
     for (provider, brand, dim) in selected_styles(agents) {
         let is_managed = rows_by_agent
             .get(provider)
             .and_then(Item::as_value)
             .is_some_and(has_provider_style_marker);
         if rows_by_agent.contains_key(provider) && !is_managed {
+            skipped.push(provider);
             continue;
         }
+        let (brand, dim) = if color { (brand, dim) } else { (None, None) };
         let mut value = Value::Array(provider_rows(rows, brand, dim));
         value
             .decor_mut()
             .set_suffix(format!(" # {PROVIDER_STYLE_MARKER}"));
         rows_by_agent.insert(provider, Item::Value(value));
     }
-    Ok(())
+    Ok(skipped)
 }
 
 fn provider_rows(rows: &Array, brand: Option<&str>, dim: Option<&str>) -> Array {
@@ -739,7 +785,7 @@ fn normalize_official_row(row: Array) -> Array {
     normalized
 }
 
-fn append_quota_rows(rows: &mut Array, layout: SidebarLayout) {
+fn append_quota_rows(rows: &mut Array, layout: SidebarLayout, rewrite: RowRewrite) {
     // Context can carry the weekly token when 5h is empty. Limits stay on the
     // next row so a present 5h window never shares a line with context. Herdr
     // drops empty tokens and empty rows. Stacked keeps that publish rule and
@@ -761,8 +807,9 @@ fn append_quota_rows(rows: &mut Array, layout: SidebarLayout) {
                 continue;
             }
             match item.as_str() {
-                Some("terminal_title_stripped") | Some("$quota_topic") => {}
-                Some("agent") if !has_state_icon => {}
+                Some("terminal_title_stripped") if matches!(rewrite, RowRewrite::Takeover) => {}
+                Some("$quota_topic") => {}
+                Some("agent") if !has_state_icon && matches!(rewrite, RowRewrite::Takeover) => {}
                 _ => cleaned.push(item.clone()),
             }
         }
@@ -784,9 +831,11 @@ fn append_quota_rows(rows: &mut Array, layout: SidebarLayout) {
 
     if let Some(index) = official_index {
         if let Some(row) = rows.get_mut(index).and_then(Value::as_array_mut) {
-            *row = match layout {
-                SidebarLayout::Packed => packed_identity_row(row),
-                SidebarLayout::Stacked => stacked_identity_row(row),
+            *row = match (rewrite, layout) {
+                (RowRewrite::Preserve, SidebarLayout::Packed) => preserve_identity_row(row),
+                (RowRewrite::Preserve, SidebarLayout::Stacked) => row.clone(),
+                (RowRewrite::Takeover, SidebarLayout::Packed) => packed_identity_row(row),
+                (RowRewrite::Takeover, SidebarLayout::Stacked) => stacked_identity_row(row),
             };
         }
     }
@@ -814,6 +863,30 @@ fn append_quota_rows(rows: &mut Array, layout: SidebarLayout) {
         SidebarLayout::Packed => append_packed_quota_rows(rows),
         SidebarLayout::Stacked => append_stacked_quota_rows(rows),
     }
+}
+
+fn preserve_identity_row(row: &Array) -> Array {
+    let mut kept = Array::new();
+    let mut has_provider_model = false;
+    for item in row.iter() {
+        if configured_token_name(item) == Some("$quota_provider_model") {
+            if !has_provider_model {
+                kept.push(item.clone());
+                has_provider_model = true;
+            }
+        } else {
+            kept.push(item.clone());
+        }
+    }
+    if !has_provider_model {
+        kept.push(styled_token(
+            "$quota_provider_model",
+            None,
+            Some(true),
+            Some(false),
+        ));
+    }
+    kept
 }
 
 fn packed_identity_row(row: &Array) -> Array {
@@ -1071,6 +1144,39 @@ fn styled_token(token: &str, fg: Option<&str>, bold: Option<bool>, dim: Option<b
         value.insert("dim", Value::from(dim));
     }
     Value::InlineTable(value)
+}
+
+fn skipped_provider_notice(providers: &[&str]) -> Option<String> {
+    if providers.is_empty() {
+        return None;
+    }
+    let keys = providers
+        .iter()
+        .map(|name| format!("rows_by_agent.{name}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let labels = providers
+        .iter()
+        .map(|name| skipped_provider_label(name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "Preserved user-owned {keys}; quota rows were not installed for {labels}."
+    ))
+}
+
+fn skipped_provider_label(provider: &str) -> &str {
+    match provider {
+        "claude" => "Claude",
+        "codex" => "Codex",
+        "grok" => "Grok",
+        "agy" => "Agy",
+        "opencode" => "OpenCode",
+        "pi" => "Pi",
+        "omp" => "OMP",
+        "devin" => "Devin",
+        other => other,
+    }
 }
 
 fn print_diff_hint(layout: SidebarLayout, fields: FieldSet, brand: BrandColors) {
@@ -1430,6 +1536,17 @@ claude = [["state_icon", "agent"]]
         assert!(updated.contains("claude = [[\"state_icon\", \"agent\"]]"));
         assert!(updated.contains("codex ="));
         assert!(updated.contains("opencode ="));
+        let skipped = rewrite_quota_sidebar(
+            original,
+            &AgentSelection::SUPPORTED,
+            SidebarLayout::Packed,
+            SidebarRowGap::default(),
+            FieldSet::all(),
+            BrandColors::On,
+        )
+        .unwrap()
+        .1;
+        assert_eq!(skipped, ["claude"]);
         let removed = remove_quota_row(&updated).unwrap();
         assert!(removed.contains("claude = [[\"state_icon\", \"agent\"]]"));
         assert!(!removed.contains("codex ="));
@@ -1664,6 +1781,160 @@ rows = [["lantern_status"], ["state_icon", "my_plugin_token"]]
         assert!(updated.contains(REFRESH_ACTION));
     }
 
+    fn custom_shared_rows() -> &'static str {
+        "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"pane\", \"terminal_title_stripped\"]]\n"
+    }
+
+    fn shared_row_names(toml: &str) -> Vec<String> {
+        let document = toml.parse::<DocumentMut>().unwrap();
+        let rows = document["ui"]["sidebar"]["agents"]["rows"]
+            .as_array()
+            .unwrap();
+        assert_eq!(rows.len(), 1, "{toml}");
+        token_names(rows.get(0).unwrap())
+    }
+
+    fn token_names(row: &Value) -> Vec<String> {
+        row.as_array()
+            .unwrap()
+            .iter()
+            .filter_map(configured_token_name)
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn provider_token_names(toml: &str, provider: &str) -> Vec<String> {
+        let document = toml.parse::<DocumentMut>().unwrap();
+        let rows = document["ui"]["sidebar"]["agents"]["rows_by_agent"][provider]
+            .as_array()
+            .expect(provider);
+        rows.iter().flat_map(token_names).collect()
+    }
+
+    fn provider_fg_colors(toml: &str, provider: &str) -> Vec<String> {
+        let document = toml.parse::<DocumentMut>().unwrap();
+        let rows = document["ui"]["sidebar"]["agents"]["rows_by_agent"][provider]
+            .as_array()
+            .expect(provider);
+        rows.iter()
+            .filter_map(Value::as_array)
+            .flat_map(|row| row.iter())
+            .filter_map(|item| {
+                item.as_inline_table()
+                    .and_then(|table| table.get("fg"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn custom_rows_with_brand_on_preserve_all_user_tokens_in_provider_rows() {
+        let updated = add_quota_row(custom_shared_rows()).unwrap();
+        assert_eq!(
+            shared_row_names(&updated),
+            ["state_icon", "pane", "terminal_title_stripped"]
+        );
+        let document = updated.parse::<DocumentMut>().unwrap();
+        let rows_value = document["ui"]["sidebar"]["agents"]["rows"]
+            .as_value()
+            .unwrap();
+        assert!(!has_rows_marker(rows_value), "{updated}");
+        let claude = provider_token_names(&updated, "claude");
+        for token in ["state_icon", "pane", "terminal_title_stripped"] {
+            assert!(
+                claude.iter().any(|name| name == token),
+                "{token} missing: {claude:?}\n{updated}"
+            );
+        }
+        assert!(
+            claude.iter().any(|name| name.starts_with("$quota_")),
+            "quota missing: {claude:?}\n{updated}"
+        );
+    }
+
+    #[test]
+    fn custom_rows_with_brand_off_still_render_quota_in_provider_rows() {
+        let updated = add_quota_row_with(
+            custom_shared_rows(),
+            &AgentSelection::SUPPORTED,
+            SidebarLayout::Packed,
+            SidebarRowGap::default(),
+            FieldSet::all(),
+            BrandColors::Off,
+        )
+        .unwrap();
+        assert_eq!(
+            shared_row_names(&updated),
+            ["state_icon", "pane", "terminal_title_stripped"]
+        );
+        let claude = provider_token_names(&updated, "claude");
+        for token in ["state_icon", "pane", "terminal_title_stripped"] {
+            assert!(
+                claude.iter().any(|name| name == token),
+                "{token} missing: {claude:?}\n{updated}"
+            );
+        }
+        assert!(
+            claude.iter().any(|name| name.starts_with("$quota_")),
+            "quota missing: {claude:?}\n{updated}"
+        );
+        assert!(
+            updated.contains("claude ="),
+            "provider rows missing:\n{updated}"
+        );
+        let claude_fgs = provider_fg_colors(&updated, "claude");
+        assert!(
+            !claude_fgs.iter().any(|fg| fg == "#e88461"),
+            "brand hue survived brand-off: {claude_fgs:?}\n{updated}"
+        );
+    }
+
+    #[test]
+    fn custom_rows_reapply_is_idempotent() {
+        let once = add_quota_row(custom_shared_rows()).unwrap();
+        let twice = add_quota_row(&once).unwrap();
+        assert_eq!(once, twice);
+        let off = add_quota_row_with(
+            custom_shared_rows(),
+            &AgentSelection::SUPPORTED,
+            SidebarLayout::Packed,
+            SidebarRowGap::default(),
+            FieldSet::all(),
+            BrandColors::Off,
+        )
+        .unwrap();
+        let off_again = add_quota_row_with(
+            &off,
+            &AgentSelection::SUPPORTED,
+            SidebarLayout::Packed,
+            SidebarRowGap::default(),
+            FieldSet::all(),
+            BrandColors::Off,
+        )
+        .unwrap();
+        assert_eq!(off, off_again);
+    }
+
+    #[test]
+    fn skipped_provider_notice_names_each_preserved_row() {
+        assert_eq!(
+            skipped_provider_notice(&["claude"]),
+            Some(
+                "Preserved user-owned rows_by_agent.claude; quota rows were not installed for Claude."
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            skipped_provider_notice(&["claude", "codex"]),
+            Some(
+                "Preserved user-owned rows_by_agent.claude, rows_by_agent.codex; quota rows were not installed for Claude, Codex."
+                    .to_string()
+            )
+        );
+        assert_eq!(skipped_provider_notice(&[]), None);
+    }
+
     #[test]
     fn idempotent_reapply_does_not_grow_rows() {
         let original = "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"agent\"]]\n";
@@ -1774,8 +2045,8 @@ mod field_tests {
         }
     }
 
-    /// Without brand hues the per-agent rows would duplicate the shared ones,
-    /// so the plugin writes none at all.
+    /// Without brand hues, plugin-managed shared rows already carry quota, so
+    /// per-agent copies would be identical and are omitted.
     #[test]
     fn brand_colours_off_writes_no_per_agent_rows() {
         let plain = applied(FieldSet::all(), BrandColors::Off);

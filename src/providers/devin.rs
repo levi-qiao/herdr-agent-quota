@@ -62,9 +62,8 @@ impl std::fmt::Debug for DevinCredentials {
     }
 }
 
-/// Fetch Devin CLI's quota and attribute the global active model to each
-/// requested session. Panes without a session id still fall back to
-/// `snapshot.model`.
+/// Fetch Devin CLI's quota. The CLI config's active model is process-global,
+/// so it is published as `snapshot.model`, not as per-session evidence.
 pub fn fetch_for_sessions(session_ids: &[String]) -> Result<ProviderSnapshot> {
     let path = auth_path().context("resolve Devin credentials path")?;
     let credentials = read_credentials(&path).map_err(anyhow::Error::from)?;
@@ -96,17 +95,21 @@ pub fn fetch_for_sessions(session_ids: &[String]) -> Result<ProviderSnapshot> {
         .context("decode Devin GetUserStatus response")?;
     let mut snapshot = parse_user_status(&value, active_model.as_deref(), CacheStore::now_unix())
         .map_err(anyhow::Error::from)?;
-    // Devin CLI's active model is global (from config.json), so attribute it to
-    // every requested session. Panes without a session id still fall back to
-    // snapshot.model.
-    if let Some(model) = active_model {
-        for session_id in session_ids {
-            snapshot
-                .session_models
-                .insert(session_id.clone(), model.clone());
-        }
-    }
+    apply_configured_model(&mut snapshot, active_model, session_ids);
     Ok(snapshot.with_account_id(Some(account_id)))
+}
+
+/// `config.json` names the CLI's current default model, not each session's
+/// model. Until a Devin session file exposes per-session evidence, keep that
+/// name on `snapshot.model` and leave `session_models` empty.
+fn apply_configured_model(
+    snapshot: &mut ProviderSnapshot,
+    active_model: Option<String>,
+    _session_ids: &[String],
+) {
+    if let Some(model) = active_model {
+        snapshot.model = Some(model);
+    }
 }
 
 /// Resolve the credentials file path.
@@ -376,6 +379,18 @@ mod tests {
         let snapshot =
             parse_user_status(&pro_fixture(), Some("swe-1-7-medium"), 1).expect("snapshot");
         assert_eq!(snapshot.model.as_deref(), Some("swe-1-7-medium"));
+    }
+
+    #[test]
+    fn devin_global_model_is_not_written_as_session_model() {
+        let mut snapshot = parse_user_status(&pro_fixture(), None, 1).expect("snapshot");
+        apply_configured_model(
+            &mut snapshot,
+            Some("swe-1-7-medium".to_string()),
+            &["session-a".to_string(), "session-b".to_string()],
+        );
+        assert_eq!(snapshot.model.as_deref(), Some("swe-1-7-medium"));
+        assert!(snapshot.session_models.is_empty());
     }
 
     #[test]
