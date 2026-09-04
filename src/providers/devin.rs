@@ -347,7 +347,7 @@ fn lookup_family_label(families: &[Value], model_id: &str, exact: bool) -> Optio
     for family in families {
         let slug = family.get("slug").and_then(Value::as_str);
         let family_uid = family.get("family_uid").and_then(Value::as_str);
-        let aliases = family
+        let mut aliases = family
             .get("aliases")
             .and_then(Value::as_array)
             .into_iter()
