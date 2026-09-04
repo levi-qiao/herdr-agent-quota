@@ -422,7 +422,7 @@ fn is_default_state_equivalent(row: &Array) -> bool {
     for item in row.iter() {
         match configured_token_name(item) {
             Some("state_icon") => has_state_icon = true,
-            Some("agent" | "tab" | "workspace" | "pane") => {}
+            Some("agent" | "tab") => {}
             _ => return false,
         }
     }
