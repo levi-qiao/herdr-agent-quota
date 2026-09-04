@@ -1,15 +1,19 @@
 //! Devin CLI subscription quota, read from Cognition's Connect RPC HTTP API.
 //!
 //! Devin CLI stores credentials at `~/.local/share/devin/credentials.toml`
-//! (or `$XDG_DATA_HOME/devin/credentials.toml`). The quota endpoint is a
-//! Connect RPC call: `POST {api_server_url}/exa.seat_management_pb
+//! (or `$XDG_DATA_HOME/devin/credentials.toml`). The quota endpoint is the
+//! same Connect RPC call the CLI uses: `POST {api_server_url}/exa.seat_management_pb
 //! .SeatManagementService/GetUserStatus` with a JSON body carrying the
-//! `windsurf_api_key` in a metadata block.
+//! `windsurf_api_key` in a metadata block. That is the Grok/OpenCode Go
+//! pattern — local credential plus the official CLI contract — not a private
+//! web scrape.
 //!
 //! Everything here fails closed. A missing, malformed, or unrecognized field
 //! yields no window rather than a guessed number, and a provider with no
 //! report is "unknown", never "0% used". The API key is never logged, printed,
-//! or included in error messages or pane metadata.
+//! or included in error messages or pane metadata. Cache identity is
+//! `sha256("devin\0" || key)` so a credential swap cannot keep the previous
+//! account's last-good snapshot.
 
 use crate::cache::CacheStore;
 use crate::model::{Provider, ProviderSnapshot, ResetAt, UsageWindow, WindowKind};
@@ -17,6 +21,7 @@ use crate::providers::ProviderError;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -40,7 +45,7 @@ fn build_url(api_server_url: Option<&str>) -> Result<String> {
 }
 
 /// Credentials read from Devin CLI's `credentials.toml`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 struct DevinCredentials {
     #[serde(rename = "windsurf_api_key")]
     windsurf_api_key: String,
@@ -48,12 +53,22 @@ struct DevinCredentials {
     api_server_url: Option<String>,
 }
 
-/// Fetch Devin CLI's quota and return a snapshot. `session_ids` is accepted
-/// for parity with the other provider fetchers but is not used yet — session
-/// enrichment is deferred, matching Grok's initial implementation.
+impl std::fmt::Debug for DevinCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DevinCredentials")
+            .field("windsurf_api_key", &"[redacted]")
+            .field("api_server_url", &self.api_server_url)
+            .finish()
+    }
+}
+
+/// Fetch Devin CLI's quota and attribute the global active model to each
+/// requested session. Panes without a session id still fall back to
+/// `snapshot.model`.
 pub fn fetch_for_sessions(session_ids: &[String]) -> Result<ProviderSnapshot> {
     let path = auth_path().context("resolve Devin credentials path")?;
     let credentials = read_credentials(&path).map_err(anyhow::Error::from)?;
+    let account_id = account_pin(&credentials.windsurf_api_key);
     let active_model = active_model_from_config();
     let url = build_url(credentials.api_server_url.as_deref())?;
     let body = serde_json::json!({
@@ -91,7 +106,7 @@ pub fn fetch_for_sessions(session_ids: &[String]) -> Result<ProviderSnapshot> {
                 .insert(session_id.clone(), model.clone());
         }
     }
-    Ok(snapshot)
+    Ok(snapshot.with_account_id(Some(account_id)))
 }
 
 /// Resolve the credentials file path.
@@ -104,6 +119,27 @@ pub fn auth_path() -> Result<PathBuf> {
         return Ok(PathBuf::from(path));
     }
     Ok(devin_data_dir()?.join("credentials.toml"))
+}
+
+/// Stable cache identity for the signed-in Devin key. The raw key never
+/// enters the snapshot; a different key is a different account.
+pub fn current_account_id() -> Option<String> {
+    let path = auth_path().ok()?;
+    let credentials = read_credentials(&path).ok()?;
+    Some(account_pin(&credentials.windsurf_api_key))
+}
+
+pub fn auth_mtime_unix() -> Option<u64> {
+    CacheStore::file_mtime_unix(&auth_path().ok()?)
+}
+
+/// `sha256("devin\0" || trimmed key)`. Pinned in tests so a hash change is a
+/// test failure rather than a silent last-good leak across accounts.
+fn account_pin(api_key: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"devin\0");
+    hasher.update(api_key.trim().as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 fn devin_data_dir() -> Result<PathBuf> {
@@ -486,5 +522,29 @@ mod tests {
     fn build_url_rejects_non_https_scheme() {
         assert!(build_url(Some("http://insecure.example.com")).is_err());
         assert!(build_url(Some("ftp://example.com")).is_err());
+    }
+
+    /// The digest is the cache contract. Changing it orphans every last-good
+    /// Devin snapshot on the next credential read, so it is pinned here.
+    #[test]
+    fn account_pin_matches_the_devin_key_digest() {
+        let pin = account_pin("secret-key");
+        let mut expected = Sha256::new();
+        expected.update(b"devin\0secret-key");
+        assert_eq!(pin, format!("{:x}", expected.finalize()));
+        assert!(!pin.contains("secret"));
+        assert_ne!(pin, account_pin("other-key"));
+        assert_eq!(account_pin(" secret-key "), pin);
+    }
+
+    #[test]
+    fn credentials_debug_redacts_the_api_key() {
+        let credentials = DevinCredentials {
+            windsurf_api_key: "secret-key".to_string(),
+            api_server_url: None,
+        };
+        let rendered = format!("{credentials:?}");
+        assert!(rendered.contains("[redacted]"));
+        assert!(!rendered.contains("secret-key"));
     }
 }

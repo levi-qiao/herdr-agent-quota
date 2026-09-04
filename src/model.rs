@@ -641,10 +641,10 @@ impl ProviderSnapshot {
     /// Return the quota windows for a pane's session.
     ///
     /// Context and model are session-local, so a known session never falls
-    /// back to the provider-level value. Quota is account-level: Grok and
-    /// Codex share one login's windows across every pane, and this map stays
-    /// empty for them. StatusLine providers fill the map; a known session
-    /// missing from a non-empty map must not borrow another account's
+    /// back to the provider-level value. Quota is account-level: Grok, Codex,
+    /// and Devin share one login's windows across every pane, and this map
+    /// stays empty for them. StatusLine providers fill the map; a known
+    /// session missing from a non-empty map must not borrow another account's
     /// numbers. The top-level `windows` field is used when Herdr has no
     /// session id, or when no session has reported windows yet (legacy cache).
     pub fn windows_for_session(&self, session_id: Option<&str>) -> &[UsageWindow] {

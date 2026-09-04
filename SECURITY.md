@@ -11,17 +11,20 @@ within 7 days.
 
 Useful context when judging impact:
 
-- **Reads** `~/.grok/auth.json` (login key only), Claude Code and Agy
-  statusLine JSON on stdin, and the local `codex app-server` JSON-RPC socket.
+- **Reads** `~/.grok/auth.json` (login key only), Devin CLI's
+  `credentials.toml` (API key only; never logged) and `config.json` (active
+  model), Claude Code and Agy statusLine JSON on stdin, and the local
+  `codex app-server` JSON-RPC socket.
 - **Writes** sanitized percentages to Herdr's plugin state directory,
   `~/.config/herdr/config.toml`, `~/.claude/settings.json`, and
   `~/.gemini/antigravity-cli/settings.json`. Active-turn coordination locks, a
   configurable poll interval, and a temporary stop marker are also kept in
   that plugin state directory. Older plugin-owned Grok hook files may be
   removed during migration; user-owned hook content is never replaced.
-- **Sends** one authenticated request to the Grok CLI billing endpoint. This is
-  the only outbound network call in the project. No usage data is uploaded
-  anywhere.
+- **Sends** authenticated quota requests using each CLI's own contract: Grok's
+  billing endpoint, OpenCode Go's usage endpoint when a pane resolves to it,
+  and Devin CLI's Connect RPC `GetUserStatus`. No usage data is uploaded
+  anywhere else. API keys are never placed in logs, errors, or pane metadata.
 - **Never** refreshes, rotates, or writes a provider credential, and never
   reads browser cookies or system keychains.
 

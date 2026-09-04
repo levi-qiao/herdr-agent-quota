@@ -9,12 +9,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - Devin CLI is a supported harness: `--agent devin`, its own settings row,
-  and a sidebar row with a Devin brand color. Quota comes from Cognition's
-  Connect RPC `GetUserStatus` endpoint, read from
-  `~/.local/share/devin/credentials.toml` (or `$DEVIN_CREDENTIALS_FILE`).
-  Daily and weekly remaining percentages are flipped to used; the plan name
-  is published as the model. The API key is never logged or included in
-  error messages.
+  and a sidebar row with a Devin brand color. Quota comes from the same
+  Connect RPC `GetUserStatus` contract the Devin CLI uses, with the key read
+  from `~/.local/share/devin/credentials.toml` (or `$DEVIN_CREDENTIALS_FILE`).
+  Daily and weekly remaining percentages are flipped to used. The active model
+  comes from `~/.config/devin/config.json` when present, otherwise the API
+  `planInfo.planName`. Snapshots are stamped with `sha256("devin\0" || key)`
+  so a credential swap cannot keep the previous account's last-good value.
+  The API key is never logged, stored, or included in error messages.
+- `configure --apply` rewrites the shared `ui.sidebar.agents.rows` array only
+  when it is empty, already managed by this plugin, or matches Herdr's default
+  `["state_icon", "agent"]` row. Rows from another plugin or the user are
+  left intact; `rows_by_agent`, managed `row_gap`, and keybindings are still
+  added or updated. `workspace` and `pane` tokens are not treated as a safe
+  default, so they cannot be silently replaced with `tab`.
+
+### Changed
+
+- Devin private orchestration under `.devin/` is not part of the published
+  tree. Local Devin state stays gitignored, matching `.agents/`.
 
 ### Fixed
 

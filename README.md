@@ -143,13 +143,15 @@ startup. Other missing integrations can be repaired directly:
 herdr integration install opencode
 herdr integration install pi
 herdr integration install omp
+herdr integration install devin
 ```
 
 ## Troubleshooting
 
 | Symptom | Check |
 | --- | --- |
-| OpenCode, Pi, or OMP is blank | Run `herdr integration status`, install the missing integration, then restart that pane. |
+| OpenCode, Pi, OMP, or Devin is blank | Run `herdr integration status`, install the missing integration, then restart that pane. |
+| Devin has no quota | Confirm `~/.local/share/devin/credentials.toml` (or `$DEVIN_CREDENTIALS_FILE`) contains `windsurf_api_key`. |
 | OMP has model/context but no quota | Run `omp usage --json --redact --provider <id>` and confirm a report exists. |
 | Herdr cannot execute OMP | Put `omp` on the server's `PATH`, or set `HERDR_AGENT_QUOTA_OMP_BIN`. |
 | Claude or Agy shows `N/A` | Send one turn so its statusLine emits a snapshot. |
@@ -163,6 +165,7 @@ herdr integration install omp
 - Events read only their named pane with `--source visible`; refresh and watch do not read panes.
 - Credentials remain in the owning CLI. Snapshots hold sanitized usage and hashed attribution only.
 - OMP's `agent.db` is never opened; quota comes only from OMP CLI output.
+- Devin quota uses the CLI's `GetUserStatus` contract. The API key is hashed for account identity and never stored.
 - Metadata is written only when a token changes and remains within Herdr's 16-token limit.
 
 ## Development

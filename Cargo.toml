@@ -8,9 +8,9 @@ license = "MIT"
 readme = "README.md"
 repository = "https://github.com/levi-qiao/herdr-agent-quota"
 homepage = "https://herdr.dev/plugins/"
-keywords = ["herdr", "claude-code", "codex", "quota", "usage", "devin"]
+keywords = ["herdr", "claude-code", "codex", "quota", "usage"]
 categories = ["command-line-utilities", "development-tools"]
-exclude = ["docs/screenshots/*", "docs/research/*", "docs/plans/*", ".github/*"]
+exclude = ["docs/screenshots/*", "docs/research/*", "docs/plans/*", ".github/*", ".devin/*"]
 
 [dependencies]
 anyhow = "1.0"

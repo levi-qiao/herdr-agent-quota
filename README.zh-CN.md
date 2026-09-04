@@ -34,7 +34,11 @@ cd herdr-agent-quota
 ./install.sh --agent claude,codex,omp
 ```
 
-可选值：`all`、`claude`、`codex`、`grok`、`agy`、`opencode`、`pi`、`omp`。
+`install.sh` 只会在共享的 `ui.sidebar.agents.rows` 为空、已由本插件管理、或等于
+Herdr 默认的 `["state_icon", "agent"]` 时改写它。其他插件或用户自己的行会保留，
+仍会为所选 agent 添加或更新 `rows_by_agent`。
+
+可选值：`all`、`claude`、`codex`、`grok`、`agy`、`opencode`、`pi`、`omp`、`devin`。
 
 ## 设置
 
@@ -60,7 +64,7 @@ Herdr 0.8 的原生 Settings tab 和右下角 `menu` 不提供插件扩展点，
 | Agent order | `default`、`quota` | 可把剩余额度最少的 Agent 排在最上面。 |
 | Low quota alert | `off`、5–50% | 首次跌破阈值时按供应商提醒一次。 |
 | Fields | topic、model、cache、TTL、context、短/长额度 | 控制可选侧栏维度。 |
-| Agents | 七个受支持 harness | 安装或移除 collector 和对应侧栏行。 |
+| Agents | 八个受支持 harness | 安装或移除 collector 和对应侧栏行。 |
 
 `↑/↓` 移动，`←/→` 或空格修改，`a` 应用，`q` 退出。`*` 表示修改尚未应用。
 
@@ -90,7 +94,7 @@ herdr plugin action invoke refresh --plugin herdr-agent-quota
 
 | 维度 | 来源与行为 |
 | --- | --- |
-| 供应商 / 模型 | 当前 pane 精确 session 的路由和模型。 |
+| 供应商 / 模型 | 当前 pane 精确 session 的路由和模型。Devin CLI 优先读 `~/.config/devin/config.json`（或 `$XDG_CONFIG_HOME/devin/config.json`）里的当前模型，缺失时回退到额度 API 的 `planInfo.planName`。 |
 | Topic | 当前可见的用户问题；滚出屏幕后保留已发布主题。 |
 | Context | 当前模型上下文窗口的已用比例。 |
 | Cache | 上游提供可信计数时显示 session 缓存命中率。 |
@@ -107,6 +111,7 @@ herdr plugin action invoke refresh --plugin herdr-agent-quota
 | OpenCode | OpenCode Go 5h + 7d；dashboard 含 30d | 精确本地 session 的 model/context |
 | Pi | 只有账户精确匹配时复用规范 Codex 额度 | model、context、cache、可支持的 TTL |
 | omp（oh-my-pi） | 原样展示 `omp usage` 归一化窗口，如 `5h`、`1d`、`7d`、`Monthly` | model、context、cache、可支持的 TTL |
+| Devin CLI | 1d + 7d | 当前模型来自 `~/.config/devin/config.json`，否则回退到 API `planInfo.planName`（例如 `Pro`） |
 
 OMP 是通用适配，不为内部每个供应商维护第二套规则。插件只调用
 `omp usage --json --provider <id>`，保留 OMP 给出的窗口标签，再用 session 的
@@ -132,13 +137,15 @@ herdr integration status
 herdr integration install opencode
 herdr integration install pi
 herdr integration install omp
+herdr integration install devin
 ```
 
 ## 常见问题
 
 | 现象 | 检查 |
 | --- | --- |
-| OpenCode、Pi 或 OMP 全空 | 运行 `herdr integration status`，安装缺失项并重启对应 pane。 |
+| OpenCode、Pi、OMP 或 Devin 全空 | 运行 `herdr integration status`，安装缺失项并重启对应 pane。 |
+| Devin 没有额度 | 确认 `~/.local/share/devin/credentials.toml`（或 `$DEVIN_CREDENTIALS_FILE`）含有 `windsurf_api_key`。 |
 | OMP 有 model/context 但无额度 | 运行 `omp usage --json --redact --provider <id>`，确认当前 provider 有 report。 |
 | Herdr 无法执行 OMP | 把 `omp` 放进 server 的 `PATH`，或设置 `HERDR_AGENT_QUOTA_OMP_BIN`。 |
 | Claude 或 Agy 显示 `N/A` | 发送一轮消息，让 statusLine 产生 snapshot。 |
@@ -152,6 +159,7 @@ herdr integration install omp
 - event 只用 `--source visible` 读取点名的 pane；refresh 和 watcher 不读 pane。
 - 凭据留在对应 CLI；snapshot 只存脱敏用量和哈希账户归属。
 - 永远不打开 OMP 的 `agent.db`；额度只来自 OMP CLI 输出。
+- Devin 额度走 CLI 自己的 `GetUserStatus` 合同；API key 只用于哈希账户身份，不会写入 snapshot。
 - token 真正变化时才写 metadata，并遵守 Herdr 16-token 上限。
 
 ## 开发检查
@@ -168,4 +176,4 @@ cargo build --release --locked
 
 ## 许可证
 
-MIT。本项目与 Herdr、OpenAI、Anthropic、xAI、Google 或 OpenCode 无隶属关系。
+MIT。本项目与 Herdr、OpenAI、Anthropic、xAI、Google、OpenCode 或 Cognition 无隶属关系。

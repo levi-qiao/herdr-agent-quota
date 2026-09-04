@@ -647,11 +647,8 @@ fn current_account_gate(provider: Provider) -> (Option<String>, Option<u64>) {
             (account_id, mtime)
         }
         Provider::Codex => (codex::current_account_id(), codex::auth_mtime_unix()),
-        Provider::Claude
-        | Provider::Agy
-        | Provider::OpenCodeGo
-        | Provider::Omp
-        | Provider::Devin => (None, None),
+        Provider::Devin => (devin::current_account_id(), devin::auth_mtime_unix()),
+        Provider::Claude | Provider::Agy | Provider::OpenCodeGo | Provider::Omp => (None, None),
     }
 }
 

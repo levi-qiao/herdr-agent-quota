@@ -103,9 +103,9 @@ writes a stop marker so a detached watcher cannot survive a restore.
 ## omp's quota does not come from a provider endpoint
 
 Every other collector either reads a local credential and calls the provider
-(`codex`, `grok`, `opencode_go`) or waits for a statusLine hook (`claude`,
-`agy`). omp is the exception: it keeps its own credential store and ships its
-own usage layer, so `src/providers/omp.rs` shells out to
+(`codex`, `grok`, `opencode_go`, `devin`) or waits for a statusLine hook
+(`claude`, `agy`). omp is the exception: it keeps its own credential store and
+ships its own usage layer, so `src/providers/omp.rs` shells out to
 `omp usage --json --provider <id>` and reads the answer.
 
 Three properties hold that together, and each one is load bearing:
