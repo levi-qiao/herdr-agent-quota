@@ -54,6 +54,7 @@ struct DevinCredentials {
 pub fn fetch_for_sessions(_session_ids: &[String]) -> Result<ProviderSnapshot> {
     let path = auth_path().context("resolve Devin credentials path")?;
     let credentials = read_credentials(&path).map_err(anyhow::Error::from)?;
+    let active_model = active_model_from_config();
     let url = build_url(credentials.api_server_url.as_deref())?;
     let body = serde_json::json!({
         "metadata": {
@@ -78,7 +79,8 @@ pub fn fetch_for_sessions(_session_ids: &[String]) -> Result<ProviderSnapshot> {
     let value: Value = response
         .into_json()
         .context("decode Devin GetUserStatus response")?;
-    parse_user_status(&value, CacheStore::now_unix()).map_err(anyhow::Error::from)
+    parse_user_status(&value, active_model.as_deref(), CacheStore::now_unix())
+        .map_err(anyhow::Error::from)
 }
 
 /// Resolve the credentials file path.
@@ -102,6 +104,43 @@ fn devin_data_dir() -> Result<PathBuf> {
     }
     let home = std::env::var_os("HOME").context("HOME is not set")?;
     Ok(PathBuf::from(home).join(".local/share/devin"))
+}
+
+fn devin_config_dir() -> Result<PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+        let xdg = PathBuf::from(xdg);
+        if !xdg.as_os_str().is_empty() {
+            return Ok(xdg.join("devin"));
+        }
+    }
+    let home = std::env::var_os("HOME").context("HOME is not set")?;
+    Ok(PathBuf::from(home).join(".config/devin"))
+}
+
+/// Devin CLI's `config.json`.
+#[derive(Debug, Clone, Deserialize)]
+struct DevinConfig {
+    agent: AgentConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AgentConfig {
+    model: String,
+}
+
+/// Read the active model from `~/.config/devin/config.json` (or
+/// `$XDG_CONFIG_HOME/devin/config.json`). Returns `None` if the file is
+/// missing or malformed so that the quota API's `planName` is used as a
+/// fallback.
+fn active_model_from_config() -> Option<String> {
+    let path = devin_config_dir().ok()?.join("config.json");
+    let text = fs::read_to_string(&path).ok()?;
+    let config: DevinConfig = serde_json::from_str(&text).ok()?;
+    let model = config.agent.model.trim();
+    if model.is_empty() {
+        return None;
+    }
+    Some(model.to_string())
 }
 
 fn read_credentials(path: &Path) -> std::result::Result<DevinCredentials, ProviderError> {
@@ -134,9 +173,11 @@ fn map_request_error(error: &ureq::Error) -> ProviderError {
 /// The response carries remaining percentages for daily and weekly windows.
 /// Those are flipped to used: `used = 100 - remaining`. Reset timestamps are
 /// strings of Unix seconds. Missing or malformed fields yield no window
-/// rather than a guessed number.
+/// rather than a guessed number. `active_model` is preferred for the model
+/// field; if it is `None`, the API's `planInfo.planName` is used instead.
 pub fn parse_user_status(
     value: &Value,
+    active_model: Option<&str>,
     now: u64,
 ) -> std::result::Result<ProviderSnapshot, ProviderError> {
     let plan_status = value
@@ -162,11 +203,13 @@ pub fn parse_user_status(
     }
 
     let mut snapshot = ProviderSnapshot::new(Provider::Devin, windows, now);
-    snapshot.model = plan_status
-        .get("planInfo")
-        .and_then(|info| info.get("planName"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    snapshot.model = active_model.map(str::to_string).or_else(|| {
+        plan_status
+            .get("planInfo")
+            .and_then(|info| info.get("planName"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    });
     Ok(snapshot)
 }
 
@@ -240,7 +283,7 @@ mod tests {
 
     #[test]
     fn pro_fixture_flips_remaining_to_used() {
-        let snapshot = parse_user_status(&pro_fixture(), 1).expect("snapshot");
+        let snapshot = parse_user_status(&pro_fixture(), None, 1).expect("snapshot");
         assert_eq!(snapshot.provider, Provider::Devin);
         assert_eq!(snapshot.model.as_deref(), Some("Pro"));
 
@@ -275,22 +318,35 @@ mod tests {
                 }
             }
         });
-        let snapshot = parse_user_status(&value, 1).expect("snapshot");
+        let snapshot = parse_user_status(&value, None, 1).expect("snapshot");
         assert!(snapshot.window(WindowKind::FiveHour).is_none());
         let weekly = snapshot.window(WindowKind::Weekly).expect("weekly");
         assert_eq!(weekly.used_percent, 50.0);
     }
 
     #[test]
+    fn active_model_overrides_plan_name() {
+        let snapshot =
+            parse_user_status(&pro_fixture(), Some("swe-1-7-medium"), 1).expect("snapshot");
+        assert_eq!(snapshot.model.as_deref(), Some("swe-1-7-medium"));
+    }
+
+    #[test]
+    fn plan_name_is_used_when_active_model_is_absent() {
+        let snapshot = parse_user_status(&pro_fixture(), None, 1).expect("snapshot");
+        assert_eq!(snapshot.model.as_deref(), Some("Pro"));
+    }
+
+    #[test]
     fn missing_all_windows_is_an_error() {
         let value = json!({"userStatus": {"planStatus": {}}});
-        assert!(parse_user_status(&value, 1).is_err());
+        assert!(parse_user_status(&value, None, 1).is_err());
     }
 
     #[test]
     fn missing_plan_status_is_an_error() {
         let value = json!({"userStatus": {}});
-        assert!(parse_user_status(&value, 1).is_err());
+        assert!(parse_user_status(&value, None, 1).is_err());
     }
 
     #[test]
@@ -303,7 +359,7 @@ mod tests {
                 }
             }
         });
-        assert!(parse_user_status(&value, 1).is_err());
+        assert!(parse_user_status(&value, None, 1).is_err());
     }
 
     #[test]
@@ -392,7 +448,7 @@ mod tests {
                 }
             }
         });
-        assert!(parse_user_status(&value, 1).is_err());
+        assert!(parse_user_status(&value, None, 1).is_err());
     }
 
     #[test]

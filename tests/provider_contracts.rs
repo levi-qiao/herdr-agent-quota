@@ -177,7 +177,7 @@ fn omp_reports_nothing_for_an_absent_provider() {
 #[test]
 fn devin_fixture_flips_remaining_to_used_for_daily_and_weekly() {
     let value = fixture(include_str!("fixtures/devin/getuserstatus-pro.json"));
-    let snapshot = devin::parse_user_status(&value, 1).expect("snapshot");
+    let snapshot = devin::parse_user_status(&value, None, 1).expect("snapshot");
     assert_eq!(snapshot.windows.len(), 2);
 
     let daily = snapshot.window(WindowKind::FiveHour).expect("daily window");
