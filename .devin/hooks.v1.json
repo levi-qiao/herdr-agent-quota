@@ -1,0 +1,24 @@
+{
+  "PostToolUse": [
+    {
+      "matcher": "exec",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 .devin/hooks/log_exec.py"
+        }
+      ]
+    }
+  ],
+  "PermissionRequest": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 .devin/hooks/log_permissions.py"
+        }
+      ]
+    }
+  ]
+}

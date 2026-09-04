@@ -1,0 +1,18 @@
+{
+  "_comment": "Central model configuration for all subagent profiles. Run: python3 .devin/scripts/update_models.py to apply.",
+  "_comment2": "Use empty string \"\" for an agent to use the _default_model instead of deleting the key. Example: \"qa-ci-agent\": \"\" means qa-ci-agent uses the default.",
+  "_default_model": "swe-1.6",
+  "agents": {
+    "architecture-reviewer": "",
+    "coordinator": "",
+    "documentation-agent": "",
+    "git-workflow": "",
+    "planner": "",
+    "qa-ci-agent": "",
+    "rust-developer": "glm-5-2-high",
+    "rust-reviewer": "glm-5-2-high",
+    "security-auditor": "",
+    "swe-check": "",
+    "testing-guardian": ""
+  }
+}
