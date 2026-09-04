@@ -15,10 +15,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Daily and weekly remaining percentages are flipped to used. The configured
   default model comes from `~/.config/devin/config.json` `agent.model` when
   present, then mapped through local `devin-models.json` for a display name.
-  That value is the CLI default, not a session's `/model` selection, so it is
-  published as `snapshot.model` rather than `session_models`. A Devin pane
-  with a Herdr session id still displays that configured default until real
-  session-model evidence exists. The API
+  New sessions that never run `/model` use this same value. It is published
+  as `snapshot.model` and shown on every Devin pane. The API
   `planInfo.planName` is the subscription plan and is not used as a model.
   A missing or malformed models catalog leaves the raw id and does not fail
   the quota fetch.

@@ -557,10 +557,8 @@ pub struct ProviderSnapshot {
     ///
     /// StatusLine providers also keep the per-session value below so panes
     /// running the same provider can be distinguished from one another.
-    /// Devin stores the CLI configured/default model here (`agent.model`).
-    /// That is the only local model source we have verified; a pane with a
-    /// Herdr session id still uses it as a display fallback until real
-    /// session-model evidence exists. It is never copied into `session_models`.
+    /// Devin stores the CLI `config.json` model here. Panes read it through
+    /// [`Self::model_for_session`] when they have no per-session entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default)]
@@ -618,13 +616,11 @@ impl ProviderSnapshot {
 
     /// Return the model for a pane's session.
     ///
-    /// StatusLine and local-file providers never fall back to provider-level
-    /// data for a known session, because that value may belong to another pane.
-    /// Devin is the exception: `snapshot.model` is the CLI configured/default
-    /// from `config.json`, not "the last pane that reported". Herdr's official
-    /// Devin integration gives us a session id for resume, but we have no
-    /// verified per-session model file, so the configured default is the
-    /// display fallback until `session_models` has an exact hit.
+    /// A known Claude/Agy/Codex/Grok session never borrows the provider-level
+    /// value, because that may belong to another pane. Devin's `snapshot.model`
+    /// is the CLI `config.json` default, so a pane without a `session_models`
+    /// entry still shows it — including a brand-new session that never ran
+    /// `/model`.
     pub fn model_for_session(&self, session_id: Option<&str>) -> Option<&str> {
         let Some(session_id) = session_id else {
             return self.model.as_deref();
@@ -1322,9 +1318,10 @@ mod tests {
     }
 
     #[test]
-    fn devin_known_session_falls_back_to_configured_default() {
+    fn devin_new_session_without_model_switch_uses_config_default() {
         let mut snapshot = ProviderSnapshot::new(Provider::Devin, vec![], 0)
             .with_model(Some("SWE-1.7 Medium".to_string()));
+        // A brand-new Devin session has a Herdr session id but no /model entry.
         assert_eq!(
             snapshot.model_for_session(Some("session-a")),
             Some("SWE-1.7 Medium")

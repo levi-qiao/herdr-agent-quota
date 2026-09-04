@@ -15,22 +15,15 @@
 //! `sha256("devin\0" || key)` so a credential swap cannot keep the previous
 //! account's last-good snapshot.
 //!
-//! Model fields are scoped, not interchangeable:
+//! Model comes from Devin's own files, not from the quota API:
 //!
-//! - Herdr's official Devin integration reports a native session id (used for
-//!   `devin --resume`). That id is real. It is **not** a model name.
-//! - `snapshot.model` is the CLI **configured/default** model from
-//!   `~/.config/devin/config.json` `agent.model` (officially "Default AI
-//!   model"). Issue #53's live `config.json` is the same file. A session can
-//!   still switch with `/model`; we have not live-tested whether that write
-//!   goes back to `config.json`, so this is a display fallback, not per-session
-//!   evidence, and it is never copied into `session_models`.
-//! - `session_models` stays empty until a Devin session file exposes
-//!   per-session evidence that we can match to Herdr's session id.
-//! - `planInfo.planName` is the subscription plan (`Pro`), not a model.
-//! - `devin-models.json` is display metadata only: raw id → `variant.label`.
-//!   A missing, oversized, or malformed catalog leaves the raw id in place
-//!   and never fails the quota fetch.
+//! - `~/.config/devin/config.json` `agent.model` is the CLI default / current
+//!   configured model (Issue #53). New sessions that never run `/model` use
+//!   this value. It is published as `snapshot.model` and shown on every Devin
+//!   pane.
+//! - `devin-models.json` maps that id to a display label. Missing or malformed
+//!   catalog leaves the raw id; quota fetch is unaffected.
+//! - `planInfo.planName` is the subscription plan, not a model.
 
 use crate::cache::CacheStore;
 use crate::model::{Provider, ProviderSnapshot, ResetAt, UsageWindow, WindowKind};
@@ -82,9 +75,9 @@ impl std::fmt::Debug for DevinCredentials {
     }
 }
 
-/// Fetch Devin CLI's quota. The CLI configured/default model is provider-level,
-/// so it is published as `snapshot.model`, not as per-session evidence.
-pub fn fetch_for_sessions(session_ids: &[String]) -> Result<ProviderSnapshot> {
+/// Fetch Devin CLI's quota. The model is the CLI `config.json` default, shared
+/// across panes, so it is published as `snapshot.model`.
+pub fn fetch_for_sessions(_session_ids: &[String]) -> Result<ProviderSnapshot> {
     let path = auth_path().context("resolve Devin credentials path")?;
     let credentials = read_credentials(&path).map_err(anyhow::Error::from)?;
     let account_id = account_pin(&credentials.windsurf_api_key);
@@ -118,23 +111,16 @@ pub fn fetch_for_sessions(session_ids: &[String]) -> Result<ProviderSnapshot> {
     apply_configured_model(
         &mut snapshot,
         configured_model.as_deref(),
-        session_ids,
         load_models_catalog().as_ref(),
     );
     Ok(snapshot.with_account_id(Some(account_id)))
 }
 
-/// `config.json` names the CLI's configured/default model, not each session's
-/// `/model` selection. Keep it on `snapshot.model` and leave `session_models`
-/// empty. Display may fall back to this value for a Herdr session id (see
-/// `ProviderSnapshot::model_for_session`); that fallback must not be written
-/// here as if it were per-session evidence. `session_ids` is accepted so
-/// callers cannot "forget" the sessions they asked about; they are never
-/// written here.
+/// Issue #53: `config.json` `agent.model` is Devin's model. Map it through the
+/// local catalog when possible, then store it on `snapshot.model`.
 fn apply_configured_model(
     snapshot: &mut ProviderSnapshot,
     configured_model: Option<&str>,
-    _session_ids: &[String],
     catalog: Option<&Value>,
 ) {
     let Some(model_id) = configured_model.map(str::trim).filter(|id| !id.is_empty()) else {
@@ -198,12 +184,8 @@ fn devin_config_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".config/devin"))
 }
 
-/// Read the configured/default model from `~/.config/devin/config.json` (or
-/// `$XDG_CONFIG_HOME/devin/config.json`). Official docs call `agent.model`
-/// the user-wide **Default AI model**; `/model` can still change a running
-/// session. Returns `None` if the file is missing, commented JSON cannot be
-/// parsed, `agent.model` is absent, or the string is empty. Never falls back
-/// to the quota API's `planName`.
+/// Read `agent.model` from `~/.config/devin/config.json` (or `$XDG_CONFIG_HOME`).
+/// Missing, commented-unparseable, or empty values yield `None`.
 fn configured_model_from_config() -> Option<String> {
     configured_model_from_path(&devin_config_dir().ok()?.join("config.json"))
 }
@@ -224,18 +206,8 @@ fn configured_model_from_text(text: &str) -> Option<String> {
     Some(model.to_string())
 }
 
-/// Local Devin model catalog. Official CLI data, not a hardcoded table.
-///
-/// Search order, first readable file wins:
-/// 1. `DEVIN_MODELS_FILE`
-/// 2. `$XDG_CONFIG_HOME/devin/devin-models.json` or `~/.config/devin/devin-models.json`
-/// 3. `$XDG_DATA_HOME/devin/devin-models.json` or `~/.local/share/devin/devin-models.json`
-/// 4. `$XDG_DATA_HOME/devin/cli/devin-models.json` or `~/.local/share/devin/cli/devin-models.json`
-///
-/// (4) sits beside the CLI session database path used by third-party
-/// inspectors; it is still only opened if a file with this exact name exists.
-/// Missing, oversized, or malformed files are skipped. Quota fetch never
-/// depends on this catalog.
+/// Local `devin-models.json` catalog from Issue #53. First readable file wins:
+/// `DEVIN_MODELS_FILE`, then the Devin config dir, data dir, and `data/cli`.
 fn load_models_catalog() -> Option<Value> {
     for path in models_catalog_candidates() {
         if let Some(catalog) = load_models_catalog_from_path(&path) {
@@ -274,12 +246,6 @@ fn load_models_catalog_from_path(path: &Path) -> Option<Value> {
     Some(value)
 }
 
-/// Map a raw Devin model id onto the catalog's friendly label.
-///
-/// Lookup is exact, then case-insensitive, against `variant.model_uid`,
-/// `variant.label`, family `aliases`, `slug`, and `family_uid`. A family-level
-/// hit returns `family_label` rather than picking a "latest" variant. No match
-/// returns the raw id. Catalog failure is indistinguishable from no match.
 fn display_name_for_model(model_id: &str, catalog: Option<&Value>) -> String {
     let trimmed = model_id.trim();
     catalog
@@ -288,36 +254,31 @@ fn display_name_for_model(model_id: &str, catalog: Option<&Value>) -> String {
 }
 
 fn lookup_model_label(catalog: &Value, model_id: &str) -> Option<String> {
-    if model_id.is_empty() {
-        return None;
-    }
     let families = catalog.get("families")?.as_array()?;
-    lookup_variant_uid(families, model_id, true)
-        .or_else(|| lookup_variant_uid(families, model_id, false))
-        .or_else(|| lookup_variant_label(families, model_id, true))
-        .or_else(|| lookup_variant_label(families, model_id, false))
-        .or_else(|| lookup_family_label(families, model_id, true))
-        .or_else(|| lookup_family_label(families, model_id, false))
+    variant_label(families, model_id, true)
+        .or_else(|| variant_label(families, model_id, false))
+        .or_else(|| family_label(families, model_id, true))
+        .or_else(|| family_label(families, model_id, false))
 }
 
-fn lookup_variant_uid(families: &[Value], model_id: &str, exact: bool) -> Option<String> {
+fn json_str(value: Option<&Value>) -> Option<&str> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+}
+
+fn variant_label(families: &[Value], model_id: &str, exact: bool) -> Option<String> {
     for family in families {
         let Some(variants) = family.get("variants").and_then(Value::as_array) else {
             continue;
         };
         for variant in variants {
-            if !eq_model_key(
-                variant.get("model_uid").and_then(Value::as_str),
-                model_id,
-                exact,
-            ) {
+            let Some(label) = json_str(variant.get("label")) else {
                 continue;
-            }
-            if let Some(label) = variant
-                .get("label")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|label| !label.is_empty())
+            };
+            if eq_model_key(json_str(variant.get("model_uid")), model_id, exact)
+                || eq_model_key(Some(label), model_id, exact)
             {
                 return Some(label.to_string());
             }
@@ -326,51 +287,21 @@ fn lookup_variant_uid(families: &[Value], model_id: &str, exact: bool) -> Option
     None
 }
 
-fn lookup_variant_label(families: &[Value], model_id: &str, exact: bool) -> Option<String> {
+fn family_label(families: &[Value], model_id: &str, exact: bool) -> Option<String> {
     for family in families {
-        let Some(variants) = family.get("variants").and_then(Value::as_array) else {
-            continue;
-        };
-        for variant in variants {
-            let Some(label) = variant
-                .get("label")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|label| !label.is_empty())
-            else {
-                continue;
-            };
-            if eq_model_key(Some(label), model_id, exact) {
-                return Some(label.to_string());
-            }
-        }
-    }
-    None
-}
-
-fn lookup_family_label(families: &[Value], model_id: &str, exact: bool) -> Option<String> {
-    for family in families {
-        let slug = family.get("slug").and_then(Value::as_str);
-        let family_uid = family.get("family_uid").and_then(Value::as_str);
         let mut aliases = family
             .get("aliases")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .filter_map(Value::as_str);
-        let hit = eq_model_key(slug, model_id, exact)
-            || eq_model_key(family_uid, model_id, exact)
+            .filter_map(|value| json_str(Some(value)));
+        let hit = eq_model_key(json_str(family.get("slug")), model_id, exact)
+            || eq_model_key(json_str(family.get("family_uid")), model_id, exact)
             || aliases.any(|alias| eq_model_key(Some(alias), model_id, exact));
-        if !hit {
-            continue;
-        }
-        if let Some(label) = family
-            .get("family_label")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|label| !label.is_empty())
-        {
-            return Some(label.to_string());
+        if hit {
+            if let Some(label) = json_str(family.get("family_label")) {
+                return Some(label.to_string());
+            }
         }
     }
     None
@@ -739,24 +670,16 @@ mod tests {
         apply_configured_model(
             &mut snapshot,
             Some("swe-1-7-medium"),
-            &["session-a".to_string(), "session-b".to_string()],
             Some(&catalog_fixture()),
         );
         assert_eq!(snapshot.model.as_deref(), Some("SWE-1.7 Medium"));
         assert!(snapshot.session_models.is_empty());
-        assert!(!snapshot.session_models.contains_key("session-a"));
-        assert!(!snapshot.session_models.contains_key("session-b"));
     }
 
     #[test]
-    fn configured_model_without_catalog_stays_raw_and_off_sessions() {
+    fn configured_model_without_catalog_stays_raw() {
         let mut snapshot = parse_user_status(&pro_fixture(), 1).expect("snapshot");
-        apply_configured_model(
-            &mut snapshot,
-            Some("swe-1-7-medium"),
-            &["session-a".to_string()],
-            None,
-        );
+        apply_configured_model(&mut snapshot, Some("swe-1-7-medium"), None);
         assert_eq!(snapshot.model.as_deref(), Some("swe-1-7-medium"));
         assert!(snapshot.session_models.is_empty());
     }
@@ -764,7 +687,7 @@ mod tests {
     #[test]
     fn applying_no_configured_model_leaves_plan_name_out() {
         let mut snapshot = parse_user_status(&pro_fixture(), 1).expect("snapshot");
-        apply_configured_model(&mut snapshot, None, &["session-a".to_string()], None);
+        apply_configured_model(&mut snapshot, None, None);
         assert_eq!(snapshot.model, None);
         assert!(snapshot.session_models.is_empty());
     }
