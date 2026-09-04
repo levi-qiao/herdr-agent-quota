@@ -64,7 +64,7 @@ const CONFIG_PRESENCE_FILE: &str = "herdr-config.original.present";
 const QUOTA_SAFE_COLOR: &str = "#82d978";
 const QUOTA_WARNING_COLOR: &str = "#e4b957";
 const QUOTA_DANGER_COLOR: &str = "#f16f7e";
-const PROVIDER_STYLES: [(Harness, &str, Option<&str>, Option<&str>); 7] = [
+const PROVIDER_STYLES: [(Harness, &str, Option<&str>, Option<&str>); 8] = [
     (Harness::Claude, "claude", Some("#e88461"), Some("#f0a080")),
     (Harness::Codex, "codex", Some("#c4d7f5"), Some("#aab9d0")),
     (Harness::Grok, "grok", Some("#d5d5d8"), Some("#acb0b7")),
@@ -74,6 +74,7 @@ const PROVIDER_STYLES: [(Harness, &str, Option<&str>, Option<&str>); 7] = [
     (Harness::OpenCode, "opencode", None, None),
     (Harness::Pi, "pi", Some("#d4a0c8"), None),
     (Harness::Omp, "omp", Some("#bba3e8"), None),
+    (Harness::Devin, "devin", Some("#6c5ce7"), None),
 ];
 const THEME_SELECTION_KEYS: [&str; 2] = ["selection_bg", "active_row_bg"];
 

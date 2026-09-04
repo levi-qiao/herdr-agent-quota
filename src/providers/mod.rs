@@ -1,6 +1,7 @@
 pub mod agy;
 pub mod claude;
 pub mod codex;
+pub mod devin;
 pub mod grok;
 pub mod omp;
 pub mod opencode_go;

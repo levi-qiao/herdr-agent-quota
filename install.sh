@@ -14,8 +14,8 @@
 #   ./install.sh --low-quota-alert 10
 #
 # --agent installs only the agents you name (all, claude, codex, grok, agy,
-# opencode, pi, omp). Anything you leave out gets no sidebar row, no statusLine
-# entry and no hook file. The default is every supported agent.
+# opencode, pi, omp, devin). Anything you leave out gets no sidebar row, no
+# statusLine entry and no hook file. The default is every supported agent.
 #
 # --sidebar-layout packed (default) joins cache/TTL and 5h/7d on one row.
 # stacked puts provider, model, cache, TTL, context, 5h, and 7d on their own rows.

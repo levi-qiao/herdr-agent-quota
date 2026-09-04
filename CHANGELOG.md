@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Devin CLI is a supported harness: `--agent devin`, its own settings row,
+  and a sidebar row with a Devin brand color. Quota comes from Cognition's
+  Connect RPC `GetUserStatus` endpoint, read from
+  `~/.local/share/devin/credentials.toml` (or `$DEVIN_CREDENTIALS_FILE`).
+  Daily and weekly remaining percentages are flipped to used; the plan name
+  is published as the model. The API key is never logged or included in
+  error messages.
+
 ### Fixed
 
 - Sidebar tab names, topics, cache details, context, and unknown quota states

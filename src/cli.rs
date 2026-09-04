@@ -73,9 +73,9 @@ pub enum Command {
         /// configuration. Without `--agent` this removes everything.
         #[arg(long, conflicts_with_all = ["check", "apply"])]
         uninstall: bool,
-        /// Agents to configure: all, claude, codex, grok, agy, opencode, pi.
-        /// Repeat or comma-separate to pick several. Defaults to every
-        /// supported agent (or $HERDR_AGENT_QUOTA_AGENTS when set), so
+        /// Agents to configure: all, claude, codex, grok, agy, opencode, pi,
+        /// omp, devin. Repeat or comma-separate to pick several. Defaults to
+        /// every supported agent (or $HERDR_AGENT_QUOTA_AGENTS when set), so
         /// `--uninstall` alone still removes everything this plugin installed.
         #[arg(long, value_delimiter = ',')]
         agent: Vec<AgentSelection>,
@@ -135,6 +135,7 @@ pub enum ProviderSelection {
     Grok,
     Claude,
     Agy,
+    Devin,
 }
 
 impl ProviderSelection {
@@ -145,6 +146,7 @@ impl ProviderSelection {
             Self::Grok => vec![Provider::Grok],
             Self::Claude => vec![Provider::Claude],
             Self::Agy => vec![Provider::Agy],
+            Self::Devin => vec![Provider::Devin],
         }
     }
 }
@@ -163,6 +165,7 @@ pub enum AgentSelection {
     Opencode,
     Pi,
     Omp,
+    Devin,
 }
 
 /// How quota tokens are arranged in Herdr's agent sidebar.
@@ -663,7 +666,7 @@ impl SidebarLayout {
 
 impl AgentSelection {
     /// Every agent `configure` supports, in the order they are reported.
-    pub const SUPPORTED: [Harness; 7] = [
+    pub const SUPPORTED: [Harness; 8] = [
         Harness::Claude,
         Harness::Codex,
         Harness::Grok,
@@ -671,6 +674,7 @@ impl AgentSelection {
         Harness::OpenCode,
         Harness::Pi,
         Harness::Omp,
+        Harness::Devin,
     ];
 
     fn harness(self) -> Option<Harness> {
@@ -683,6 +687,7 @@ impl AgentSelection {
             Self::Opencode => Some(Harness::OpenCode),
             Self::Pi => Some(Harness::Pi),
             Self::Omp => Some(Harness::Omp),
+            Self::Devin => Some(Harness::Devin),
         }
     }
 
@@ -729,6 +734,7 @@ impl AgentSelection {
             "opencode" => Some(Self::Opencode),
             "pi" => Some(Self::Pi),
             "omp" => Some(Self::Omp),
+            "devin" => Some(Self::Devin),
             _ => None,
         }
     }

@@ -1,0 +1,18 @@
+{
+  "userStatus": {
+    "name": "Test User",
+    "email": "redacted@example.com",
+    "teamsTier": "TEAMS_TIER_DEVIN_PRO",
+    "planStatus": {
+      "planInfo": {
+        "planName": "Pro",
+        "billingStrategy": "BILLING_STRATEGY_QUOTA"
+      },
+      "dailyQuotaRemainingPercent": 99,
+      "weeklyQuotaRemainingPercent": 34,
+      "dailyQuotaResetAtUnix": "1788508800",
+      "weeklyQuotaResetAtUnix": "1788681600",
+      "availablePromptCredits": -1
+    }
+  }
+}
