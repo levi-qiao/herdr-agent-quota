@@ -1,0 +1,34 @@
+{
+  "families": [
+    {
+      "family_label": "SWE-1.7",
+      "family_uid": "swe-1-7",
+      "slug": "swe",
+      "aliases": ["swe-1.7", "swe-1-7"],
+      "variants": [
+        {
+          "model_uid": "swe-1-7-medium",
+          "label": "SWE-1.7 Medium",
+          "is_new": false,
+          "is_beta": false,
+          "cost_tier": "standard",
+          "description": "Balanced SWE-1.7 variant"
+        }
+      ]
+    },
+    {
+      "family_label": "Claude Opus",
+      "family_uid": "claude-opus",
+      "slug": "opus",
+      "aliases": ["claude-opus"],
+      "variants": [
+        {
+          "model_uid": "claude-opus-4-6",
+          "label": "Opus 4.6",
+          "is_new": true,
+          "is_beta": false
+        }
+      ]
+    }
+  ]
+}

@@ -557,6 +557,9 @@ pub struct ProviderSnapshot {
     ///
     /// StatusLine providers also keep the per-session value below so panes
     /// running the same provider can be distinguished from one another.
+    /// Devin stores the CLI configured/default model here (`agent.model`);
+    /// it is not a session's `/model` selection and is never copied into
+    /// `session_models`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default)]

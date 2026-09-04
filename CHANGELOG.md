@@ -12,10 +12,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and a sidebar row with a Devin brand color. Quota comes from the same
   Connect RPC `GetUserStatus` contract the Devin CLI uses, with the key read
   from `~/.local/share/devin/credentials.toml` (or `$DEVIN_CREDENTIALS_FILE`).
-  Daily and weekly remaining percentages are flipped to used. The active model
-  comes from `~/.config/devin/config.json` when present, otherwise the API
-  `planInfo.planName`. That name is the CLI's current default, not per-session
-  evidence, so it is published as `snapshot.model` rather than `session_models`.
+  Daily and weekly remaining percentages are flipped to used. The configured
+  default model comes from `~/.config/devin/config.json` `agent.model` when
+  present, then mapped through local `devin-models.json` for a display name.
+  That value is the CLI default, not a session's `/model` selection, so it is
+  published as `snapshot.model` rather than `session_models`. The API
+  `planInfo.planName` is the subscription plan and is not used as a model.
+  A missing or malformed models catalog leaves the raw id and does not fail
+  the quota fetch.
   Snapshots are stamped with `sha256("devin\0" || key)`
   so a credential swap cannot keep the previous account's last-good value.
   The API key is never logged, stored, or included in error messages.

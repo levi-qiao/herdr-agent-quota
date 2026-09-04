@@ -111,7 +111,7 @@ herdr plugin action invoke refresh --plugin herdr-agent-quota
 | OpenCode | OpenCode Go 5h + 7d；dashboard 含 30d | 精确本地 session 的 model/context |
 | Pi | 只有账户精确匹配时复用规范 Codex 额度 | model、context、cache、可支持的 TTL |
 | omp（oh-my-pi） | 原样展示 `omp usage` 归一化窗口，如 `5h`、`1d`、`7d`、`Monthly` | model、context、cache、可支持的 TTL |
-| Devin CLI | 1d + 7d | CLI 当前配置模型来自 `~/.config/devin/config.json`，否则回退到 API `planInfo.planName`（例如 `Pro`）。没有 session 级证据时不按 session 归属 |
+| Devin CLI | 1d + 7d | CLI 配置的默认模型来自 `~/.config/devin/config.json` 的 `agent.model`，若本地有 `devin-models.json` 则映射为显示名。这不是 session 模型，也不会使用 API 的 `planName`。 |
 
 OMP 是通用适配，不为内部每个供应商维护第二套规则。插件只调用
 `omp usage --json --provider <id>`，保留 OMP 给出的窗口标签，再用 session 的
