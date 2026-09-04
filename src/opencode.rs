@@ -102,7 +102,7 @@ fn opencode_cache_dir() -> Option<PathBuf> {
     {
         use directories::BaseDirs;
         let dirs = BaseDirs::new()?;
-        return Some(dirs.cache_dir().join("opencode"));
+        Some(dirs.cache_dir().join("opencode"))
     }
 }
 
@@ -119,7 +119,7 @@ fn opencode_data_dir() -> Option<PathBuf> {
     {
         use directories::BaseDirs;
         let dirs = BaseDirs::new()?;
-        return Some(dirs.data_local_dir().join("opencode"));
+        Some(dirs.data_local_dir().join("opencode"))
     }
 }
 

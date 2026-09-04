@@ -25,7 +25,7 @@ fn install_herdr_stub(state: &Path, agent_list: &str) -> (PathBuf, PathBuf) {
         ),
     )
     .unwrap();
-    let mut permissions = fs::metadata(&executable).unwrap().permissions();
+    let permissions = fs::metadata(&executable).unwrap().permissions();
     #[cfg(unix)]
     permissions.set_mode(0o755);
     fs::set_permissions(&executable, permissions).unwrap();
@@ -690,7 +690,7 @@ fn quota_refresh_does_not_report_metadata_to_a_scrolled_pane() {
         ),
     )
     .unwrap();
-    let mut permissions = fs::metadata(&herdr).unwrap().permissions();
+    let permissions = fs::metadata(&herdr).unwrap().permissions();
     #[cfg(unix)]
     permissions.set_mode(0o755);
     fs::set_permissions(&herdr, permissions).unwrap();
@@ -722,7 +722,7 @@ fn focus_refreshes_only_the_selected_provider_without_reading_the_pane() {
         ),
     )
     .unwrap();
-    let mut permissions = fs::metadata(&herdr).unwrap().permissions();
+    let permissions = fs::metadata(&herdr).unwrap().permissions();
     #[cfg(unix)]
     permissions.set_mode(0o755);
     fs::set_permissions(&herdr, permissions).unwrap();
@@ -768,7 +768,7 @@ fn agent_event_refreshes_and_reads_topics_only_for_its_provider() {
     )
     .unwrap();
     for executable in [&herdr, &codex] {
-        let mut permissions = fs::metadata(executable).unwrap().permissions();
+        let permissions = fs::metadata(executable).unwrap().permissions();
         #[cfg(unix)]
         permissions.set_mode(0o755);
         fs::set_permissions(executable, permissions).unwrap();
@@ -799,7 +799,7 @@ fn agent_event_refreshes_and_reads_topics_only_for_its_provider() {
 }
 
 fn chmod_exec(path: &Path) {
-    let mut permissions = fs::metadata(path).unwrap().permissions();
+    let permissions = fs::metadata(path).unwrap().permissions();
     #[cfg(unix)]
     permissions.set_mode(0o755);
     fs::set_permissions(path, permissions).unwrap();
