@@ -673,6 +673,37 @@ mod tests {
     }
 
     #[test]
+    fn devin_panes_keep_distinct_session_models() {
+        let mut snapshot = ProviderSnapshot::new(
+            Provider::Devin,
+            vec![window(WindowKind::Weekly, 10.0, 183_600)],
+            0,
+        )
+        .with_model(Some("SWE-1.7 Medium".to_string()));
+        snapshot
+            .session_models
+            .insert("session-a".to_string(), "Opus 4.6".to_string());
+
+        let switched = MetadataTokens::from_snapshot_for_pane(
+            &snapshot,
+            0,
+            Some("session-a"),
+            PercentStyle::default(),
+        );
+        assert_eq!(switched.quota_model, "Opus 4.6");
+        assert_eq!(switched.quota_provider_model, "Devin/Opus 4.6");
+
+        let untouched = MetadataTokens::from_snapshot_for_pane(
+            &snapshot,
+            0,
+            Some("session-b"),
+            PercentStyle::default(),
+        );
+        assert_eq!(untouched.quota_model, "SWE-1.7 Medium");
+        assert_eq!(untouched.quota_provider_model, "Devin/SWE-1.7 Medium");
+    }
+
+    #[test]
     fn metadata_uses_context_and_cache_for_the_pane_session() {
         let mut snapshot = ProviderSnapshot::new(Provider::Codex, vec![], 0);
         snapshot.session_contexts.insert(

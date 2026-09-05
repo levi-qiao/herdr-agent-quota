@@ -136,6 +136,14 @@ upstream, every pin is orphaned and multi-account panes silently fall back to
 "no quota". The pinned-digest test exists to make that a test failure rather
 than a wrong number.
 
+## Devin's per-session model is local SQLite, not the quota API
+
+`~/.local/share/devin/cli/sessions.db` is CLI session state. Open it
+read-only and select only `id, model` — the same discipline as omp
+`models.db`, not `agent.db`. A missing, locked, or unexpected schema skips
+per-session attribution. `config.json` `agent.model` stays on
+`snapshot.model` as the fallback and is never copied into `session_models`.
+
 ## Herdr state this plugin owns outside a pane
 
 Two things reach past the pane metadata, and both are global to the Herdr

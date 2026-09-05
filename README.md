@@ -98,7 +98,7 @@ herdr plugin action invoke refresh --plugin herdr-agent-quota
 
 | Dimension | Source and behavior |
 | --- | --- |
-| Provider / model | Exact route and active model for the pane's session. Devin uses `config.json` `agent.model` for every pane, including a new session that never ran `/model`. |
+| Provider / model | Exact route and active model for the pane's session. Devin uses `sessions.db` when that pane's session id is present, otherwise `config.json` `agent.model`. |
 | Topic | Current visible user prompt; the previous topic survives when it scrolls away. |
 | Context | Used percentage of the active model's context window. |
 | Cache | Session cache hit rate when the agent exposes trustworthy counters. |
@@ -115,7 +115,7 @@ herdr plugin action invoke refresh --plugin herdr-agent-quota
 | OpenCode | OpenCode Go 5h + 7d; 30d in dashboard | exact local session model/context |
 | Pi | Canonical Codex quota on an exact account match | model, context, cache, supported TTL data |
 | omp (oh-my-pi) | OMP-normalized windows such as `5h`, `1d`, `7d`, `Monthly` | model, context, cache, supported TTL data |
-| Devin CLI | 1d + 7d | Model from `~/.config/devin/config.json` `agent.model` (Issue #53), mapped through local `devin-models.json` when present. New sessions that never run `/model` use this default. Not the API `planName`. |
+| Devin CLI | 1d + 7d | Per-session model from `~/.local/share/devin/cli/sessions.db` (`id`, `model`), mapped through local `devin-models.json`. A session not in the DB uses `config.json` `agent.model`. Not the API `planName`. |
 
 OMP is a generic adapter, not a second set of provider adapters. The plugin runs
 `omp usage --json --provider <id>`, retains OMP's window labels, and attributes

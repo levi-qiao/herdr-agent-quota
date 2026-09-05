@@ -16,16 +16,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   default model comes from `~/.config/devin/config.json` `agent.model` when
   present, then mapped through local `devin-models.json` for a display name.
   New sessions that never run `/model` use this same value. It is published
-  as `snapshot.model` and shown on every Devin pane. The API
-  `planInfo.planName` is the subscription plan and is not used as a model.
-  A missing or malformed models catalog leaves the raw id and does not fail
-  the quota fetch.
-  Per-session active models are read from
-  `~/.local/share/devin/cli/sessions.db` (SQLite, read-only), so two panes
-  running different `/model` selections each show their own model. A session
-  not found in the DB falls back to the `config.json` default. The DB is
-  opened read-only and only `id, model` are selected, matching the omp
-  `agent.db` discipline.
+  as `snapshot.model` and used as the fallback when a session is not in
+  `sessions.db`. The API `planInfo.planName` is the subscription plan and is
+  not used as a model. A missing or malformed models catalog leaves the raw
+  id and does not fail the quota fetch. Per-session active models are read
+  from `~/.local/share/devin/cli/sessions.db` (SQLite, read-only, selecting
+  only `id` and `model` — the omp `models.db` discipline, not `agent.db`),
+  so two panes running different `/model` selections each show their own
+  model.
   Snapshots are stamped with `sha256("devin\0" || key)`
   so a credential swap cannot keep the previous account's last-good value.
   The API key is never logged, stored, or included in error messages.
