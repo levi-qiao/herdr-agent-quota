@@ -557,8 +557,9 @@ pub struct ProviderSnapshot {
     ///
     /// StatusLine providers also keep the per-session value below so panes
     /// running the same provider can be distinguished from one another.
-    /// Devin stores the CLI `config.json` model here. Panes read it through
-    /// [`Self::model_for_session`] when they have no per-session entry.
+    /// Devin stores the CLI `config.json` default here. A pane whose session
+    /// is in `sessions.db` reads `session_models` instead; otherwise
+    /// [`Self::model_for_session`] falls back to this value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default)]

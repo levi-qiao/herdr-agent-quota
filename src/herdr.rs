@@ -1013,7 +1013,7 @@ mod tests {
 
     #[test]
     fn id_kind_preserves_every_existing_harness_session() {
-        for agent in ["claude", "codex", "grok", "agy", "opencode"] {
+        for agent in ["claude", "codex", "grok", "agy", "opencode", "devin"] {
             let value = json!({"result": {"agents": [{
                 "pane_id": "w1:p1",
                 "agent": agent,

@@ -119,7 +119,12 @@ pub fn fetch_for_sessions(session_ids: &[String]) -> Result<ProviderSnapshot> {
     let mut snapshot =
         parse_user_status(&value, CacheStore::now_unix()).map_err(anyhow::Error::from)?;
     apply_configured_model(&mut snapshot, configured_model.as_deref(), catalog.as_ref());
-    apply_session_models(&mut snapshot, session_ids, catalog.as_ref());
+    apply_session_models(
+        &mut snapshot,
+        session_ids,
+        catalog.as_ref(),
+        sessions_db_path().as_deref(),
+    );
     Ok(snapshot.with_account_id(Some(account_id)))
 }
 
@@ -140,24 +145,29 @@ fn apply_configured_model(
 /// `session_models`. A session not found in the DB, or when the DB is
 /// missing/unreadable, simply gets no entry — `model_for_session` then falls
 /// back to `snapshot.model` (the `config.json` default).
+///
+/// `db_path` is injected so tests do not mutate process-wide `XDG_*` variables.
+/// Production passes [`sessions_db_path`]. The default is never copied into
+/// `session_models`.
 fn apply_session_models(
     snapshot: &mut ProviderSnapshot,
     session_ids: &[String],
     catalog: Option<&Value>,
+    db_path: Option<&Path>,
 ) {
     if session_ids.is_empty() {
         return;
     }
-    let Some(db_path) = sessions_db_path() else {
+    let Some(db_path) = db_path else {
         return;
     };
-    let models = match session_models_from_db(&db_path, session_ids) {
-        Ok(models) => models,
-        Err(_) => return,
+    let Ok(models) = session_models_from_db(db_path, session_ids) else {
+        return;
     };
     for (session_id, model_id) in models {
-        let display = display_name_for_model(&model_id, catalog);
-        snapshot.session_models.insert(session_id, display);
+        snapshot
+            .session_models
+            .insert(session_id, display_name_for_model(&model_id, catalog));
     }
 }
 
@@ -173,7 +183,9 @@ fn sessions_db_path() -> Option<PathBuf> {
 }
 
 /// Query `sessions.db` for the `model` column of each requested session id.
-/// The DB is opened read-only; a missing table, a locked DB, or any other
+///
+/// Opened read-only, selecting only `id`/`model` — the omp `models.db`
+/// discipline, not `agent.db`. A missing table, a locked DB, or any other
 /// error yields `Err` so the caller skips per-session attribution entirely.
 fn session_models_from_db(
     db_path: &Path,
@@ -183,10 +195,11 @@ fn session_models_from_db(
     let mut statement = connection.prepare("SELECT model FROM sessions WHERE id = ?1 LIMIT 1")?;
     let mut results = Vec::new();
     for session_id in session_ids {
-        let model: Option<String> = statement
-            .query_row(rusqlite::params![session_id], |row| row.get(0))
+        let model = statement
+            .query_row(rusqlite::params![session_id], |row| row.get::<_, String>(0))
             .ok()
-            .filter(|model: &String| !model.trim().is_empty());
+            .map(|model| model.trim().to_string())
+            .filter(|model| !model.is_empty());
         if let Some(model) = model {
             results.push((session_id.clone(), model));
         }
@@ -825,13 +838,6 @@ mod tests {
     fn apply_session_models_populates_session_models_with_catalog_labels() {
         let dir = tempdir().unwrap();
         let db = write_sessions_db(dir.path(), &[("dapper-indigo", "claude-opus-4-6")]);
-        // Override sessions_db_path by pointing XDG_DATA_HOME at our temp dir
-        // so sessions_db_path() finds our test DB.
-        std::env::set_var("XDG_DATA_HOME", dir.path());
-        let db_in_cli = dir.path().join("devin").join("cli").join("sessions.db");
-        fs::create_dir_all(db_in_cli.parent().unwrap()).unwrap();
-        fs::copy(&db, &db_in_cli).unwrap();
-
         let mut snapshot = parse_user_status(&pro_fixture(), 1).expect("snapshot");
         apply_configured_model(
             &mut snapshot,
@@ -842,10 +848,9 @@ mod tests {
             &mut snapshot,
             &["dapper-indigo".to_string()],
             Some(&catalog_fixture()),
+            Some(&db),
         );
-        std::env::remove_var("XDG_DATA_HOME");
 
-        // snapshot.model is the config default; session_models has the per-session override
         assert_eq!(snapshot.model.as_deref(), Some("SWE-1.7 Medium"));
         assert_eq!(
             snapshot
@@ -854,23 +859,60 @@ mod tests {
                 .map(String::as_str),
             Some("Opus 4.6")
         );
+        assert_eq!(
+            snapshot.model_for_session(Some("dapper-indigo")),
+            Some("Opus 4.6")
+        );
+        assert_eq!(
+            snapshot.model_for_session(Some("brand-new-session")),
+            Some("SWE-1.7 Medium")
+        );
     }
 
     #[test]
     fn apply_session_models_does_nothing_when_no_session_ids() {
         let mut snapshot = parse_user_status(&pro_fixture(), 1).expect("snapshot");
-        apply_session_models(&mut snapshot, &[], None);
+        apply_session_models(&mut snapshot, &[], None, None);
         assert!(snapshot.session_models.is_empty());
     }
 
     #[test]
     fn apply_session_models_does_nothing_when_db_missing() {
-        let dir = tempdir().unwrap();
-        std::env::set_var("XDG_DATA_HOME", dir.path());
         let mut snapshot = parse_user_status(&pro_fixture(), 1).expect("snapshot");
-        apply_session_models(&mut snapshot, &["nonexistent-session".to_string()], None);
-        std::env::remove_var("XDG_DATA_HOME");
+        apply_session_models(
+            &mut snapshot,
+            &["nonexistent-session".to_string()],
+            None,
+            None,
+        );
         assert!(snapshot.session_models.is_empty());
+        apply_configured_model(&mut snapshot, Some("swe-1-7-medium"), None);
+        assert_eq!(
+            snapshot.model_for_session(Some("nonexistent-session")),
+            Some("swe-1-7-medium")
+        );
+    }
+
+    #[test]
+    fn session_models_from_db_ignores_extra_columns() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("sessions.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT, model TEXT, created_at TEXT, workspace TEXT)",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, model, created_at, workspace) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["dapper-indigo", "swe-1-7-medium", "2026-01-01", "/tmp"],
+        )
+        .unwrap();
+        let models =
+            session_models_from_db(&db_path, &["dapper-indigo".to_string()]).expect("db read");
+        assert_eq!(
+            models,
+            vec![("dapper-indigo".to_string(), "swe-1-7-medium".to_string())]
+        );
     }
 
     #[test]
