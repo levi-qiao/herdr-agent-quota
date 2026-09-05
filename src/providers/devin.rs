@@ -17,10 +17,15 @@
 //!
 //! Model comes from Devin's own files, not from the quota API:
 //!
+//! - `~/.local/share/devin/cli/sessions.db` is the per-session source. The
+//!   `sessions` table has `id` (e.g. `dapper-indigo`) and `model` columns, and
+//!   the value updates immediately when `/model` is run in that session. Each
+//!   pane's session id is looked up here and the result is mapped through the
+//!   local catalog for a display label, then stored in `session_models`.
 //! - `~/.config/devin/config.json` `agent.model` is the CLI default / current
 //!   configured model (Issue #53). New sessions that never run `/model` use
-//!   this value. It is published as `snapshot.model` and shown on every Devin
-//!   pane.
+//!   this value. It is published as `snapshot.model` and used as the fallback
+//!   when a session id is not found in `sessions.db`.
 //! - `devin-models.json` maps that id to a display label. Missing or malformed
 //!   catalog leaves the raw id; quota fetch is unaffected.
 //! - `planInfo.planName` is the subscription plan, not a model.
@@ -29,6 +34,7 @@ use crate::cache::CacheStore;
 use crate::model::{Provider, ProviderSnapshot, ResetAt, UsageWindow, WindowKind};
 use crate::providers::ProviderError;
 use anyhow::{Context, Result};
+use rusqlite::{Connection, OpenFlags};
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -75,13 +81,17 @@ impl std::fmt::Debug for DevinCredentials {
     }
 }
 
-/// Fetch Devin CLI's quota. The model is the CLI `config.json` default, shared
-/// across panes, so it is published as `snapshot.model`.
-pub fn fetch_for_sessions(_session_ids: &[String]) -> Result<ProviderSnapshot> {
+/// Fetch Devin CLI's quota. The configured default model from `config.json`
+/// is published as `snapshot.model`. When Herdr provides session ids, each is
+/// looked up in `sessions.db` for its per-session active model and stored in
+/// `session_models`; a session not found in the DB falls back to the
+/// configured default.
+pub fn fetch_for_sessions(session_ids: &[String]) -> Result<ProviderSnapshot> {
     let path = auth_path().context("resolve Devin credentials path")?;
     let credentials = read_credentials(&path).map_err(anyhow::Error::from)?;
     let account_id = account_pin(&credentials.windsurf_api_key);
     let configured_model = configured_model_from_config();
+    let catalog = load_models_catalog();
     let url = build_url(credentials.api_server_url.as_deref())?;
     let body = serde_json::json!({
         "metadata": {
@@ -108,11 +118,8 @@ pub fn fetch_for_sessions(_session_ids: &[String]) -> Result<ProviderSnapshot> {
         .context("decode Devin GetUserStatus response")?;
     let mut snapshot =
         parse_user_status(&value, CacheStore::now_unix()).map_err(anyhow::Error::from)?;
-    apply_configured_model(
-        &mut snapshot,
-        configured_model.as_deref(),
-        load_models_catalog().as_ref(),
-    );
+    apply_configured_model(&mut snapshot, configured_model.as_deref(), catalog.as_ref());
+    apply_session_models(&mut snapshot, session_ids, catalog.as_ref());
     Ok(snapshot.with_account_id(Some(account_id)))
 }
 
@@ -127,6 +134,64 @@ fn apply_configured_model(
         return;
     };
     snapshot.model = Some(display_name_for_model(model_id, catalog));
+}
+
+/// Look up each session's active model in `sessions.db` and store it in
+/// `session_models`. A session not found in the DB, or when the DB is
+/// missing/unreadable, simply gets no entry — `model_for_session` then falls
+/// back to `snapshot.model` (the `config.json` default).
+fn apply_session_models(
+    snapshot: &mut ProviderSnapshot,
+    session_ids: &[String],
+    catalog: Option<&Value>,
+) {
+    if session_ids.is_empty() {
+        return;
+    }
+    let Some(db_path) = sessions_db_path() else {
+        return;
+    };
+    let models = match session_models_from_db(&db_path, session_ids) {
+        Ok(models) => models,
+        Err(_) => return,
+    };
+    for (session_id, model_id) in models {
+        let display = display_name_for_model(&model_id, catalog);
+        snapshot.session_models.insert(session_id, display);
+    }
+}
+
+/// Resolve the path to `~/.local/share/devin/cli/sessions.db` (or
+/// `$XDG_DATA_HOME/devin/cli/sessions.db`). Returns `None` when the data
+/// directory cannot be resolved or the file does not exist.
+fn sessions_db_path() -> Option<PathBuf> {
+    let path = devin_data_dir().ok()?.join("cli").join("sessions.db");
+    fs::metadata(&path)
+        .ok()
+        .filter(|m| m.is_file())
+        .map(|_| path)
+}
+
+/// Query `sessions.db` for the `model` column of each requested session id.
+/// The DB is opened read-only; a missing table, a locked DB, or any other
+/// error yields `Err` so the caller skips per-session attribution entirely.
+fn session_models_from_db(
+    db_path: &Path,
+    session_ids: &[String],
+) -> std::result::Result<Vec<(String, String)>, rusqlite::Error> {
+    let connection = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mut statement = connection.prepare("SELECT model FROM sessions WHERE id = ?1 LIMIT 1")?;
+    let mut results = Vec::new();
+    for session_id in session_ids {
+        let model: Option<String> = statement
+            .query_row(rusqlite::params![session_id], |row| row.get(0))
+            .ok()
+            .filter(|model: &String| !model.trim().is_empty());
+        if let Some(model) = model {
+            results.push((session_id.clone(), model));
+        }
+    }
+    Ok(results)
 }
 
 /// Resolve the credentials file path.
@@ -673,6 +738,138 @@ mod tests {
             Some(&catalog_fixture()),
         );
         assert_eq!(snapshot.model.as_deref(), Some("SWE-1.7 Medium"));
+        assert!(snapshot.session_models.is_empty());
+    }
+
+    /// Build a minimal `sessions.db` with the `sessions(id, model)` table.
+    fn write_sessions_db(dir: &Path, rows: &[(&str, &str)]) -> PathBuf {
+        let db_path = dir.join("sessions.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch("CREATE TABLE sessions (id TEXT, model TEXT)")
+            .unwrap();
+        for (id, model) in rows {
+            conn.execute(
+                "INSERT INTO sessions (id, model) VALUES (?1, ?2)",
+                rusqlite::params![id, model],
+            )
+            .unwrap();
+        }
+        db_path
+    }
+
+    #[test]
+    fn session_models_from_db_returns_per_session_model() {
+        let dir = tempdir().unwrap();
+        let db = write_sessions_db(
+            dir.path(),
+            &[("dapper-indigo", "glm-5-3-low"), ("half-aphid", "adaptive")],
+        );
+        let models = session_models_from_db(
+            &db,
+            &["dapper-indigo".to_string(), "half-aphid".to_string()],
+        )
+        .expect("db read");
+        assert_eq!(models.len(), 2);
+        let map: std::collections::HashMap<String, String> = models.into_iter().collect();
+        assert_eq!(
+            map.get("dapper-indigo").map(String::as_str),
+            Some("glm-5-3-low")
+        );
+        assert_eq!(map.get("half-aphid").map(String::as_str), Some("adaptive"));
+    }
+
+    #[test]
+    fn session_models_from_db_skips_unknown_session_ids() {
+        let dir = tempdir().unwrap();
+        let db = write_sessions_db(dir.path(), &[("known-session", "swe-1-7")]);
+        let models = session_models_from_db(
+            &db,
+            &["known-session".to_string(), "unknown-session".to_string()],
+        )
+        .expect("db read");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].0, "known-session");
+        assert_eq!(models[0].1, "swe-1-7");
+    }
+
+    #[test]
+    fn session_models_from_db_skips_empty_model_strings() {
+        let dir = tempdir().unwrap();
+        let db = write_sessions_db(dir.path(), &[("empty-model", ""), ("blank-model", "  ")]);
+        let models =
+            session_models_from_db(&db, &["empty-model".to_string(), "blank-model".to_string()])
+                .expect("db read");
+        assert!(models.is_empty());
+    }
+
+    #[test]
+    fn session_models_from_db_returns_err_for_missing_table() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("sessions.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch("CREATE TABLE wrong_table (id TEXT)")
+            .unwrap();
+        let result = session_models_from_db(&db_path, &["some-session".to_string()]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn session_models_from_db_returns_err_for_missing_file() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("nonexistent.db");
+        let result = session_models_from_db(&db_path, &["some-session".to_string()]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_session_models_populates_session_models_with_catalog_labels() {
+        let dir = tempdir().unwrap();
+        let db = write_sessions_db(dir.path(), &[("dapper-indigo", "claude-opus-4-6")]);
+        // Override sessions_db_path by pointing XDG_DATA_HOME at our temp dir
+        // so sessions_db_path() finds our test DB.
+        std::env::set_var("XDG_DATA_HOME", dir.path());
+        let db_in_cli = dir.path().join("devin").join("cli").join("sessions.db");
+        fs::create_dir_all(db_in_cli.parent().unwrap()).unwrap();
+        fs::copy(&db, &db_in_cli).unwrap();
+
+        let mut snapshot = parse_user_status(&pro_fixture(), 1).expect("snapshot");
+        apply_configured_model(
+            &mut snapshot,
+            Some("swe-1-7-medium"),
+            Some(&catalog_fixture()),
+        );
+        apply_session_models(
+            &mut snapshot,
+            &["dapper-indigo".to_string()],
+            Some(&catalog_fixture()),
+        );
+        std::env::remove_var("XDG_DATA_HOME");
+
+        // snapshot.model is the config default; session_models has the per-session override
+        assert_eq!(snapshot.model.as_deref(), Some("SWE-1.7 Medium"));
+        assert_eq!(
+            snapshot
+                .session_models
+                .get("dapper-indigo")
+                .map(String::as_str),
+            Some("Opus 4.6")
+        );
+    }
+
+    #[test]
+    fn apply_session_models_does_nothing_when_no_session_ids() {
+        let mut snapshot = parse_user_status(&pro_fixture(), 1).expect("snapshot");
+        apply_session_models(&mut snapshot, &[], None);
+        assert!(snapshot.session_models.is_empty());
+    }
+
+    #[test]
+    fn apply_session_models_does_nothing_when_db_missing() {
+        let dir = tempdir().unwrap();
+        std::env::set_var("XDG_DATA_HOME", dir.path());
+        let mut snapshot = parse_user_status(&pro_fixture(), 1).expect("snapshot");
+        apply_session_models(&mut snapshot, &["nonexistent-session".to_string()], None);
+        std::env::remove_var("XDG_DATA_HOME");
         assert!(snapshot.session_models.is_empty());
     }
 

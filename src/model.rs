@@ -617,10 +617,11 @@ impl ProviderSnapshot {
     /// Return the model for a pane's session.
     ///
     /// A known Claude/Agy/Codex/Grok session never borrows the provider-level
-    /// value, because that may belong to another pane. Devin's `snapshot.model`
-    /// is the CLI `config.json` default, so a pane without a `session_models`
-    /// entry still shows it — including a brand-new session that never ran
-    /// `/model`.
+    /// value, because that may belong to another pane. Devin populates
+    /// `session_models` from `sessions.db`, so a pane whose session id is found
+    /// in the DB gets its per-session active model. A pane without a
+    /// `session_models` entry — a brand-new session, or one whose id is not in
+    /// the DB — falls back to `snapshot.model`, the `config.json` default.
     pub fn model_for_session(&self, session_id: Option<&str>) -> Option<&str> {
         let Some(session_id) = session_id else {
             return self.model.as_deref();
