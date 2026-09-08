@@ -8,19 +8,16 @@
 
 English: [README.md](README.md)
 
-<table>
-<tr><th>packed（默认）</th><th>stacked</th></tr>
-<tr>
-<td valign="top"><img src="docs/screenshots/sidebar-packed.png" alt="拼接布局" width="284"></td>
-<td valign="top"><img src="docs/screenshots/sidebar-stacked.png" alt="分行布局" width="177"></td>
-</tr>
-</table>
+顶部保留 Herdr 原生的机器／工作区／标签页行和 agent 身份行，插件信息追加在下面。
+`packed`（默认）合并相关字段，`stacked` 将字段分行显示。
+Space 区域的 Git 分支／状态、worktree 分组和 Agent 排序由 Herdr 管理，插件保留这些设置；
+按额度排序需主动开启。在共享 Agent 行中追加的自定义字段和样式，重新配置时也会保留。
 
 空字段自动折叠。刷新失败时保留同一账户最后一次成功结果；确认是 PAYG 的 session 会清掉旧订阅额度。
 
 ## 安装
 
-要求：Herdr 0.8.0+、Rust 1.95+、macOS 或 Linux，以及至少一个受支持的 agent CLI。
+要求：Herdr 0.9.0+、Rust 1.95+、macOS 或 Linux，以及至少一个受支持的 agent CLI。
 
 ```sh
 git clone https://github.com/levi-qiao/herdr-agent-quota.git
@@ -34,9 +31,10 @@ cd herdr-agent-quota
 ./install.sh --agent claude,codex,omp
 ```
 
-`install.sh` 只会在共享的 `ui.sidebar.agents.rows` 为空、已由本插件管理、或等于
-Herdr 默认的 `["state_icon", "agent"]` 时改写它。其他插件或用户自己的行会保留，
-仍会为所选 agent 添加或更新 `rows_by_agent`。
+`install.sh` 只会在共享的 `ui.sidebar.agents.rows` 为空、已由本插件管理、或匹配
+受支持的默认布局时改写它。以 Herdr 0.9 的
+`[["state_icon", "machine", "workspace", "tab"], ["agent"]]` 为基础追加插件字段。
+用户自己的行和样式会保留，仍会为所选 agent 添加或更新 `rows_by_agent`。
 
 可选值：`all`、`claude`、`codex`、`grok`、`agy`、`opencode`、`pi`、`omp`、`devin`。
 

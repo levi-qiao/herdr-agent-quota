@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-08
+
+### Changed
+
+- Require Herdr 0.9.0 or later. Native machine/workspace/tab and agent
+  identity rows stay above plugin fields in both sidebar layouts.
+- Keep Herdr's native token styling, Space Git rows, and worktree grouping.
+  Quota ordering remains opt-in.
+
+### Fixed
+
+- Focus events refresh the pane named in the event instead of the current
+  global focus, including delayed events and independent Herdr clients.
+- Reconfiguring managed shared Agent rows preserves added custom fields and
+  styles while still migrating recognized older plugin layouts.
+
 ## [1.4.0] - 2026-09-06
 
 ### Added
@@ -572,7 +588,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A popup dashboard pane, event-driven refresh, and a local snapshot cache that
   survives provider failures.
 
-[Unreleased]: https://github.com/levi-qiao/herdr-agent-quota/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/levi-qiao/herdr-agent-quota/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/levi-qiao/herdr-agent-quota/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/levi-qiao/herdr-agent-quota/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/levi-qiao/herdr-agent-quota/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/levi-qiao/herdr-agent-quota/compare/v1.1.0...v1.2.0

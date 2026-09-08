@@ -209,7 +209,10 @@ enable`, invoke it with a marker variable set, and read the file.
 ## Event payload shapes
 
 `HERDR_PLUGIN_EVENT_JSON` is nested and not uniform across events. `pane.focused`
-carries no `agent` at all, which is why `focus` has to call `herdr pane current`:
+carries no `agent`: `focus` uses its pane ID and resolves the harness from one
+agent inventory read. Only a direct `focus` invocation without event JSON uses
+`herdr pane current`. This keeps delayed events and Herdr 0.9's independent
+clients from redirecting a refresh to another pane:
 
 ```json
 {"event":"pane_focused","data":{"type":"pane_focused","pane_id":"w1:p9","workspace_id":"w1"}}

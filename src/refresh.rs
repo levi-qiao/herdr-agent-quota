@@ -204,13 +204,26 @@ pub fn event() -> Result<()> {
 }
 
 pub fn focus() -> Result<()> {
-    let Some((pane_id, harness)) = current_focused_pane()? else {
+    let pane = if let Some(event) = event_json() {
+        let Some(pane_id) = find_pane_id(&event) else {
+            return Ok(());
+        };
+        // Focus may have moved again, or belong to another client. The event
+        // names our target; the inventory supplies its current harness.
+        list_agent_state()?
+            .panes
+            .into_iter()
+            .find(|pane| pane.pane_id == pane_id)
+    } else {
+        let Some((pane_id, harness)) = current_focused_pane()? else {
+            return Ok(());
+        };
+        named_pane(&pane_id, harness)?
+    };
+    let Some(pane) = pane else {
         return Ok(());
     };
     let cache = CacheStore::from_env()?;
-    let Some(pane) = named_pane(&pane_id, harness)? else {
-        return Ok(());
-    };
     handle_named_pane(&cache, pane, None)
 }
 

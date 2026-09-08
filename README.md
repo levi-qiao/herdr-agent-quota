@@ -8,20 +8,18 @@ Credential-scoped model, context, cache, and quota data in Herdr's Agent sidebar
 
 中文文档：[README.zh-CN.md](README.zh-CN.md)
 
-<table>
-<tr><th>packed (default)</th><th>stacked</th></tr>
-<tr>
-<td valign="top"><img src="docs/screenshots/sidebar-packed.png" alt="Packed sidebar" width="284"></td>
-<td valign="top"><img src="docs/screenshots/sidebar-stacked.png" alt="Stacked sidebar" width="177"></td>
-</tr>
-</table>
+Herdr's native machine/workspace/tab row and agent identity row stay at the top.
+Quota fields follow below: `packed` joins related fields; `stacked` separates them.
+Herdr owns Space rows (Git branch/status), worktree grouping, and Agent ordering.
+The plugin leaves those settings intact; quota ordering is opt-in. Custom fields
+and styles added to shared Agent rows also survive reconfiguration.
 
 Empty values collapse. Failed refreshes keep the last good value for the same
 account; confirmed PAYG sessions clear stale subscription quota.
 
 ## Install
 
-Requires Herdr 0.8.0+, Rust 1.95+, macOS or Linux, and at least one supported agent CLI.
+Requires Herdr 0.9.0+, Rust 1.95+, macOS or Linux, and at least one supported agent CLI.
 
 ```sh
 git clone https://github.com/levi-qiao/herdr-agent-quota.git
@@ -36,10 +34,10 @@ Restart already-running agent panes once. To install only a subset:
 ```
 
 `install.sh` only rewrites the shared `ui.sidebar.agents.rows` array when it is
-empty, contains only rows already managed by the plugin, or matches Herdr's
-default `["state_icon", "agent"]` row. Existing rows from another plugin or the
-user are preserved, while `rows_by_agent` for the selected agents is still
-added or updated.
+empty, managed by the plugin, or matches a supported default layout. These rows
+use Herdr 0.9's `[["state_icon", "machine", "workspace", "tab"], ["agent"]]`
+before the quota fields. Existing custom rows and styles are preserved, while
+`rows_by_agent` for the selected agents is still added or updated.
 
 Supported values: `all`, `claude`, `codex`, `grok`, `agy`, `opencode`, `pi`, `omp`, `devin`.
 

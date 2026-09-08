@@ -141,7 +141,7 @@ fn run_claude_refresh(state: &Path, herdr: &Path) {
 #[test]
 fn sidebar_configuration_is_idempotent_and_removes_plugin_rows() {
     let original = "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"agent\"]]\n";
-    let canonical_without_plugin = "[ui.sidebar.agents]\nrows = [[\"state_icon\"]]\n";
+    let canonical_without_plugin = "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"machine\", \"workspace\", \"tab\"], [\"agent\"]]\n";
     let applied = add_quota_row(original).unwrap();
     assert!(applied.contains("key = \"prefix+shift+r\""));
     assert!(applied.contains("type = \"plugin_action\""));
@@ -172,7 +172,7 @@ fn sidebar_configuration_preserves_a_conflicting_refresh_key() {
     assert!(!applied.contains("command = \"herdr-agent-quota.refresh\""));
     assert_eq!(
         remove_quota_row(&applied).unwrap(),
-        "[[keys.command]]\nkey = \"prefix+shift+r\"\ntype = \"shell\"\ncommand = \"echo user-owned\"\ndescription = \"user refresh\"\n\n[ui.sidebar.agents]\nrows = [[\"state_icon\"]]\n"
+        "[[keys.command]]\nkey = \"prefix+shift+r\"\ntype = \"shell\"\ncommand = \"echo user-owned\"\ndescription = \"user refresh\"\n\n[ui.sidebar.agents]\nrows = [[\"state_icon\", \"machine\", \"workspace\", \"tab\"], [\"agent\"]]\n"
     );
 }
 
@@ -257,7 +257,6 @@ fn non_semantic_text_inherits_the_active_herdr_theme() {
         .as_array()
         .unwrap();
     let inherited = [
-        "tab",
         "$quota_topic",
         "$quota_cache",
         "$quota_cache_ttl",
@@ -338,8 +337,7 @@ fn context_is_the_penultimate_row_and_model_shares_provider_style() {
             );
         } else {
             assert!(
-                rendered
-                    .starts_with(" [[\"state_icon\", { token = \"$quota_provider_model\", bold"),
+                rendered.contains("{ token = \"$quota_provider_model\", bold"),
                 "{provider} should use the neutral identity style: {rendered}"
             );
         }
@@ -472,7 +470,7 @@ fn sidebar_configuration_preserves_an_explicit_row_gap() {
     assert!(!applied.contains("row_gap = 1"));
     assert_eq!(
         remove_quota_row(&applied).unwrap(),
-        "[ui.sidebar.agents]\nrow_gap = 2\nrows = [[\"state_icon\"]]\n"
+        "[ui.sidebar.agents]\nrow_gap = 2\nrows = [[\"state_icon\", \"machine\", \"workspace\", \"tab\"], [\"agent\"]]\n"
     );
 }
 
@@ -1234,6 +1232,40 @@ fn unknown_agent_working_event_does_not_refresh_any_collector() {
 }
 
 #[test]
+fn focus_event_uses_its_pane_even_when_the_current_focus_differs() {
+    for pane_id in ["w1:p9", "w1:p99"] {
+        let state = tempdir().unwrap();
+        let (herdr, herdr_log, codex, codex_log) = install_logged_herdr_and_codex(
+            state.path(),
+            original_four_inventory_with_working_codex(),
+            Some(r#"{"result":{"pane":{"agent":"codex","pane_id":"w1:p2"}}}"#),
+        );
+        let output = Command::new(env!("CARGO_BIN_EXE_herdr-agent-quota"))
+            .arg("focus")
+            .env("HERDR_PLUGIN_STATE_DIR", state.path())
+            .env("HERDR_BIN_PATH", &herdr)
+            .env("CODEX_BIN_PATH", &codex)
+            .env("XDG_DATA_HOME", state.path().join("xdg-data"))
+            .env_remove("OPENCODE_API_KEY")
+            .env("HERDR_PLUGIN_EVENT_JSON", format!(
+                r#"{{"event":"pane_focused","data":{{"type":"pane_focused","pane_id":"{pane_id}","workspace_id":"w1"}}}}"#
+            ))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let calls = fs::read_to_string(&herdr_log).unwrap_or_default();
+        assert!(!calls.contains("pane current"), "{calls}");
+        assert_eq!(calls.matches("agent list").count(), 1, "{calls}");
+        assert!(!calls.contains("pane read"), "{calls}");
+        assert_no_original_four_collection(state.path(), &herdr_log, &codex_log);
+    }
+}
+
+#[test]
 fn focus_on_an_opencode_pane_does_not_refresh_collectors() {
     let state = tempdir().unwrap();
     let (herdr, herdr_log, codex, codex_log) = install_logged_herdr_and_codex(
@@ -1873,7 +1905,8 @@ fn an_installer_can_select_flush_gap_through_the_plugin_config_dir() {
 fn sidebar_is_packed(sidebar: &str) -> bool {
     quota_tokens_share_a_row(sidebar, "$quota_cache", "$quota_cache_ttl")
         && quota_tokens_share_a_row(sidebar, "$quota_5h_normal", "$quota_week_normal")
-        && tab_shares_row_with_provider_model(sidebar)
+        && sidebar_has_token(sidebar, "$quota_provider_model")
+        && !tab_shares_row_with_provider_model(sidebar)
 }
 
 fn sidebar_is_stacked(sidebar: &str) -> bool {

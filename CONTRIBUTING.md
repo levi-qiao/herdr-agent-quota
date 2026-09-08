@@ -7,7 +7,7 @@ contract.
 ## Setup
 
 Requires Rust `1.95+` (pinned by `rust-toolchain.toml`, so `rustup` installs it
-for you) and Herdr `0.8.0+`.
+for you) and Herdr `0.9.0+`.
 
 ```sh
 git clone https://github.com/levi-qiao/herdr-agent-quota
