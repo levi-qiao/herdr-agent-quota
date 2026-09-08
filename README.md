@@ -15,7 +15,9 @@ Model, context, prompt-cache usage, and subscription quota in Herdr's Agent side
 </tr>
 </table>
 
-The plugin preserves Herdr's native rows, custom styles, and worktree grouping.
+The plugin preserves Herdr's native machine/workspace/tab row, custom styles,
+and worktree grouping. The branded provider/model line is the agent identity;
+the native `agent` row is omitted so `grok` does not sit above `Grok/grok-4.6`.
 Optional quota ordering and low-quota notifications are disabled by default.
 Empty fields collapse; percentages can show remaining or used quota.
 

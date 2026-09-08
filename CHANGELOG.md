@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-09-08
+
+### Changed
+
+- Drop the native `agent` row from managed sidebar layouts. It duplicated the
+  branded `$quota_provider_model` line (`grok` above `Grok/grok-4.6`). The
+  machine/workspace/tab row stays; uninstall puts `agent` back.
+
 ## [1.5.1] - 2026-09-08
 
 ### Fixed
@@ -609,7 +617,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A popup dashboard pane, event-driven refresh, and a local snapshot cache that
   survives provider failures.
 
-[Unreleased]: https://github.com/levi-qiao/herdr-agent-quota/compare/v1.5.1...HEAD
+[Unreleased]: https://github.com/levi-qiao/herdr-agent-quota/compare/v1.5.2...HEAD
+[1.5.2]: https://github.com/levi-qiao/herdr-agent-quota/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/levi-qiao/herdr-agent-quota/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/levi-qiao/herdr-agent-quota/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/levi-qiao/herdr-agent-quota/compare/v1.3.0...v1.4.0

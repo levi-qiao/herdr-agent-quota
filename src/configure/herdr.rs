@@ -78,6 +78,7 @@ const PROVIDER_STYLES: [(Harness, &str, Option<&str>, Option<&str>); 8] = [
     (Harness::Devin, "devin", Some("#6c5ce7"), None),
 ];
 const THEME_SELECTION_KEYS: [&str; 2] = ["selection_bg", "active_row_bg"];
+const OFFICIAL_IDENTITY_TOKENS: [&str; 4] = ["state_icon", "machine", "workspace", "tab"];
 
 /// Sidebar rows for the selected agents only, so `--agent grok` never writes
 /// or removes another agent's row.
@@ -476,8 +477,7 @@ fn is_default_layout(rows: &Array, allow_legacy: bool) -> bool {
         [identity, agent] => {
             is_default_state_equivalent(identity)
                 && !identity.iter().any(|item| item.as_str() == Some("agent"))
-                && agent.len() == 1
-                && agent.get(0).and_then(Value::as_str) == Some("agent")
+                && is_standalone_agent_row(agent)
         }
         _ => false,
     }
@@ -550,6 +550,16 @@ pub fn remove_quota_row_for(input: &str, agents: &[Harness], full: bool) -> Resu
             if !cleaned.is_empty() {
                 retained.push(Value::Array(cleaned));
             }
+        }
+        // While installed, the branded provider/model line is the identity.
+        // Herdr's native `agent` row goes back so uninstall looks like 0.9.
+        if retained.len() == 1
+            && retained
+                .get(0)
+                .and_then(Value::as_array)
+                .is_some_and(is_official_identity_row)
+        {
+            retained.push(herdr_native_agent_row());
         }
         table["rows"] = Item::Value(Value::Array(retained));
     }
@@ -754,17 +764,32 @@ fn has_provider_style_marker(value: &Value) -> bool {
         .is_some_and(|suffix| suffix.contains(PROVIDER_STYLE_MARKER))
 }
 
-/// Herdr 0.9's native navigation and agent identity rows. Plugin fields are
-/// appended below them so empty metadata never removes the native identity.
+/// Herdr 0.9's native navigation row. Plugin fields are appended below it so
+/// empty metadata never removes workspace/tab identity.
+///
+/// The native `agent` row is omitted on purpose: `$quota_provider_model`
+/// already names the harness in brand color, and keeping both shows `grok`
+/// above `Grok/grok-4.6`. Uninstall puts `agent` back.
 fn official_agent_rows() -> Array {
     let mut rows = Array::new();
-    rows.push(Value::Array(
-        ["state_icon", "machine", "workspace", "tab"]
-            .into_iter()
-            .collect(),
-    ));
-    rows.push(Value::Array(["agent"].into_iter().collect()));
+    rows.push(Value::Array(OFFICIAL_IDENTITY_TOKENS.into_iter().collect()));
     rows
+}
+
+fn is_official_identity_row(row: &Array) -> bool {
+    row.len() == OFFICIAL_IDENTITY_TOKENS.len()
+        && OFFICIAL_IDENTITY_TOKENS
+            .into_iter()
+            .enumerate()
+            .all(|(index, token)| row.get(index).and_then(Value::as_str) == Some(token))
+}
+
+fn herdr_native_agent_row() -> Value {
+    Value::Array(["agent"].into_iter().collect())
+}
+
+fn is_standalone_agent_row(row: &Array) -> bool {
+    row.len() == 1 && row.get(0).and_then(Value::as_str) == Some("agent")
 }
 
 fn append_quota_rows(rows: &mut Array, layout: SidebarLayout) {
@@ -1039,7 +1064,7 @@ fn skipped_provider_label(provider: &str) -> &str {
 }
 
 fn print_diff_hint(layout: SidebarLayout, fields: FieldSet, brand: BrandColors) {
-    println!("  keep Herdr's official machine, workspace, tab, and agent rows");
+    println!("  keep Herdr's official machine, workspace, and tab rows");
     match layout {
         SidebarLayout::Packed => {
             println!("  show the user prompt, context, and one compact severity-colored 5h/7d row");
@@ -1165,12 +1190,30 @@ mod tests {
                     let names = |index| rows.get(index).unwrap().as_array().unwrap()
                         .iter().map(|item| item.as_str().unwrap()).collect::<Vec<_>>();
                     assert_eq!(names(0), ["state_icon", "machine", "workspace", "tab"]);
-                    assert_eq!(names(1), ["agent"]);
-                    assert!(rows.iter().skip(2).any(|row| row_contains_token(row, "$quota_topic")));
+                    assert!(
+                        !has_standalone_agent_row(rows),
+                        "native agent row duplicates branded provider/model:\n{updated}"
+                    );
+                    assert!(rows.iter().skip(1).any(|row| row_contains_token(row, "$quota_topic")));
                 }
                 assert_eq!(add_quota_row_for(&updated, &[Harness::Claude], layout).unwrap(), updated);
             }
         }
+    }
+
+    #[test]
+    fn uninstall_puts_the_native_agent_row_back_on_a_default_layout() {
+        let original = "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"machine\", \"workspace\", \"tab\"], [\"agent\"]]\n";
+        let installed = add_quota_row(original).unwrap();
+        let document = installed.parse::<DocumentMut>().unwrap();
+        let rows = document["ui"]["sidebar"]["agents"]["rows"]
+            .as_array()
+            .unwrap();
+        assert!(!has_standalone_agent_row(rows), "{installed}");
+        assert!(rows
+            .iter()
+            .any(|row| row_contains_token(row, "$quota_provider_model")));
+        assert_eq!(remove_quota_row(&installed).unwrap(), original);
     }
 
     #[test]
@@ -1212,10 +1255,17 @@ rows = [["state_icon", "agent"]]
         assert!(updated.contains("$quota_5h"));
         assert!(updated.contains("$quota_week"));
         assert!(updated.contains("state_icon"));
-        assert!(updated.contains("agent"));
+        assert!(updated.contains("machine"));
+        assert!(updated.contains("workspace"));
+        assert!(updated.contains("tab"));
         assert!(updated.contains("$quota_topic"));
         assert!(updated.contains("$quota_5h_warning"));
         assert!(updated.contains("$quota_week_danger"));
+        let document = updated.parse::<DocumentMut>().unwrap();
+        let rows = document["ui"]["sidebar"]["agents"]["rows"]
+            .as_array()
+            .unwrap();
+        assert!(!has_standalone_agent_row(rows), "{updated}");
         assert_eq!(add_quota_row(&updated).unwrap(), updated);
     }
 
@@ -1331,7 +1381,7 @@ rows = [["state_icon", "agent"]]
             .iter()
             .position(|row| row_contains_token(row, "$quota_topic"))
             .unwrap();
-        assert_eq!(identity_index + 2, provider_index);
+        assert_eq!(identity_index + 1, provider_index);
         assert_eq!(provider_index + 1, model_index);
         assert_eq!(model_index + 1, topic_index);
         assert!(!rows
@@ -1391,6 +1441,11 @@ rows = [["state_icon", "agent"]]
                 .iter()
                 .any(|item| configured_token_name(item) == Some(token))
         })
+    }
+
+    fn has_standalone_agent_row(rows: &Array) -> bool {
+        rows.iter()
+            .any(|row| row.as_array().is_some_and(is_standalone_agent_row))
     }
 
     fn row_is_only_token(rows: &Array, token: &str) -> bool {
