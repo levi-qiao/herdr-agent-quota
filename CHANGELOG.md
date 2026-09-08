@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep Herdr's native `agent` row in managed sidebar layouts so every agent
+  retains a visible name when plugin-provided metadata is empty.
+
 ## [1.5.2] - 2026-09-08
 
 ### Changed

@@ -764,15 +764,12 @@ fn has_provider_style_marker(value: &Value) -> bool {
         .is_some_and(|suffix| suffix.contains(PROVIDER_STYLE_MARKER))
 }
 
-/// Herdr 0.9's native navigation row. Plugin fields are appended below it so
-/// empty metadata never removes workspace/tab identity.
-///
-/// The native `agent` row is omitted on purpose: `$quota_provider_model`
-/// already names the harness in brand color, and keeping both shows `grok`
-/// above `Grok/grok-4.6`. Uninstall puts `agent` back.
+/// Herdr 0.9's native navigation and agent identity rows. Plugin fields follow
+/// them so the agent name remains visible when quota metadata is empty.
 fn official_agent_rows() -> Array {
     let mut rows = Array::new();
     rows.push(Value::Array(OFFICIAL_IDENTITY_TOKENS.into_iter().collect()));
+    rows.push(herdr_native_agent_row());
     rows
 }
 
@@ -1174,7 +1171,7 @@ mod tests {
     }
 
     #[test]
-    fn official_09_rows_stay_above_plugin_fields_on_install_and_migration() {
+    fn native_agent_row_stays_above_plugin_fields_on_install_and_migration() {
         for original in [
             "",
             "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"machine\", \"workspace\", \"tab\"], [\"agent\"]]\n",
@@ -1191,10 +1188,10 @@ mod tests {
                         .iter().map(|item| item.as_str().unwrap()).collect::<Vec<_>>();
                     assert_eq!(names(0), ["state_icon", "machine", "workspace", "tab"]);
                     assert!(
-                        !has_standalone_agent_row(rows),
-                        "native agent row duplicates branded provider/model:\n{updated}"
+                        has_standalone_agent_row(rows),
+                        "native agent row must preserve a name when quota metadata is empty:\n{updated}"
                     );
-                    assert!(rows.iter().skip(1).any(|row| row_contains_token(row, "$quota_topic")));
+                    assert!(rows.iter().skip(2).any(|row| row_contains_token(row, "$quota_topic")));
                 }
                 assert_eq!(add_quota_row_for(&updated, &[Harness::Claude], layout).unwrap(), updated);
             }
@@ -1209,7 +1206,7 @@ mod tests {
         let rows = document["ui"]["sidebar"]["agents"]["rows"]
             .as_array()
             .unwrap();
-        assert!(!has_standalone_agent_row(rows), "{installed}");
+        assert!(has_standalone_agent_row(rows), "{installed}");
         assert!(rows
             .iter()
             .any(|row| row_contains_token(row, "$quota_provider_model")));
@@ -1265,7 +1262,7 @@ rows = [["state_icon", "agent"]]
         let rows = document["ui"]["sidebar"]["agents"]["rows"]
             .as_array()
             .unwrap();
-        assert!(!has_standalone_agent_row(rows), "{updated}");
+        assert!(has_standalone_agent_row(rows), "{updated}");
         assert_eq!(add_quota_row(&updated).unwrap(), updated);
     }
 
@@ -1381,7 +1378,7 @@ rows = [["state_icon", "agent"]]
             .iter()
             .position(|row| row_contains_token(row, "$quota_topic"))
             .unwrap();
-        assert_eq!(identity_index + 1, provider_index);
+        assert_eq!(identity_index + 2, provider_index);
         assert_eq!(provider_index + 1, model_index);
         assert_eq!(model_index + 1, topic_index);
         assert!(!rows
