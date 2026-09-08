@@ -413,12 +413,7 @@ fn build_managed_rows(
     rewrite: RowRewrite,
 ) -> Result<Array> {
     let mut updated_rows = match rewrite {
-        RowRewrite::Takeover
-            if original.is_none_or(|rows| {
-                rows.iter()
-                    .all(|row| is_safe_to_take(row) || is_legacy_identity_row(row))
-            }) =>
-        {
+        RowRewrite::Takeover if original.is_none_or(|rows| is_default_layout(rows, true)) => {
             official_agent_rows()
         }
         _ => {
@@ -441,12 +436,11 @@ fn build_managed_rows(
 
 // Recognize only the tab styling written by older plugin versions. A managed
 // marker does not make later user-added Git, directory, or styled rows ours.
-fn is_legacy_identity_row(row: &Value) -> bool {
-    let cleaned = strip_quota_tokens(row);
-    if cleaned.len() != 2 || cleaned.get(0).and_then(Value::as_str) != Some("state_icon") {
+fn is_legacy_identity_row(row: &Array) -> bool {
+    if row.len() != 2 || row.get(0).and_then(Value::as_str) != Some("state_icon") {
         return false;
     }
-    let Some(tab) = cleaned.get(1).and_then(Value::as_inline_table) else {
+    let Some(tab) = row.get(1).and_then(Value::as_inline_table) else {
         return false;
     };
     tab.get("token").and_then(Value::as_str) == Some("tab")
@@ -464,15 +458,29 @@ fn has_rows_marker(value: &Value) -> bool {
 }
 
 fn is_safe_to_take_over(rows: &Array) -> bool {
-    rows.iter().all(is_safe_to_take)
+    is_default_layout(rows, false)
 }
 
-fn is_safe_to_take(row: &Value) -> bool {
-    let cleaned = strip_quota_tokens(row);
-    if cleaned.is_empty() {
-        return true;
+fn is_default_layout(rows: &Array, allow_legacy: bool) -> bool {
+    let native: Vec<_> = rows
+        .iter()
+        .map(strip_quota_tokens)
+        .filter(|row| !row.is_empty())
+        .collect();
+    match native.as_slice() {
+        [] => true,
+        [identity] => {
+            is_default_state_equivalent(identity)
+                || (allow_legacy && is_legacy_identity_row(identity))
+        }
+        [identity, agent] => {
+            is_default_state_equivalent(identity)
+                && !identity.iter().any(|item| item.as_str() == Some("agent"))
+                && agent.len() == 1
+                && agent.get(0).and_then(Value::as_str) == Some("agent")
+        }
+        _ => false,
     }
-    is_default_state_equivalent(&cleaned)
 }
 
 fn is_default_state_equivalent(row: &Array) -> bool {
@@ -484,7 +492,7 @@ fn is_default_state_equivalent(row: &Array) -> bool {
             _ => return false,
         }
     }
-    has_state_icon || (row.len() == 1 && row.get(0).and_then(Value::as_str) == Some("agent"))
+    has_state_icon
 }
 
 /// Full-installation form, used by callers that remove every agent.
@@ -1058,6 +1066,25 @@ fn print_diff_hint(layout: SidebarLayout, fields: FieldSet, brand: BrandColors) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extra_native_identity_rows_and_unmarked_legacy_styles_are_preserved() {
+        for original in [
+            "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"machine\", \"workspace\", \"tab\"], [\"agent\"], [\"agent\"]] # herdr-agent-quota-row\n",
+            "[ui.sidebar.agents]\nrows = [[\"state_icon\", { token = \"tab\", bold = true, dim = false }]]\n",
+        ] {
+            let expected = original.parse::<DocumentMut>().unwrap();
+            let expected = expected["ui"]["sidebar"]["agents"]["rows"].as_array().unwrap();
+            let applied = add_quota_row(original).unwrap();
+            let parsed = applied.parse::<DocumentMut>().unwrap();
+            let rows = parsed["ui"]["sidebar"]["agents"]["rows"].as_array().unwrap();
+            for (actual, expected) in rows.iter().zip(expected.iter()) {
+                assert_eq!(actual.to_string().trim(), expected.to_string().trim());
+            }
+            assert!(rows.len() >= expected.len());
+            assert_eq!(add_quota_row(&applied).unwrap(), applied);
+        }
+    }
 
     #[test]
     fn repair_preserves_native_rows_added_after_installation() {
