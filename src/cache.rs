@@ -914,10 +914,25 @@ fn merge_session_windows(
     quota_scope: Option<&str>,
 ) {
     if snapshot.session_quota_only {
-        if let Some(previous) = previous.filter(|previous| previous.session_quota_only) {
+        let previous = previous.filter(|previous| previous.session_quota_only);
+        if let Some(previous) = previous {
             snapshot.session_windows = previous.session_windows.clone();
         }
         if let Some(id) = session_id {
+            // A statusLine tick that omits `five_hour` is not a report that the
+            // window is gone, so restore this session's own last reading before
+            // it becomes the session's stored quota. Without this the sidebar
+            // falls back to `5h N/A` until Claude Code emits the window again.
+            if let Some(previous_windows) =
+                previous.and_then(|previous| previous_windows_for_merge(previous, id, None))
+            {
+                let previous_windows = previous_windows.to_vec();
+                merge_omitted_window_list(
+                    &mut snapshot.windows,
+                    &previous_windows,
+                    snapshot.fetched_at_unix,
+                );
+            }
             snapshot
                 .session_windows
                 .insert(id.to_string(), snapshot.windows.clone());
@@ -2415,6 +2430,106 @@ mod tests {
                 .used_percent,
             22.0
         );
+    }
+
+    /// A session-local (`session_quota_only`) statusLine observation is the
+    /// Claude path: a tick without `five_hour` must not strip the window from
+    /// the session's stored quota, or the sidebar renders `5h N/A`.
+    #[test]
+    fn session_local_statusline_observation_preserves_an_omitted_five_hour_window() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        let payload = json!({"session_id": "session-1"});
+        cache
+            .save_statusline_observation(
+                Provider::Claude,
+                ProviderSnapshot::new(
+                    Provider::Claude,
+                    vec![
+                        UsageWindow::new(
+                            WindowKind::FiveHour,
+                            13.0,
+                            Some(ResetAt::from_unix_seconds(2_000)),
+                        )
+                        .unwrap(),
+                        UsageWindow::new(
+                            WindowKind::Weekly,
+                            20.0,
+                            Some(ResetAt::from_unix_seconds(10_000)),
+                        )
+                        .unwrap(),
+                    ],
+                    1_000,
+                )
+                .session_local(),
+                &payload,
+            )
+            .unwrap();
+
+        cache
+            .save_statusline_observation(
+                Provider::Claude,
+                ProviderSnapshot::new(
+                    Provider::Claude,
+                    vec![UsageWindow::new(
+                        WindowKind::Weekly,
+                        20.0,
+                        Some(ResetAt::from_unix_seconds(10_000)),
+                    )
+                    .unwrap()],
+                    1_100,
+                )
+                .session_local(),
+                &payload,
+            )
+            .unwrap();
+
+        let saved = cache
+            .load_statusline_observation(Provider::Claude)
+            .unwrap()
+            .unwrap()
+            .snapshot;
+        assert_eq!(
+            window_in(&saved.windows, WindowKind::FiveHour)
+                .unwrap()
+                .used_percent,
+            13.0
+        );
+        assert_eq!(
+            window_in(
+                saved.windows_for_session(Some("session-1")),
+                WindowKind::FiveHour
+            )
+            .unwrap()
+            .used_percent,
+            13.0
+        );
+
+        // The restore is bounded by the window's own reset: once the 5h period
+        // has elapsed the stale reading is dropped rather than carried forward.
+        cache
+            .save_statusline_observation(
+                Provider::Claude,
+                ProviderSnapshot::new(
+                    Provider::Claude,
+                    vec![UsageWindow::new(
+                        WindowKind::Weekly,
+                        20.0,
+                        Some(ResetAt::from_unix_seconds(10_000)),
+                    )
+                    .unwrap()],
+                    2_500,
+                )
+                .session_local(),
+                &payload,
+            )
+            .unwrap();
+        let saved = cache
+            .load_statusline_observation(Provider::Claude)
+            .unwrap()
+            .unwrap()
+            .snapshot;
+        assert!(window_in(&saved.windows, WindowKind::FiveHour).is_none());
     }
 
     #[test]
