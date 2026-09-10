@@ -69,7 +69,7 @@ herdr plugin pane open --plugin herdr-agent-quota --entrypoint settings --focus
 | Layout | `gauges`（默认）在每个额度数字旁加进度条；`packed` 合并相关字段；`stacked` 将字段分行显示 |
 | Row gap | Agent 之间保留零行或一行空白 |
 | Watch interval | 30 秒–1 小时，默认 60 秒 |
-| Fields | 主题、模型、缓存、TTL、上下文、短期／长期额度 |
+| Fields | 提供方、主题、模型、缓存、TTL、上下文、短期／长期额度 |
 | Brand colors | 开启或关闭品牌色 |
 | Agent order | Herdr 默认排序，或剩余额度最少的优先 |
 | Low quota alert | 关闭，或设置 1%–100% 的提醒阈值 |

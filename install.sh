@@ -28,8 +28,8 @@
 # how much has been consumed. The colour always follows what is left.
 #
 # --fields picks the quota fields the sidebar shows: all (default), none, or a
-# comma-separated list of topic, model, cache, ttl, context, 5h, 7d. The
-# provider and the error token are always shown.
+# comma-separated list of provider, topic, model, cache, ttl, context, 5h, 7d.
+# The error token is always shown.
 #
 # --brand-colors on (default) tints provider and model with each agent's hue;
 # off leaves them in the sidebar's own text colour. Severity colours stay.

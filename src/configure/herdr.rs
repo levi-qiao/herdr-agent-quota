@@ -909,8 +909,8 @@ fn is_standalone_agent_row(row: &Array) -> bool {
 
 fn append_quota_rows(rows: &mut Array, layout: SidebarLayout) {
     // Gauges shares packed's identity line and stacked's body: the identity is
-    // not a quota field so it stays compact, while a meter needs its own row
-    // per field. Both halves are shared rather than copied so they cannot drift.
+    // one name, not a quota gauge, so it stays compact, while a meter needs its
+    // own row per field. Both halves are shared rather than copied so they cannot drift.
     match layout {
         SidebarLayout::Packed | SidebarLayout::Gauges => append_identity_row(rows),
         SidebarLayout::Stacked => {
@@ -1029,20 +1029,31 @@ fn retain_selected_fields(rows: &mut Array, fields: FieldSet) {
         };
         let mut retained = Array::new();
         for item in items.iter() {
-            match configured_token_name(item).and_then(field_for_token) {
-                Some(field) if !fields.contains(field) => {
-                    // `$quota_provider_model` carries the identity as well as
-                    // the model, so hiding the model degrades it to the
-                    // provider instead of removing the row's only name.
-                    if configured_token_name(item) == Some("$quota_provider_model") {
-                        retained.push(styled_token(
-                            "$quota_provider",
-                            None,
-                            Some(true),
-                            Some(false),
-                        ));
+            // `$quota_provider_model` carries two fields on one token, so
+            // `field_for_token` cannot decide it: hiding the model degrades it
+            // to the provider, hiding the provider degrades it to the model,
+            // and hiding both drops the identity line.
+            if configured_token_name(item) == Some("$quota_provider_model") {
+                match (
+                    fields.contains(SidebarField::Provider),
+                    fields.contains(SidebarField::Model),
+                ) {
+                    (true, true) => retained.push(item.clone()),
+                    (true, false) => retained.push(styled_token(
+                        "$quota_provider",
+                        None,
+                        Some(true),
+                        Some(false),
+                    )),
+                    (false, true) => {
+                        retained.push(styled_token("$quota_model", None, Some(false), Some(false)))
                     }
+                    (false, false) => {}
                 }
+                continue;
+            }
+            match configured_token_name(item).and_then(field_for_token) {
+                Some(field) if !fields.contains(field) => {}
                 _ => retained.push(item.clone()),
             }
         }
@@ -1054,11 +1065,13 @@ fn retain_selected_fields(rows: &mut Array, fields: FieldSet) {
 }
 
 /// The field a published token belongs to, or `None` for a token that is not
-/// optional (the provider identity and the error channel).
+/// optional (the `$quota_error` channel). `$quota_provider_model` is not here:
+/// it names two fields at once and is decided in `retain_selected_fields`.
 fn field_for_token(token: &str) -> Option<SidebarField> {
     match token {
+        "$quota_provider" => Some(SidebarField::Provider),
         "$quota_topic" => Some(SidebarField::Topic),
-        "$quota_model" | "$quota_provider_model" => Some(SidebarField::Model),
+        "$quota_model" => Some(SidebarField::Model),
         "$quota_cache" | "$quota_cache_state" => Some(SidebarField::Cache),
         "$quota_cache_ttl" => Some(SidebarField::Ttl),
         "$quota_context"
@@ -2555,11 +2568,64 @@ mod field_tests {
         assert!(!packed.contains("$quota_model"), "{packed}");
     }
 
+    /// Hiding the provider must not take the row's model with it, and the
+    /// degraded token must still be a token the theming pass knows.
     #[test]
-    fn hiding_every_optional_field_keeps_the_official_row_and_the_provider() {
+    fn hiding_the_provider_leaves_the_model_on_the_identity_row() {
+        let packed = applied(
+            FieldSet::all().toggled(SidebarField::Provider),
+            BrandColors::On,
+        );
+        assert!(packed.contains("$quota_model\""), "{packed}");
+        assert!(!packed.contains("$quota_provider_model"), "{packed}");
+        assert!(!packed.contains("$quota_provider\""), "{packed}");
+    }
+
+    /// The user's own selection (`fields = 5h`) must leave no identity row at
+    /// all, and applying it twice must land on the same config.
+    #[test]
+    fn a_single_field_selection_writes_no_identity_row() {
+        let fields = FieldSet::parse("5h").unwrap();
+        let once = applied(fields, BrandColors::On);
+        assert!(!once.contains("$quota_provider"), "{once}");
+        assert!(once.contains("$quota_5h"), "{once}");
+        let twice = add_quota_row_with(
+            &once,
+            &AgentSelection::SUPPORTED,
+            SidebarLayout::Packed,
+            SidebarRowGap::default(),
+            fields,
+            BrandColors::On,
+        )
+        .unwrap();
+        assert_eq!(once, twice);
+    }
+
+    /// In `stacked` the provider and the model sit on rows of their own, so a
+    /// hidden provider has to take its row and leave the model's alone.
+    #[test]
+    fn a_stacked_layout_drops_the_provider_row_with_the_field() {
+        let stacked = add_quota_row_with(
+            "",
+            &AgentSelection::SUPPORTED,
+            SidebarLayout::Stacked,
+            SidebarRowGap::default(),
+            FieldSet::all().toggled(SidebarField::Provider),
+            BrandColors::On,
+        )
+        .unwrap();
+        assert!(!stacked.contains("$quota_provider\""), "{stacked}");
+        assert!(stacked.contains("$quota_model\""), "{stacked}");
+    }
+
+    #[test]
+    fn hiding_every_field_keeps_only_the_official_row_and_the_error_token() {
         let bare = applied(FieldSet::parse("none").unwrap(), BrandColors::On);
         assert!(bare.contains("state_icon"), "{bare}");
-        assert!(bare.contains("$quota_provider\""), "{bare}");
+        // The identity row is a field like any other: `none` means none of it.
+        assert!(!bare.contains("$quota_provider"), "{bare}");
+        // The error token is not optional: it is how a broken pane is reported.
+        assert!(bare.contains("$quota_error"), "{bare}");
         for token in ["$quota_topic", "$quota_context", "$quota_5h", "$quota_week"] {
             assert!(!bare.contains(token), "{token} survived:\n{}", rows(&bare));
         }
@@ -2667,6 +2733,10 @@ mod field_tests {
         assert!(modelless.contains("$quota_provider\""), "{modelless}");
         assert!(!modelless.contains("$quota_provider_model"), "{modelless}");
         assert!(!modelless.contains("$quota_model"), "{modelless}");
+
+        let providerless = gauges(FieldSet::all().toggled(SidebarField::Provider));
+        assert!(providerless.contains("$quota_model\""), "{providerless}");
+        assert!(!providerless.contains("$quota_provider"), "{providerless}");
     }
 
     /// Uninstall has to recognise rows written with a non-default selection,

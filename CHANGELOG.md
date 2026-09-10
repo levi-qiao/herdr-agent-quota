@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- The provider name is a sidebar field like any other: `--fields` and the
+  settings pane accept `provider`, listed first. It defaults on, so an
+  existing configuration renders exactly as before; turning it off leaves the
+  row with its icon and numbers. A packed identity row follows its two halves,
+  so hiding the model degrades `$quota_provider_model` to `$quota_provider`,
+  hiding the provider degrades it to `$quota_model`, and hiding both writes
+  no identity row. The error token stays unconditional: it says the plugin
+  could not speak for a pane, which is a failure, not a field.
+
 ## [1.5.4] - 2026-09-10
 
 ### Added
