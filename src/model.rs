@@ -27,6 +27,9 @@ pub enum Provider {
     /// Quota reported by Devin CLI's Connect RPC API. A 1:1 harness→billing
     /// mapping like the original four, refreshed through `--provider all`.
     Devin,
+    /// Muse Code's subscription windows, read from the key call the CLI makes.
+    /// A 1:1 harness→billing mapping refreshed through `--provider all`.
+    Muse,
 }
 
 /// Quota collector identity. The original four keep the historical
@@ -36,12 +39,13 @@ pub type Billing = Provider;
 impl Provider {
     /// The collectors a bare `--provider all` refreshes. OpenCode Go is not
     /// here on purpose; see the variant's note.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Codex,
         Self::Grok,
         Self::Claude,
         Self::Agy,
         Self::Devin,
+        Self::Muse,
     ];
 
     /// Collectors fetched only for a pane that resolved to them.
@@ -61,6 +65,7 @@ impl Provider {
             Self::OpenCodeGo => "OpenCode Go",
             Self::Omp => "OMP",
             Self::Devin => "Devin",
+            Self::Muse => "Muse",
         }
     }
 
@@ -75,6 +80,7 @@ impl Provider {
             Self::OpenCodeGo => "opencode-go.opencode-store",
             Self::Omp => "omp-usage",
             Self::Devin => "devin-cli-billing",
+            Self::Muse => "muse-code-subscription",
         }
     }
 }
@@ -92,6 +98,7 @@ pub enum Harness {
     Pi,
     Omp,
     Devin,
+    Muse,
 }
 
 impl Harness {
@@ -107,6 +114,7 @@ impl Harness {
             "pi" => Some(Self::Pi),
             "omp" => Some(Self::Omp),
             "devin" | "devin-cli" => Some(Self::Devin),
+            "muse" | "muse-code" => Some(Self::Muse),
             _ => None,
         }
     }
@@ -120,6 +128,7 @@ impl Harness {
             Self::Claude => Some(Provider::Claude),
             Self::Agy => Some(Provider::Agy),
             Self::Devin => Some(Provider::Devin),
+            Self::Muse => Some(Provider::Muse),
             Self::OpenCode | Self::Pi | Self::Omp => None,
         }
     }
@@ -657,7 +666,9 @@ impl ProviderSnapshot {
             return Some(model);
         }
         match self.provider {
-            Provider::Devin => self.model.as_deref(),
+            // A Muse session with no completed model call yet runs the
+            // `settings.json` default, like a fresh Devin session.
+            Provider::Devin | Provider::Muse => self.model.as_deref(),
             _ => None,
         }
     }
@@ -817,7 +828,8 @@ impl ProviderSnapshot {
             | Provider::Agy
             | Provider::OpenCodeGo
             | Provider::Omp
-            | Provider::Devin => {
+            | Provider::Devin
+            | Provider::Muse => {
                 window_in(&live, WindowKind::FiveHour).or_else(|| long_window(&live))
             }
         };
@@ -1283,6 +1295,11 @@ mod tests {
         assert_eq!(
             Harness::billing_for_agent("devin-cli"),
             Some(Provider::Devin)
+        );
+        assert_eq!(Harness::billing_for_agent("muse"), Some(Provider::Muse));
+        assert_eq!(
+            Harness::billing_for_agent("muse-code"),
+            Some(Provider::Muse)
         );
     }
 

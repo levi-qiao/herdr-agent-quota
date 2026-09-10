@@ -397,7 +397,8 @@ fn missing_five_hour_label(provider: Provider) -> Option<&'static str> {
         | Provider::Grok
         | Provider::OpenCodeGo
         | Provider::Omp
-        | Provider::Devin => None,
+        | Provider::Devin
+        | Provider::Muse => None,
     }
 }
 

@@ -3,6 +3,7 @@ pub mod claude;
 pub mod codex;
 pub mod devin;
 pub mod grok;
+pub mod muse;
 pub mod omp;
 pub mod opencode_go;
 pub mod statusline;
@@ -36,6 +37,7 @@ mod tests {
             Provider::Codex,
             Provider::Grok,
             Provider::Devin,
+            Provider::Muse,
             Provider::OpenCodeGo,
         ] {
             let mut cached = ProviderSnapshot::new(provider, vec![], 100);

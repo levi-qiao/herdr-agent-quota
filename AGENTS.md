@@ -54,7 +54,7 @@ Concretely, this means:
 |---|---|---|
 | `startup` | Herdr's `[[startup]]` hook | No |
 | `refresh` | manual action, `startup` | No |
-| `event` | `pane.agent_detected`, `pane.agent_status_changed` | Only the pane named in `HERDR_PLUGIN_EVENT_JSON`, and never a Pi or omp pane — their transcripts carry the evidence |
+| `event` | `pane.agent_detected`, `pane.agent_status_changed` | Only the pane named in `HERDR_PLUGIN_EVENT_JSON`, and never a Pi, omp, or Muse pane — their transcripts carry the evidence |
 | `focus` | `pane.focused` | No |
 | `watch` | detached from a working status event | No (agent metadata only) |
 
@@ -137,6 +137,22 @@ read-only and select only `id, model` — the same discipline as omp
 `models.db`, not `agent.db`. A missing, locked, or unexpected schema skips
 per-session attribution. `config.json` `agent.model` stays on
 `snapshot.model` as the fallback and is never copied into `session_models`.
+
+## Muse panes are matched through Muse's session lock
+
+Herdr has no Muse session integration, so a Muse pane arrives without an
+`agent_session`. `herdr::list_agent_state` fills it in from evidence Muse
+writes itself: the `muse-bin` process inherits its pane's `HERDR_PANE_ID`, and
+`sessions/<yyyy>/<mm>/<dd>/<id>/.session.lock` holds that process's
+`pid=<n>`. Read only `comm` and the `HERDR_PANE_ID` entry of a process
+environment, never anything else from it. A session Herdr does report always
+wins. No `/proc` (macOS) means no session, never a guessed one.
+
+The quota call (`muse-code/key`) also returns the account's API key and
+identity. Only `subs_usage` is read. Session-local fields come from the
+bounded tail of `session.jsonl`: the last `model_completed` usage against the
+`model-catalog` context limit, and the last `user_prompt_display` as topic.
+Muse publishes no prompt-cache lifetime, so there is no TTL estimate.
 
 ## Herdr state this plugin owns outside a pane
 

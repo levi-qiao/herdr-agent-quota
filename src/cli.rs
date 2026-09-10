@@ -77,7 +77,7 @@ pub enum Command {
         #[arg(long, conflicts_with_all = ["check", "apply"])]
         uninstall: bool,
         /// Agents to configure: all, claude, codex, grok, agy, opencode, pi,
-        /// omp, devin. Repeat or comma-separate to pick several. Defaults to
+        /// omp, devin, muse. Repeat or comma-separate to pick several. Defaults to
         /// every supported agent (or $HERDR_AGENT_QUOTA_AGENTS when set), so
         /// `--uninstall` alone still removes everything this plugin installed.
         #[arg(long, value_delimiter = ',')]
@@ -139,6 +139,7 @@ pub enum ProviderSelection {
     Claude,
     Agy,
     Devin,
+    Muse,
 }
 
 impl ProviderSelection {
@@ -150,6 +151,7 @@ impl ProviderSelection {
             Self::Claude => vec![Provider::Claude],
             Self::Agy => vec![Provider::Agy],
             Self::Devin => vec![Provider::Devin],
+            Self::Muse => vec![Provider::Muse],
         }
     }
 }
@@ -169,6 +171,7 @@ pub enum AgentSelection {
     Pi,
     Omp,
     Devin,
+    Muse,
 }
 
 /// How quota tokens are arranged in Herdr's agent sidebar.
@@ -721,7 +724,7 @@ impl SidebarLayout {
 
 impl AgentSelection {
     /// Every agent `configure` supports, in the order they are reported.
-    pub const SUPPORTED: [Harness; 8] = [
+    pub const SUPPORTED: [Harness; 9] = [
         Harness::Claude,
         Harness::Codex,
         Harness::Grok,
@@ -730,6 +733,7 @@ impl AgentSelection {
         Harness::Pi,
         Harness::Omp,
         Harness::Devin,
+        Harness::Muse,
     ];
 
     fn harness(self) -> Option<Harness> {
@@ -743,6 +747,7 @@ impl AgentSelection {
             Self::Pi => Some(Harness::Pi),
             Self::Omp => Some(Harness::Omp),
             Self::Devin => Some(Harness::Devin),
+            Self::Muse => Some(Harness::Muse),
         }
     }
 
@@ -790,6 +795,7 @@ impl AgentSelection {
             "pi" => Some(Self::Pi),
             "omp" => Some(Self::Omp),
             "devin" => Some(Self::Devin),
+            "muse" => Some(Self::Muse),
             _ => None,
         }
     }

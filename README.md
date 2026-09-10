@@ -81,7 +81,7 @@ herdr plugin pane open --plugin herdr-agent-quota --entrypoint settings --focus
 | Brand colors | On or off |
 | Agent order | Herdr default or lowest remaining quota first |
 | Low quota alert | Off or a threshold from 1% to 100% |
-| Agents | Claude, Codex, Grok, Agy, OpenCode, Pi, OMP, Devin |
+| Agents | Claude, Codex, Grok, Agy, OpenCode, Pi, OMP, Devin, Muse |
 
 Use arrows or Space to edit, `a` to apply, and `q` to close.
 Installer options are also available through `./install.sh --help`.
@@ -93,6 +93,7 @@ Installer options are also available through `./install.sh --help`.
 | Codex | Codex app-server; 5h and/or 7d | Current login in the plugin's `CODEX_HOME` |
 | Grok | CLI billing endpoint; 7d or 30d | Current CLI credentials |
 | Devin | CLI usage endpoint; 1d and 7d | Current CLI credentials |
+| Muse Code | CLI subscription endpoint; 5h and 7d | Current CLI account login; session via Muse's session lock (Linux) |
 | Claude Code | StatusLine; 5h and 7d | Exact session observation |
 | Agy / Antigravity | StatusLine; 5h and 7d | Exact session and identifiable model pool |
 | OpenCode | OpenCode Go usage endpoint | Go credential; confirmed PAYG routes have no subscription quota |
@@ -109,7 +110,7 @@ are debounced for 60 seconds, including a final refresh after a turn settles.
 OMP additionally retains its own five-minute usage cache. Idle panes sharing a
 verified quota source receive the same reading.
 
-Native Codex, Grok, and Devin collectors follow the plugin's current login,
+Native Codex, Grok, Devin, and Muse collectors follow the plugin's current login,
 not separate accounts for each pane. Claude/Agy do not report a reliable serving
 account ID, so their observations are not shared across sessions. Unknown
 identity or model-pool attribution does not produce a guessed quota. Failed
@@ -124,6 +125,7 @@ turn failures into zero usage.
 | Claude/Agy quota is missing | Send a turn so the session's StatusLine produces an observation |
 | OMP quota is missing | Check `omp usage --json --redact --provider <id>` |
 | Devin quota is missing | Check the CLI login and `DEVIN_CREDENTIALS_FILE` if customized |
+| Muse quota is missing | Run `muse login` (API-key logins have no subscription quota); check `MUSE_AUTH_PATH` if customized |
 | Rows are missing | Run the configure action below to repair managed configuration |
 | The `gauges` meter disappears on a narrow sidebar | Expected below ~24 columns; widen the sidebar and refresh |
 | `gauges` still uses the old width after a resize | Refresh with `prefix+shift+r`; there is no live resize publish path |
