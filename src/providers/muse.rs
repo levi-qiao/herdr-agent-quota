@@ -15,9 +15,10 @@
 //! only to the fixed Meta host, never to an `auth.json`-supplied URL.
 //!
 //! Everything fails closed. A missing or malformed window yields no window,
-//! an inactive subscription is "unavailable" rather than "0% used", and the
-//! cache identity is `sha256("muse\0" || access token)` so another login can
-//! never inherit the previous account's last-good snapshot.
+//! and the cache identity is `sha256("muse\0" || access token)` so another
+//! login can never inherit the previous account's last-good snapshot. A pane
+//! without a subscription (an API-key login, or an inactive plan) shows no
+//! quota, never "0% used", but keeps its local session fields.
 //!
 //! The provider-level model is the CLI's default from `settings.json` `model`.
 //! Herdr has no Muse session integration, so a pane's session is found through
@@ -79,8 +80,59 @@ impl std::fmt::Debug for MuseCredentials {
 /// enrich the named sessions from their local transcripts.
 pub fn fetch_for_sessions(session_ids: &[String]) -> Result<ProviderSnapshot> {
     let path = auth_path().context("resolve Muse Code auth path")?;
-    let credentials = read_credentials(&path).map_err(anyhow::Error::from)?;
-    let account_id = account_pin(&credentials.access_token);
+    let mut snapshot = resolve_subscription(
+        read_credentials(&path),
+        !session_ids.is_empty(),
+        CacheStore::now_unix(),
+        fetch_subscription,
+    )
+    .map_err(anyhow::Error::from)?
+    .with_model(configured_model());
+    if let Ok(data_dir) = muse_data_dir() {
+        enrich_sessions_at(&mut snapshot, &data_dir, session_ids);
+    }
+    Ok(snapshot)
+}
+
+/// The quota snapshot for this refresh.
+///
+/// A Muse pane with no subscription still has local session diagnostics, so
+/// two outcomes become a snapshot without quota windows instead of an error
+/// (only when a Muse session is being refreshed, so nobody without Muse gets
+/// an empty cached row):
+/// - no account login is stored (an API-key login, or none), and
+/// - the account has no active subscription.
+///
+/// A rejected token, a failed request, or an unreadable response stays an
+/// error. That keeps the last cached quota for the same account instead of
+/// replacing it with nothing.
+fn resolve_subscription(
+    credentials: std::result::Result<MuseCredentials, ProviderError>,
+    has_sessions: bool,
+    now: u64,
+    fetch: impl FnOnce(&MuseCredentials, u64) -> std::result::Result<ProviderSnapshot, ProviderError>,
+) -> std::result::Result<ProviderSnapshot, ProviderError> {
+    let without_quota = || ProviderSnapshot::new(Provider::Muse, vec![], now);
+    let credentials = match credentials {
+        Ok(credentials) => credentials,
+        Err(ProviderError::MissingCredentials) if has_sessions => return Ok(without_quota()),
+        Err(error) => return Err(error),
+    };
+    let account_id = Some(account_pin(&credentials.access_token));
+    match fetch(&credentials, now) {
+        Ok(snapshot) => Ok(snapshot.with_account_id(account_id)),
+        Err(ProviderError::Unavailable(_)) if has_sessions => {
+            Ok(without_quota().with_account_id(account_id))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// One `muse-code/key` call, parsed down to `subs_usage`.
+fn fetch_subscription(
+    credentials: &MuseCredentials,
+    now: u64,
+) -> std::result::Result<ProviderSnapshot, ProviderError> {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(5))
         .timeout_read(Duration::from_secs(10))
@@ -103,14 +155,7 @@ pub fn fetch_for_sessions(session_ids: &[String]) -> Result<ProviderSnapshot> {
     let value: Value = response
         .into_json()
         .map_err(|_| ProviderError::UnsupportedResponse("Muse Code response is not JSON".into()))?;
-    let mut snapshot = parse_subscription(&value, CacheStore::now_unix())
-        .map_err(anyhow::Error::from)?
-        .with_model(configured_model())
-        .with_account_id(Some(account_id));
-    if let Ok(data_dir) = muse_data_dir() {
-        enrich_sessions_at(&mut snapshot, &data_dir, session_ids);
-    }
-    Ok(snapshot)
+    parse_subscription(&value, now)
 }
 
 /// Muse session ids for Herdr panes, keyed by pane id.
@@ -1248,5 +1293,94 @@ mod tests {
             Some("Add Muse support to the quota plugin")
         );
         assert_eq!(snapshot.session_models.len(), 1);
+    }
+
+    fn oauth() -> std::result::Result<MuseCredentials, ProviderError> {
+        Ok(MuseCredentials {
+            access_token: "token".into(),
+        })
+    }
+
+    fn subscribed(
+        _: &MuseCredentials,
+        now: u64,
+    ) -> std::result::Result<ProviderSnapshot, ProviderError> {
+        parse_subscription(&power_fixture(), now)
+    }
+
+    #[test]
+    fn an_account_without_a_subscription_keeps_local_fields_only_for_a_session() {
+        let no_login = || Err(ProviderError::MissingCredentials);
+        let never =
+            |_: &MuseCredentials, _| -> std::result::Result<ProviderSnapshot, ProviderError> {
+                panic!("no account login means no subscription request")
+            };
+
+        let api_key = resolve_subscription(no_login(), true, 7, never).unwrap();
+        assert!(api_key.windows.is_empty());
+        assert_eq!(api_key.account_id, None);
+        assert!(matches!(
+            resolve_subscription(no_login(), false, 7, never),
+            Err(ProviderError::MissingCredentials)
+        ));
+
+        let inactive = |_: &MuseCredentials, _| Err(ProviderError::Unavailable("inactive".into()));
+        let lapsed = resolve_subscription(oauth(), true, 7, inactive).unwrap();
+        assert!(lapsed.windows.is_empty());
+        assert_eq!(lapsed.account_id, Some(account_pin("token")));
+        assert!(resolve_subscription(oauth(), false, 7, inactive).is_err());
+
+        let active = resolve_subscription(oauth(), true, 7, subscribed).unwrap();
+        assert_eq!(active.windows.len(), 2);
+        assert_eq!(active.account_id, Some(account_pin("token")));
+    }
+
+    /// A failed or rejected request must not replace a cached reading with an
+    /// empty one, so it stays an error even while a session is refreshed.
+    #[test]
+    fn a_failed_or_rejected_request_is_never_a_missing_subscription() {
+        for error in [
+            ProviderError::MissingCredentials,
+            ProviderError::Request("HTTP 503".into()),
+            ProviderError::UnsupportedResponse("not JSON".into()),
+        ] {
+            let mut error = Some(error);
+            let failing = |_: &MuseCredentials, _| Err(error.take().unwrap());
+            assert!(resolve_subscription(oauth(), true, 7, failing).is_err());
+        }
+    }
+
+    #[test]
+    fn a_pane_without_quota_still_renders_its_session_fields() {
+        let dir = tempdir().unwrap();
+        fake_session(&dir.path().join("sessions"), "2026/09/10", SESSION_ID, 1);
+        let catalog = dir.path().join("model-catalog");
+        fs::create_dir_all(&catalog).unwrap();
+        fs::write(
+            catalog.join("catalog.json"),
+            r#"{"rows": [{"model_id": "muse-spark-1.3", "context_limit": 1007997}]}"#,
+        )
+        .unwrap();
+        let mut snapshot =
+            resolve_subscription(Err(ProviderError::MissingCredentials), true, 1, |_, _| {
+                panic!("no request")
+            })
+            .unwrap();
+        enrich_sessions_at(&mut snapshot, dir.path(), &[SESSION_ID.to_string()]);
+
+        let tokens = crate::presentation::MetadataTokens::from_snapshot_for_pane(
+            &snapshot,
+            1,
+            Some(SESSION_ID),
+            crate::cli::PercentStyle::default(),
+            crate::presentation::SidebarShape::default(),
+        );
+        assert_eq!(tokens.quota_model, "muse-spark-1.3");
+        assert!(!tokens.quota_context.is_empty());
+        assert!(!tokens.quota_cache.is_empty());
+        assert_eq!(tokens.quota_5h, "");
+        assert_eq!(tokens.quota_week, "");
+        assert_eq!(tokens.quota_error, None);
+        assert_eq!(tokens.quota_headroom, None);
     }
 }

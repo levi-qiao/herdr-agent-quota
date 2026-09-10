@@ -18,7 +18,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as 7d; a different advertised session length keeps its own label. Only the
   usage block is read — the key and account identity in the same response
   are discarded. Snapshots are stamped with `sha256("muse\0" || token)`.
-  API-key logins have no subscription and show no quota.
+  API-key logins and inactive subscriptions show no quota but keep the
+  session fields below. A rejected token or a failed request keeps the last
+  quota cached for that account.
 - Muse panes get model, topic, context, and cache like other agents. Herdr
   reports no Muse session, so on Linux the pane is matched to its session
   through Muse's own `.session.lock` (`pid=<n>`) and the `HERDR_PANE_ID` the
