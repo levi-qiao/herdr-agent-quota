@@ -5,7 +5,7 @@
 #   ./install.sh
 #   ./install.sh --agent claude,codex
 #   ./install.sh --watch-interval-seconds 300
-#   ./install.sh --sidebar-layout gauges
+#   ./install.sh --sidebar-layout packed
 #   ./install.sh --row-gap 0
 #   ./install.sh --quota-percent used
 #   ./install.sh --fields topic,model,context,5h,7d
@@ -17,9 +17,9 @@
 # opencode, pi, omp, devin). Anything you leave out gets no sidebar row, no
 # statusLine entry and no hook file. The default is every supported agent.
 #
-# --sidebar-layout packed (default) joins cache/TTL and 5h/7d on one row.
-# stacked puts provider, model, cache, TTL, context, 5h, and 7d on their own
-# rows. gauges draws a meter beside each quota number.
+# --sidebar-layout gauges (default) draws a meter beside each quota number.
+# packed joins cache/TTL and 5h/7d on one row. stacked puts provider, model,
+# cache, TTL, context, 5h, and 7d on their own rows without meters.
 #
 # --row-gap 1 (default) leaves one blank row between agent panes; 0 packs them
 # flush. Herdr only accepts whole rows.

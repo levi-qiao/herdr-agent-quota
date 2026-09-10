@@ -458,7 +458,10 @@ fn handle_named_pane(cache: &CacheStore, pane: AgentPane, topic_pane: Option<&st
         }
     }
     let shape = sidebar_shape(cache);
-    let row = RowStyle::new(cache.percent_style().unwrap_or_default(), shape);
+    let row = RowStyle {
+        fields: cache.fields().unwrap_or_default(),
+        ..RowStyle::new(cache.percent_style().unwrap_or_default(), shape)
+    };
     let tokens = resolved_pane_tokens(
         cache,
         &mut panes[0],
@@ -1040,7 +1043,10 @@ fn publish_resolved(
     let mut tokens = Vec::new();
     let now = CacheStore::now_unix();
     let shape = sidebar_shape(cache);
-    let row = RowStyle::new(cache.percent_style().unwrap_or_default(), shape);
+    let row = RowStyle {
+        fields: cache.fields().unwrap_or_default(),
+        ..RowStyle::new(cache.percent_style().unwrap_or_default(), shape)
+    };
     let mut refreshed_targets = Vec::new();
     for pane in panes.iter_mut() {
         let resolved = route::resolve_with_identity(pane);
@@ -1727,9 +1733,9 @@ mod tests {
         let shell = state.join("herdr/client-shell");
         std::fs::create_dir_all(&shell).unwrap();
         let absent_config = directory.path().join("absent.toml");
-        for (width, cells) in [(22, 6), (35, 12)] {
+        for (width, cells) in [(26, 6), (35, 12)] {
             std::fs::write(
-                shell.join("local-abc.json"),
+                shell.join("local-82d9e482d8820ee2.json"),
                 format!("{{\"sidebar_width\": {width}}}"),
             )
             .unwrap();
@@ -1737,6 +1743,10 @@ mod tests {
                 &[
                     ("HERDR_CONFIG_FILE", Some(absent_config.as_os_str())),
                     ("XDG_STATE_HOME", Some(state.as_os_str())),
+                    (
+                        "HERDR_SOCKET_PATH",
+                        Some(std::ffi::OsStr::new("/test/herdr.sock")),
+                    ),
                 ],
                 || {
                     let shape = sidebar_shape(&cache);

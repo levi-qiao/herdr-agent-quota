@@ -128,7 +128,14 @@ fn hold_refresh_lock_in_child(state: &Path) -> std::process::Child {
     locker
 }
 
+fn pin_compact_layout(state: &Path) {
+    CacheStore::new(state)
+        .set_sidebar_layout(herdr_agent_quota::cli::SidebarLayout::Packed)
+        .unwrap();
+}
+
 fn run_claude_refresh(state: &Path, herdr: &Path) {
+    pin_compact_layout(state);
     let output = Command::new(env!("CARGO_BIN_EXE_herdr-agent-quota"))
         .args(["refresh", "--provider", "claude", "--force"])
         .env("HERDR_PLUGIN_STATE_DIR", state)
@@ -1040,6 +1047,7 @@ fn run_event_binary_with_xdg(
     event_json: &str,
     xdg_data_home: &Path,
 ) -> std::process::Output {
+    pin_compact_layout(state);
     Command::new(env!("CARGO_BIN_EXE_herdr-agent-quota"))
         .arg("event")
         .env("HERDR_PLUGIN_STATE_DIR", state)
@@ -2149,6 +2157,7 @@ fn run_pi_event(
     pi_agent: &Path,
     pi_sessions: &Path,
 ) -> std::process::Output {
+    pin_compact_layout(state);
     Command::new(env!("CARGO_BIN_EXE_herdr-agent-quota"))
         .arg("event")
         .env("HERDR_PLUGIN_STATE_DIR", state)

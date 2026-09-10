@@ -627,7 +627,7 @@ mod tests {
     fn settings() -> Settings {
         Settings {
             percent: PercentStyle::Remaining,
-            layout: SidebarLayout::Packed,
+            layout: SidebarLayout::Gauges,
             gap: SidebarRowGap::SEPARATED,
             interval_seconds: 60,
             brand: BrandColors::On,
@@ -657,7 +657,7 @@ mod tests {
         assert_eq!(draft.percent, PercentStyle::Remaining);
 
         draft.cycle(Row::Choice(Choice::Layout), 1);
-        assert_eq!(draft.layout, SidebarLayout::Stacked);
+        assert_eq!(draft.layout, SidebarLayout::Packed);
         draft.cycle(Row::Choice(Choice::RowGap), 1);
         assert_eq!(draft.gap, SidebarRowGap::FLUSH);
         draft.cycle(Row::Choice(Choice::Brand), 1);
@@ -668,17 +668,16 @@ mod tests {
     fn the_layout_cycles_through_all_three_choices_in_both_directions() {
         let mut draft = settings();
         draft.cycle(Row::Choice(Choice::Layout), -1);
-        assert_eq!(draft.layout, SidebarLayout::Gauges);
+        assert_eq!(draft.layout, SidebarLayout::Stacked);
         draft.cycle(Row::Choice(Choice::Layout), 1);
-        assert_eq!(draft.layout, SidebarLayout::Packed);
+        assert_eq!(draft.layout, SidebarLayout::Gauges);
         for _ in 0..SidebarLayout::CHOICES.len() {
             draft.cycle(Row::Choice(Choice::Layout), 1);
         }
-        assert_eq!(draft.layout, SidebarLayout::Packed);
+        assert_eq!(draft.layout, SidebarLayout::Gauges);
 
         // The gauges hint is the longest of the three, so check it against the
         // same width budget the frame test holds the other layouts to.
-        draft.cycle(Row::Choice(Choice::Layout), -1);
         let frame = render(&draft, settings(), 2, 24, None);
         assert!(frame.contains("gauges"), "{frame}");
         for line in frame.trim_end_matches("\r\n").split("\r\n") {
@@ -737,7 +736,7 @@ mod tests {
                 "--quota-percent",
                 "used",
                 "--sidebar-layout",
-                "packed",
+                "gauges",
                 "--row-gap",
                 "1",
                 "--brand-colors",
@@ -825,7 +824,7 @@ mod tests {
         draft.cycle(Row::Choice(Choice::Layout), 1);
         let frame = render(&draft, applied, 2, 24, Some("Nothing to apply."));
         assert!(frame.contains("> * Sidebar layout"), "{frame}");
-        assert!(frame.contains("stacked"), "{frame}");
+        assert!(frame.contains("packed"), "{frame}");
         assert!(!frame.contains("Agent quota settings"), "{frame}");
         // The frame ends in a line break, so the split leaves a trailing "".
         let lines: Vec<&str> = frame.trim_end_matches("\r\n").split("\r\n").collect();

@@ -501,6 +501,7 @@ pub fn publish_pane_tokens(
         if let Some(context) = &pane_tokens.context {
             apply_context(&mut desired, context, sequence / 1_000, row);
         }
+        fold_cache_row(&mut desired, row);
         if metadata_matches(&pane.tokens, &desired) {
             continue;
         }
@@ -687,6 +688,29 @@ fn apply_context(
         } else {
             tokens.insert(name.to_string(), value);
         }
+    }
+}
+
+/// Keep the configured rows fixed. An empty TTL token collapses its row when
+/// both visible fields fit inside the cache token; the next refresh can split
+/// them again from the session evidence without rewriting Herdr's config.
+fn fold_cache_row(tokens: &mut BTreeMap<String, String>, row: RowStyle) {
+    use crate::cli::{SidebarField, SidebarLayout};
+    if row.shape.layout != SidebarLayout::Gauges
+        || !row.fields.contains(SidebarField::Cache)
+        || !row.fields.contains(SidebarField::Ttl)
+    {
+        return;
+    }
+    let (Some(cache), Some(ttl)) = (tokens.get("quota_cache"), tokens.get("quota_cache_ttl"))
+    else {
+        return;
+    };
+    let joined = format!("{cache} · {ttl}");
+    // These are plugin-generated numeric labels; · and ≈ each occupy one cell.
+    if joined.chars().count() <= row.shape.content_width {
+        tokens.insert("quota_cache".to_string(), joined);
+        tokens.remove("quota_cache_ttl");
     }
 }
 
@@ -906,7 +930,7 @@ fn is_status_line(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::PercentStyle;
+    use crate::cli::{FieldSet, PercentStyle, SidebarLayout};
     use crate::model::{
         CacheUsage, ContextUsage, ProviderSnapshot, ResetAt, UsageWindow, WindowKind,
     };
@@ -1331,7 +1355,7 @@ mod tests {
         assert!(!tokens.contains_key("quota_context_normal"));
         assert_eq!(
             tokens.get("quota_context_danger").map(String::as_str),
-            Some("context 85%")
+            Some("cx 85%")
         );
         apply_context(
             &mut tokens,
@@ -1346,6 +1370,81 @@ mod tests {
         for name in ["quota_context_normal", "quota_context_danger"] {
             assert!(!tokens.contains_key(name), "{name}");
         }
+    }
+
+    /// Related cache details share a line when both fields are visible and
+    /// the joined text fits the content width; they split again when it does
+    /// not. Packed and stacked never fold, and hiding either field keeps the
+    /// two tokens apart so the empty Herdr row can still collapse.
+    #[test]
+    fn gauges_join_cache_and_ttl_when_they_fit_the_content_width() {
+        let cache_ttl = || {
+            BTreeMap::from([
+                ("quota_cache".to_string(), "cache 95.2%".to_string()),
+                ("quota_cache_ttl".to_string(), "ttl≈29m".to_string()),
+            ])
+        };
+        let mut wide = cache_ttl();
+        fold_cache_row(
+            &mut wide,
+            RowStyle {
+                fields: FieldSet::all(),
+                percent: PercentStyle::Remaining,
+                shape: SidebarShape::new(SidebarLayout::Gauges, 26),
+            },
+        );
+        assert_eq!(
+            wide.get("quota_cache").map(String::as_str),
+            Some("cache 95.2% · ttl≈29m")
+        );
+        assert!(!wide.contains_key("quota_cache_ttl"));
+
+        let mut narrow = cache_ttl();
+        fold_cache_row(
+            &mut narrow,
+            RowStyle {
+                fields: FieldSet::all(),
+                percent: PercentStyle::Remaining,
+                shape: SidebarShape::new(SidebarLayout::Gauges, 18),
+            },
+        );
+        assert_eq!(
+            narrow.get("quota_cache").map(String::as_str),
+            Some("cache 95.2%")
+        );
+        assert_eq!(
+            narrow.get("quota_cache_ttl").map(String::as_str),
+            Some("ttl≈29m")
+        );
+
+        let mut cache_only = cache_ttl();
+        fold_cache_row(
+            &mut cache_only,
+            RowStyle {
+                fields: FieldSet::parse("cache").unwrap(),
+                percent: PercentStyle::Remaining,
+                shape: SidebarShape::new(SidebarLayout::Gauges, 26),
+            },
+        );
+        assert_eq!(
+            cache_only.get("quota_cache").map(String::as_str),
+            Some("cache 95.2%")
+        );
+        assert!(cache_only.contains_key("quota_cache_ttl"));
+
+        let mut packed = cache_ttl();
+        fold_cache_row(
+            &mut packed,
+            RowStyle::new(
+                PercentStyle::Remaining,
+                SidebarShape::from(SidebarLayout::Packed),
+            ),
+        );
+        assert_eq!(
+            packed.get("quota_cache").map(String::as_str),
+            Some("cache 95.2%")
+        );
+        assert!(packed.contains_key("quota_cache_ttl"));
     }
 
     /// `packed` and `stacked` keep the plain uncoloured name they have always
