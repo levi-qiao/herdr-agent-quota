@@ -223,12 +223,12 @@ fn pane_in_watch_scope(pane: &AgentPane, providers: &[Provider]) -> bool {
             .is_some_and(|provider| providers.contains(&provider))
 }
 
-/// Working and settling panes, plus idle panes whose cached quota has lapsed.
+/// Working and settling panes, plus idle panes whose displayed quota has lapsed.
 ///
 /// An expired window is no longer a live reading. Including those pane ids in
-/// an already-running watch pass is what rewrites the sidebar after a 5h
-/// reset without waiting for that pane to start a turn, and without starting
-/// a second watcher while everything is idle.
+/// an already-running watch pass rewrites the sidebar after a reset without
+/// waiting for that pane to start a turn, and without starting a second
+/// watcher while everything is idle.
 fn watch_pass_ids(
     cache: &CacheStore,
     panes: &[AgentPane],
@@ -258,7 +258,12 @@ fn cached_quota_has_expired(cache: &CacheStore, pane: &AgentPane, now: u64) -> b
         .load_target(&target)
         .ok()
         .flatten()
-        .is_some_and(|snapshot| snapshot.has_expired_quota(now))
+        .is_some_and(|snapshot| {
+            snapshot.displayed_quota_has_expired(
+                pane.session.as_ref().and_then(|session| session.id()),
+                now,
+            )
+        })
 }
 
 fn wait_for_watch_tick(
@@ -285,9 +290,9 @@ fn wait_for_watch_tick(
     }
 }
 
-/// Refresh only targets with a working or just-finished pane, then publish
-/// that account reading to its siblings. Local transcript routing does not
-/// read terminal output or poll unrelated subscriptions.
+/// Refresh working, settling, or expired-quota targets, then publish that
+/// account reading to its siblings. Local transcript routing does not read
+/// terminal output or poll unrelated subscriptions.
 fn refresh_working_panes(
     cache: &CacheStore,
     panes: &[AgentPane],
@@ -613,12 +618,7 @@ fn omp_quota_with_refresh(
     let debounced = cache
         .should_debounce_target(target, now, 60)
         .unwrap_or(false);
-    if debounced
-        && !force
-        && !cached
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.has_expired_quota(now))
-    {
+    if debounce_reuses_snapshot(force, debounced, cached.as_ref(), pin, None, now) {
         return cached
             .as_ref()
             .and_then(|snapshot| {
@@ -890,19 +890,22 @@ fn should_skip_fetch_for_account(
     account: Option<&str>,
     mtime: Option<u64>,
 ) -> Result<bool> {
-    if force || !cache.should_debounce(provider, now_unix, 60)? {
-        return Ok(false);
-    }
-    if cache.load(provider)?.is_some_and(|snapshot| {
-        snapshot.usable_for_account(account, mtime) && snapshot.has_expired_quota(now_unix)
-    }) {
+    let snapshot = cache.load(provider)?;
+    if !debounce_reuses_snapshot(
+        force,
+        cache.should_debounce(provider, now_unix, 60)?,
+        snapshot.as_ref(),
+        account,
+        mtime,
+        now_unix,
+    ) {
         return Ok(false);
     }
     if let Some(attempted) = cache.last_refresh_account(provider) {
         return Ok(attempted.as_deref() == account);
     }
-    if cache
-        .load(provider)?
+    if snapshot
+        .as_ref()
         .is_some_and(|snapshot| snapshot.usable_for_account(account, mtime))
     {
         return Ok(true);
@@ -910,7 +913,25 @@ fn should_skip_fetch_for_account(
     // No snapshot at all: keep debounce so missing credentials do not hammer
     // the provider. A snapshot for another account must not debounce — fetch
     // the signed-in identity now.
-    Ok(cache.load(provider)?.is_none())
+    Ok(snapshot.is_none())
+}
+
+/// Debounce may reuse a cached snapshot unless that same account's windows
+/// have already reset. Shared by the list collectors and omp so a lapsed 5h
+/// or weekly window is one policy, not two.
+fn debounce_reuses_snapshot(
+    force: bool,
+    debounced: bool,
+    snapshot: Option<&ProviderSnapshot>,
+    account: Option<&str>,
+    mtime: Option<u64>,
+    now_unix: u64,
+) -> bool {
+    !force
+        && debounced
+        && !snapshot.is_some_and(|snapshot| {
+            snapshot.usable_for_account(account, mtime) && snapshot.has_expired_quota(now_unix)
+        })
 }
 
 fn load_usable_snapshot(
@@ -1274,6 +1295,15 @@ mod tests {
         }
     }
 
+    fn test_pane_with_session(id: &str, harness: Harness, session: &str) -> AgentPane {
+        let mut pane = test_pane(id, harness);
+        pane.session = Some(crate::herdr::AgentSession {
+            kind: Some("id".to_string()),
+            value: session.to_string(),
+        });
+        pane
+    }
+
     fn window(kind: WindowKind, used: f64, reset: u64) -> UsageWindow {
         UsageWindow::new(kind, used, Some(ResetAt::from_unix_seconds(reset))).unwrap()
     }
@@ -1471,6 +1501,40 @@ mod tests {
         );
         assert!(!affected.contains(&"codex-idle".to_string()));
         assert_eq!(affected, vec![grok]);
+    }
+
+    #[test]
+    fn an_expired_session_does_not_pull_a_live_sibling_into_the_watch_pass() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        let mut snapshot = ProviderSnapshot::new(Provider::Claude, vec![], 900).session_local();
+        snapshot.session_windows.insert(
+            "live".to_string(),
+            vec![window(WindowKind::FiveHour, 20.0, 2_000)],
+        );
+        snapshot.session_windows.insert(
+            "dead".to_string(),
+            vec![window(WindowKind::FiveHour, 96.0, 1_000)],
+        );
+        cache.save(&snapshot).unwrap();
+        let panes = [
+            test_pane_with_session("claude-live", Harness::Claude, "live"),
+            test_pane_with_session("claude-dead", Harness::Claude, "dead"),
+            test_pane("grok-working", Harness::Grok),
+        ];
+        let grok = "grok-working".to_string();
+        let mut settling = BTreeMap::new();
+        let affected = watch_pass_ids(
+            &cache,
+            &panes,
+            &Provider::ALL,
+            std::slice::from_ref(&grok),
+            std::slice::from_ref(&grok),
+            &mut settling,
+            1_001,
+        );
+        assert!(affected.contains(&"claude-dead".to_string()));
+        assert!(!affected.contains(&"claude-live".to_string()));
     }
 
     #[test]
@@ -1832,70 +1896,71 @@ mod tests {
     fn an_expired_cached_window_bypasses_the_fetch_debounce() {
         let directory = tempdir().unwrap();
         let cache = CacheStore::new(directory.path());
-        cache
-            .save(
-                &ProviderSnapshot::new(
-                    Provider::Codex,
-                    vec![
-                        window(WindowKind::FiveHour, 96.0, 1_000),
-                        window(WindowKind::Weekly, 48.0, 10_000),
-                    ],
-                    900,
+        for provider in Provider::ALL
+            .into_iter()
+            .chain(std::iter::once(Provider::OpenCodeGo))
+        {
+            cache
+                .save(
+                    &ProviderSnapshot::new(
+                        provider,
+                        vec![
+                            window(WindowKind::FiveHour, 96.0, 1_000),
+                            window(WindowKind::Weekly, 48.0, 10_000),
+                        ],
+                        900,
+                    )
+                    .with_account_id(Some("acc".into())),
                 )
-                .with_account_id(Some("acc".into())),
-            )
-            .unwrap();
-        cache
-            .mark_refresh_account(Provider::Codex, 980, Some("acc"))
-            .unwrap();
-        assert!(
-            !should_skip_fetch_for_account(
-                &cache,
-                Provider::Codex,
-                false,
-                1_001,
-                Some("acc"),
-                None
-            )
-            .unwrap(),
-            "a 5h window that has already reset must be fetched even inside the debounce window"
-        );
-        cache
-            .save(
-                &ProviderSnapshot::new(
-                    Provider::Codex,
-                    vec![
-                        window(WindowKind::FiveHour, 4.0, 2_000),
-                        window(WindowKind::Weekly, 48.0, 10_000),
-                    ],
-                    1_001,
+                .unwrap();
+            cache
+                .mark_refresh_account(provider, 980, Some("acc"))
+                .unwrap();
+            assert!(
+                !should_skip_fetch_for_account(&cache, provider, false, 1_001, Some("acc"), None)
+                    .unwrap(),
+                "{}: a window that has already reset must be fetched inside debounce",
+                provider.source()
+            );
+            cache
+                .save(
+                    &ProviderSnapshot::new(
+                        provider,
+                        vec![
+                            window(WindowKind::FiveHour, 4.0, 2_000),
+                            window(WindowKind::Weekly, 48.0, 10_000),
+                        ],
+                        1_001,
+                    )
+                    .with_account_id(Some("acc".into())),
                 )
-                .with_account_id(Some("acc".into())),
-            )
-            .unwrap();
-        cache
-            .mark_refresh_account(Provider::Codex, 1_001, Some("acc"))
-            .unwrap();
-        assert!(
-            should_skip_fetch_for_account(&cache, Provider::Codex, false, 1_030, Some("acc"), None)
-                .unwrap(),
-            "a still-current window must keep the debounce"
-        );
-        cache
-            .save(
-                &ProviderSnapshot::new(
-                    Provider::Codex,
-                    vec![UsageWindow::new(WindowKind::Weekly, 48.0, None).unwrap()],
-                    1_001,
+                .unwrap();
+            cache
+                .mark_refresh_account(provider, 1_001, Some("acc"))
+                .unwrap();
+            assert!(
+                should_skip_fetch_for_account(&cache, provider, false, 1_030, Some("acc"), None)
+                    .unwrap(),
+                "{}: a still-current window must keep the debounce",
+                provider.source()
+            );
+            cache
+                .save(
+                    &ProviderSnapshot::new(
+                        provider,
+                        vec![UsageWindow::new(WindowKind::Weekly, 48.0, None).unwrap()],
+                        1_001,
+                    )
+                    .with_account_id(Some("acc".into())),
                 )
-                .with_account_id(Some("acc".into())),
-            )
-            .unwrap();
-        assert!(
-            should_skip_fetch_for_account(&cache, Provider::Codex, false, 1_030, Some("acc"), None)
-                .unwrap(),
-            "a window without a reset time cannot be proved expired"
-        );
+                .unwrap();
+            assert!(
+                should_skip_fetch_for_account(&cache, provider, false, 1_030, Some("acc"), None)
+                    .unwrap(),
+                "{}: a window without a reset time cannot be proved expired",
+                provider.source()
+            );
+        }
     }
 
     #[test]
