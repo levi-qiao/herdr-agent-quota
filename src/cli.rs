@@ -260,12 +260,27 @@ pub struct FieldSet(u8);
 impl FieldSet {
     pub const ENV: &'static str = "HERDR_AGENT_QUOTA_FIELDS";
 
+    /// The token `as_list` puts in front of a selection that leaves the
+    /// provider out while keeping every other field.
+    ///
+    /// That selection is otherwise written as the list a pre-`provider` build
+    /// stored for "everything on", which `parse` has to go on reading as
+    /// `all()`. The marker keeps the two apart without a version stamp.
+    const NO_PROVIDER: &'static str = "no-provider";
+
     pub fn all() -> Self {
         Self(
             SidebarField::ALL
                 .iter()
                 .fold(0, |bits, field| bits | field.bit()),
         )
+    }
+
+    /// The field list a build without a provider field wrote for "everything
+    /// on". Those builds drew the provider name regardless of the list, so the
+    /// list only ever named the other seven fields.
+    fn pre_provider_full() -> Self {
+        Self::all().toggled(SidebarField::Provider)
     }
 
     pub fn contains(self, field: SidebarField) -> bool {
@@ -283,22 +298,34 @@ impl FieldSet {
     /// A comma-separated list of the fields that are on, in `ALL` order.
     ///
     /// The empty selection is written as `none` rather than an empty string,
-    /// which every preference reader treats as "not set".
+    /// which every preference reader treats as "not set". A selection that
+    /// hides the provider and keeps the rest is written with `no-provider` in
+    /// front, because its bare list is the one `parse` reads as `all()`.
     pub fn as_list(self) -> String {
         if self.is_empty() {
             return "none".to_string();
         }
-        SidebarField::ALL
+        let names = SidebarField::ALL
             .into_iter()
             .filter(|field| self.contains(*field))
             .map(SidebarField::name)
             .collect::<Vec<_>>()
-            .join(",")
+            .join(",");
+        if self == Self::pre_provider_full() {
+            return format!("{},{}", Self::NO_PROVIDER, names);
+        }
+        names
     }
 
     /// `None` when nothing in the list is a field name, so an unparsable
     /// preference falls through to the next source rather than hiding
     /// everything.
+    ///
+    /// Lists that never name the provider predate the provider field, which a
+    /// full selection meant all of, so the pre-`provider` full list is read as
+    /// `all()`. Narrower lists mean exactly what they say: `fields=5h` is how
+    /// the provider stays hidden. `no-provider` is `as_list`'s marker for the
+    /// one selection that would otherwise be mistaken for the legacy list.
     pub fn parse(raw: &str) -> Option<Self> {
         let raw = raw.trim();
         if raw.eq_ignore_ascii_case("all") {
@@ -307,11 +334,24 @@ impl FieldSet {
         if raw.eq_ignore_ascii_case("none") {
             return Some(Self(0));
         }
-        let bits = raw
-            .split(',')
-            .filter_map(SidebarField::parse)
-            .fold(0, |bits, field| bits | field.bit());
-        (bits != 0).then_some(Self(bits))
+        let mut bits = 0;
+        let mut provider_named = false;
+        for token in raw.split(',').map(str::trim) {
+            if token.eq_ignore_ascii_case(Self::NO_PROVIDER) {
+                provider_named = true;
+                continue;
+            }
+            let Some(field) = SidebarField::parse(token) else {
+                continue;
+            };
+            provider_named |= field == SidebarField::Provider;
+            bits |= field.bit();
+        }
+        let fields = Self(bits);
+        if !provider_named && fields == Self::pre_provider_full() {
+            return Some(Self::all());
+        }
+        (bits != 0).then_some(fields)
     }
 
     pub fn from_arg_or_env(value: Option<Self>) -> Option<Self> {
@@ -927,5 +967,37 @@ mod tests {
         assert_eq!(SidebarRowGap::parse("2"), None);
         assert_eq!(SidebarRowGap::parse("0.5"), None);
         assert_eq!(SidebarRowGap::default().as_u8(), 1);
+    }
+
+    /// A build without a provider field wrote "everything on" as the other
+    /// seven fields and drew the provider name anyway, so that exact list has
+    /// to keep meaning every field after an upgrade.
+    #[test]
+    fn the_pre_provider_full_list_still_selects_every_field() {
+        assert_eq!(
+            FieldSet::parse("topic,model,cache,ttl,context,5h,7d"),
+            Some(FieldSet::all())
+        );
+        assert_eq!(
+            FieldSet::parse(" topic , model, cache, ttl, context, 5h, 7d "),
+            Some(FieldSet::all())
+        );
+        // A narrower list is how the provider stays off, and a stale name in
+        // front of it must not change that.
+        assert_eq!(FieldSet::parse("junk,5h"), FieldSet::parse("5h"));
+    }
+
+    /// Hiding only the provider is one click in the settings pane, so its
+    /// stored form has to read back as itself rather than as the pre-provider
+    /// full list.
+    #[test]
+    fn hiding_only_the_provider_round_trips_through_its_stored_form() {
+        let providerless = FieldSet::all().toggled(SidebarField::Provider);
+        assert_eq!(FieldSet::parse(&providerless.as_list()), Some(providerless));
+
+        let five_hour = FieldSet::parse("5h").unwrap();
+        assert!(!five_hour.contains(SidebarField::Provider));
+        assert_eq!(FieldSet::parse(&five_hour.as_list()), Some(five_hour));
+        assert!(FieldSet::parse("none").unwrap().is_empty());
     }
 }

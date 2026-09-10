@@ -2601,6 +2601,29 @@ mod field_tests {
         assert_eq!(once, twice);
     }
 
+    /// `fields = all` saved before the provider was a field still means every
+    /// field, so the identity row keeps the provider after an upgrade.
+    #[test]
+    fn a_pre_provider_full_selection_still_renders_the_provider() {
+        let legacy = FieldSet::parse("topic,model,cache,ttl,context,5h,7d").unwrap();
+        assert_eq!(
+            applied(legacy, BrandColors::On),
+            applied(FieldSet::all(), BrandColors::On)
+        );
+    }
+
+    /// Hiding only the provider is a selection the settings pane makes, so it
+    /// has to survive its stored form: reading it back as the pre-provider full
+    /// list would turn the provider on again.
+    #[test]
+    fn hiding_only_the_provider_survives_its_stored_form() {
+        let providerless = FieldSet::all().toggled(SidebarField::Provider);
+        let stored = FieldSet::parse(&providerless.as_list()).unwrap();
+        let rendered = applied(stored, BrandColors::On);
+        assert!(rendered.contains("$quota_model\""), "{rendered}");
+        assert!(!rendered.contains("$quota_provider\""), "{rendered}");
+    }
+
     /// In `stacked` the provider and the model sit on rows of their own, so a
     /// hidden provider has to take its row and leave the model's alone.
     #[test]

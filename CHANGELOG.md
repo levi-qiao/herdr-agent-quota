@@ -17,6 +17,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   no identity row. The error token stays unconditional: it says the plugin
   could not speak for a pane, which is a failure, not a field.
 
+### Fixed
+
+- A `fields` preference saved before the provider was a field no longer hides
+  the provider on upgrade. Those builds wrote "everything on" as
+  `topic,model,cache,ttl,context,5h,7d` and drew the provider name regardless,
+  so that exact list is still read as every field. A selection that hides only
+  the provider is stored with a leading `no-provider` marker, which names it
+  without being mistaken for that legacy list.
+
 ## [1.5.4] - 2026-09-10
 
 ### Added
