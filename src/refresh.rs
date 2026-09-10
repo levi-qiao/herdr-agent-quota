@@ -106,7 +106,9 @@ pub fn startup(providers: &[Provider]) -> Result<()> {
 /// per poll and refreshes every selected provider that is working. Each
 /// provider has its own non-blocking refresh lease, so slow I/O never stalls a
 /// statusLine hook or another provider. The existing provider-level debounce
-/// remains the lower bound for network requests.
+/// remains the lower bound for network requests, except when a cached window
+/// has already expired — that reading is no longer live, so the next pass
+/// fetches it even if the pane itself is idle.
 pub fn watch(providers: &[Provider], interval_seconds: Option<u64>, defer: bool) -> Result<()> {
     let cache = CacheStore::from_env()?;
     let interval_seconds = interval_seconds
@@ -162,19 +164,23 @@ pub fn watch(providers: &[Provider], interval_seconds: Option<u64>, defer: bool)
             .working_pane_ids
             .iter()
             .filter(|id| {
-                state.panes.iter().any(|pane| {
-                    pane.pane_id == **id
-                        && (covers_every_collector(providers)
-                            || pane
-                                .harness
-                                .billing()
-                                .is_some_and(|p| providers.contains(&p)))
-                })
+                state
+                    .panes
+                    .iter()
+                    .any(|pane| pane.pane_id == **id && pane_in_watch_scope(pane, providers))
             })
             .cloned()
             .collect::<Vec<_>>();
         let now = CacheStore::now_unix();
-        let affected = watch_targets(&active, &previous_active, &mut settling, now);
+        let affected = watch_pass_ids(
+            &cache,
+            &state.panes,
+            providers,
+            &active,
+            &previous_active,
+            &mut settling,
+            now,
+        );
         let _ = refresh_working_panes(&cache, &state.panes, &affected);
         if active.is_empty() && settling.is_empty() {
             break;
@@ -207,6 +213,52 @@ fn watch_targets(
     affected.extend(settling.keys().cloned());
     settling.retain(|_, finished| now.saturating_sub(*finished) < 60);
     affected
+}
+
+fn pane_in_watch_scope(pane: &AgentPane, providers: &[Provider]) -> bool {
+    covers_every_collector(providers)
+        || pane
+            .harness
+            .billing()
+            .is_some_and(|provider| providers.contains(&provider))
+}
+
+/// Working and settling panes, plus idle panes whose cached quota has lapsed.
+///
+/// An expired window is no longer a live reading. Including those pane ids in
+/// an already-running watch pass is what rewrites the sidebar after a 5h
+/// reset without waiting for that pane to start a turn, and without starting
+/// a second watcher while everything is idle.
+fn watch_pass_ids(
+    cache: &CacheStore,
+    panes: &[AgentPane],
+    providers: &[Provider],
+    active: &[String],
+    previous: &[String],
+    settling: &mut BTreeMap<String, u64>,
+    now: u64,
+) -> Vec<String> {
+    let mut affected = watch_targets(active, previous, settling, now);
+    for pane in panes {
+        if !pane_in_watch_scope(pane, providers) || affected.contains(&pane.pane_id) {
+            continue;
+        }
+        if cached_quota_has_expired(cache, pane, now) {
+            affected.push(pane.pane_id.clone());
+        }
+    }
+    affected
+}
+
+fn cached_quota_has_expired(cache: &CacheStore, pane: &AgentPane, now: u64) -> bool {
+    let Resolution::Subscription(target) = route::resolve(pane) else {
+        return false;
+    };
+    cache
+        .load_target(&target)
+        .ok()
+        .flatten()
+        .is_some_and(|snapshot| snapshot.has_expired_quota(now))
 }
 
 fn wait_for_watch_tick(
@@ -561,7 +613,12 @@ fn omp_quota_with_refresh(
     let debounced = cache
         .should_debounce_target(target, now, 60)
         .unwrap_or(false);
-    if debounced && !force {
+    if debounced
+        && !force
+        && !cached
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.has_expired_quota(now))
+    {
         return cached
             .as_ref()
             .and_then(|snapshot| {
@@ -834,6 +891,11 @@ fn should_skip_fetch_for_account(
     mtime: Option<u64>,
 ) -> Result<bool> {
     if force || !cache.should_debounce(provider, now_unix, 60)? {
+        return Ok(false);
+    }
+    if cache.load(provider)?.is_some_and(|snapshot| {
+        snapshot.usable_for_account(account, mtime) && snapshot.has_expired_quota(now_unix)
+    }) {
         return Ok(false);
     }
     if let Some(attempted) = cache.last_refresh_account(provider) {
@@ -1198,8 +1260,23 @@ fn tokens_for_loaded_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ProviderSnapshot, UsageWindow, WindowKind};
+    use crate::model::{ProviderSnapshot, ResetAt, UsageWindow, WindowKind};
     use tempfile::tempdir;
+
+    fn test_pane(id: &str, harness: Harness) -> AgentPane {
+        AgentPane {
+            pane_id: id.to_string(),
+            harness,
+            session: None,
+            session_summary: String::new(),
+            topic: String::new(),
+            tokens: BTreeMap::new(),
+        }
+    }
+
+    fn window(kind: WindowKind, used: f64, reset: u64) -> UsageWindow {
+        UsageWindow::new(kind, used, Some(ResetAt::from_unix_seconds(reset))).unwrap()
+    }
 
     fn low(pairs: &[(&str, u8)]) -> BTreeMap<String, u8> {
         pairs
@@ -1298,6 +1375,102 @@ mod tests {
             100
         )
         .contains(&a));
+    }
+
+    #[test]
+    fn an_idle_pane_with_an_expired_window_joins_a_running_watch_pass() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        cache
+            .save(&ProviderSnapshot::new(
+                Provider::Codex,
+                vec![
+                    window(WindowKind::FiveHour, 96.0, 1_000),
+                    window(WindowKind::Weekly, 48.0, 10_000),
+                ],
+                900,
+            ))
+            .unwrap();
+        let panes = [
+            test_pane("codex-idle", Harness::Codex),
+            test_pane("grok-working", Harness::Grok),
+        ];
+        let grok = "grok-working".to_string();
+        let mut settling = BTreeMap::new();
+        let affected = watch_pass_ids(
+            &cache,
+            &panes,
+            &Provider::ALL,
+            std::slice::from_ref(&grok),
+            std::slice::from_ref(&grok),
+            &mut settling,
+            1_001,
+        );
+        assert!(affected.contains(&"codex-idle".to_string()));
+        assert!(affected.contains(&grok));
+    }
+
+    #[test]
+    fn a_live_idle_pane_does_not_join_another_providers_watch_pass() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        cache
+            .save(&ProviderSnapshot::new(
+                Provider::Codex,
+                vec![
+                    window(WindowKind::FiveHour, 20.0, 2_000),
+                    window(WindowKind::Weekly, 48.0, 10_000),
+                ],
+                900,
+            ))
+            .unwrap();
+        let panes = [
+            test_pane("codex-idle", Harness::Codex),
+            test_pane("grok-working", Harness::Grok),
+        ];
+        let grok = "grok-working".to_string();
+        let mut settling = BTreeMap::new();
+        let affected = watch_pass_ids(
+            &cache,
+            &panes,
+            &Provider::ALL,
+            std::slice::from_ref(&grok),
+            std::slice::from_ref(&grok),
+            &mut settling,
+            1_001,
+        );
+        assert!(!affected.contains(&"codex-idle".to_string()));
+        assert_eq!(affected, vec![grok]);
+    }
+
+    #[test]
+    fn an_expired_idle_pane_stays_out_of_a_narrower_watch_selection() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        cache
+            .save(&ProviderSnapshot::new(
+                Provider::Codex,
+                vec![window(WindowKind::FiveHour, 96.0, 1_000)],
+                900,
+            ))
+            .unwrap();
+        let panes = [
+            test_pane("codex-idle", Harness::Codex),
+            test_pane("grok-working", Harness::Grok),
+        ];
+        let grok = "grok-working".to_string();
+        let mut settling = BTreeMap::new();
+        let affected = watch_pass_ids(
+            &cache,
+            &panes,
+            &[Provider::Grok],
+            std::slice::from_ref(&grok),
+            std::slice::from_ref(&grok),
+            &mut settling,
+            1_001,
+        );
+        assert!(!affected.contains(&"codex-idle".to_string()));
+        assert_eq!(affected, vec![grok]);
     }
 
     #[test]
@@ -1535,6 +1708,60 @@ mod tests {
     }
 
     #[test]
+    fn an_expired_omp_window_bypasses_the_fetch_debounce() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        let target = BillingTarget::omp("anthropic");
+        cache
+            .save_target(
+                &target,
+                &ProviderSnapshot::new(
+                    Provider::Claude,
+                    vec![window(WindowKind::FiveHour, 96.0, 1_000)],
+                    900,
+                )
+                .with_account_id(Some("account-pin".to_string())),
+            )
+            .unwrap();
+        cache.mark_refresh_target(&target, 980).unwrap();
+        let evidence = crate::omp::OmpEvidence {
+            paths: crate::omp::OmpPaths {
+                agent_dir: directory.path().join(".omp/agent"),
+                sessions: directory.path().join(".omp/agent/sessions"),
+            },
+            provider_id: "anthropic".to_string(),
+            account_pin: Some("account-pin".to_string()),
+        };
+        let update = omp_quota_with_refresh(
+            &cache,
+            &target,
+            &evidence,
+            1_001,
+            PercentStyle::default(),
+            false,
+            |_, _, _, _| {
+                OmpUsage::Account(Box::new(
+                    ProviderSnapshot::new(
+                        Provider::Claude,
+                        vec![window(WindowKind::FiveHour, 0.0, 2_000)],
+                        1_001,
+                    )
+                    .with_account_id(Some("account-pin".to_string())),
+                ))
+            },
+        )
+        .expect("refreshed update");
+        let PaneQuotaUpdate::Replace(values) = update else {
+            panic!("expected replacement");
+        };
+        assert!(
+            values.quota_5h.starts_with("5h 100%"),
+            "{}",
+            values.quota_5h
+        );
+    }
+
+    #[test]
     fn an_omp_usage_failure_keeps_the_same_accounts_last_good_snapshot() {
         let directory = tempdir().unwrap();
         let cache = CacheStore::new(directory.path());
@@ -1599,6 +1826,76 @@ mod tests {
         );
         // A failure must not masquerade as a lapsed prompt cache.
         assert_eq!(values.quota_cache_state, "");
+    }
+
+    #[test]
+    fn an_expired_cached_window_bypasses_the_fetch_debounce() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        cache
+            .save(
+                &ProviderSnapshot::new(
+                    Provider::Codex,
+                    vec![
+                        window(WindowKind::FiveHour, 96.0, 1_000),
+                        window(WindowKind::Weekly, 48.0, 10_000),
+                    ],
+                    900,
+                )
+                .with_account_id(Some("acc".into())),
+            )
+            .unwrap();
+        cache
+            .mark_refresh_account(Provider::Codex, 980, Some("acc"))
+            .unwrap();
+        assert!(
+            !should_skip_fetch_for_account(
+                &cache,
+                Provider::Codex,
+                false,
+                1_001,
+                Some("acc"),
+                None
+            )
+            .unwrap(),
+            "a 5h window that has already reset must be fetched even inside the debounce window"
+        );
+        cache
+            .save(
+                &ProviderSnapshot::new(
+                    Provider::Codex,
+                    vec![
+                        window(WindowKind::FiveHour, 4.0, 2_000),
+                        window(WindowKind::Weekly, 48.0, 10_000),
+                    ],
+                    1_001,
+                )
+                .with_account_id(Some("acc".into())),
+            )
+            .unwrap();
+        cache
+            .mark_refresh_account(Provider::Codex, 1_001, Some("acc"))
+            .unwrap();
+        assert!(
+            should_skip_fetch_for_account(&cache, Provider::Codex, false, 1_030, Some("acc"), None)
+                .unwrap(),
+            "a still-current window must keep the debounce"
+        );
+        cache
+            .save(
+                &ProviderSnapshot::new(
+                    Provider::Codex,
+                    vec![UsageWindow::new(WindowKind::Weekly, 48.0, None).unwrap()],
+                    1_001,
+                )
+                .with_account_id(Some("acc".into())),
+            )
+            .unwrap();
+        assert!(
+            should_skip_fetch_for_account(&cache, Provider::Codex, false, 1_030, Some("acc"), None)
+                .unwrap(),
+            "a window without a reset time cannot be proved expired"
+        );
     }
 
     #[test]

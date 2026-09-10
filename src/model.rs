@@ -756,6 +756,25 @@ impl ProviderSnapshot {
         window_in(&self.windows, kind)
     }
 
+    /// True when a stored quota window's reset is now in the past.
+    ///
+    /// Missing reset times cannot be proved expired, so they do not qualify.
+    /// An empty window list is "no quota", not a lapsed window.
+    pub fn has_expired_quota(&self, now_unix: u64) -> bool {
+        fn expired(windows: &[UsageWindow], now_unix: u64) -> bool {
+            windows.iter().any(|window| !window.is_current(now_unix))
+        }
+        expired(&self.windows, now_unix)
+            || self
+                .session_windows
+                .values()
+                .any(|windows| expired(windows, now_unix))
+            || self
+                .quota_scope_windows
+                .values()
+                .any(|windows| expired(windows, now_unix))
+    }
+
     /// Keep a previously observed quota window when the latest payload omits
     /// it. Upstream often drops the short window for a tick (Claude statusLine
     /// without `five_hour`, Codex `secondary: null` after a reset credit).
@@ -1597,5 +1616,40 @@ mod tests {
         assert!(UsageWindow::new(WindowKind::FiveHour, 20.0, None)
             .unwrap()
             .is_current(1_001));
+    }
+
+    #[test]
+    fn a_snapshot_has_expired_quota_only_when_a_reset_is_in_the_past() {
+        let live = ProviderSnapshot::new(
+            Provider::Codex,
+            vec![
+                quota_window(WindowKind::FiveHour, 96.0, 2_000),
+                quota_window(WindowKind::Weekly, 48.0, 10_000),
+            ],
+            1_000,
+        );
+        assert!(!live.has_expired_quota(1_999));
+        let expired = ProviderSnapshot::new(
+            Provider::Codex,
+            vec![
+                quota_window(WindowKind::FiveHour, 96.0, 1_000),
+                quota_window(WindowKind::Weekly, 48.0, 10_000),
+            ],
+            900,
+        );
+        assert!(expired.has_expired_quota(1_000));
+        let undated = ProviderSnapshot::new(
+            Provider::Codex,
+            vec![UsageWindow::new(WindowKind::Weekly, 48.0, None).unwrap()],
+            1_000,
+        );
+        assert!(!undated.has_expired_quota(5_000));
+        assert!(!ProviderSnapshot::new(Provider::Codex, vec![], 1_000).has_expired_quota(5_000));
+        let mut session = ProviderSnapshot::new(Provider::Claude, vec![], 1_000);
+        session.session_windows.insert(
+            "s1".to_string(),
+            vec![quota_window(WindowKind::FiveHour, 90.0, 1_000)],
+        );
+        assert!(session.has_expired_quota(1_001));
     }
 }
