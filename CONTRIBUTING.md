@@ -29,9 +29,9 @@ Timing-sensitive tests can be diagnosed with `-- --test-threads=1`.
 - Read only the named pane's visible screen on an event. Watch, refresh, and
   startup must not read terminal output. Publish once and suppress unchanged
   metadata; include new tokens in the metadata comparison set.
-- Keep one bounded watcher for all supported harnesses. Fetch only active or
-  settling billing targets, retain upstream cache limits, and test completion
-  inside a debounce window.
+- Keep one bounded watcher for all supported harnesses. Fetch active or
+  settling billing targets, and any target whose cached windows have expired,
+  retain upstream cache limits, and test completion inside a debounce window.
 - Preserve user configuration and existing preferences during upgrades.
   Installation, repair, and uninstall must be repeatable and reversible.
   Test migration from older caches and a watcher using an old Herdr client.
