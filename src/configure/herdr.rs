@@ -963,24 +963,47 @@ fn append_packed_quota_rows(rows: &mut Array) {
 
 fn append_stacked_quota_rows(rows: &mut Array, layout: SidebarLayout) {
     let palette = severity_palette(layout);
-    rows.push(Value::Array(styled_row(
-        "$quota_cache",
-        None,
-        Some(false),
-        Some(false),
-    )));
-    rows.push(Value::Array(styled_row(
-        "$quota_cache_ttl",
-        None,
-        Some(false),
-        Some(false),
-    )));
-    rows.push(Value::Array(styled_row(
-        "$quota_cache_state",
-        Some(QUOTA_WARNING_COLOR),
-        Some(false),
-        Some(false),
-    )));
+    match layout {
+        // Herdr colours each token, not each row. Folding `no cached` into
+        // `$quota_cache` would share the line and paint the warning grey.
+        SidebarLayout::Gauges => {
+            rows.push(Value::Array(Array::from_iter([
+                styled_token("$quota_cache", None, Some(false), Some(false)),
+                styled_token(
+                    "$quota_cache_state",
+                    Some(QUOTA_WARNING_COLOR),
+                    Some(false),
+                    Some(false),
+                ),
+            ])));
+            rows.push(Value::Array(styled_row(
+                "$quota_cache_ttl",
+                None,
+                Some(false),
+                Some(false),
+            )));
+        }
+        _ => {
+            rows.push(Value::Array(styled_row(
+                "$quota_cache",
+                None,
+                Some(false),
+                Some(false),
+            )));
+            rows.push(Value::Array(styled_row(
+                "$quota_cache_ttl",
+                None,
+                Some(false),
+                Some(false),
+            )));
+            rows.push(Value::Array(styled_row(
+                "$quota_cache_state",
+                Some(QUOTA_WARNING_COLOR),
+                Some(false),
+                Some(false),
+            )));
+        }
+    }
     rows.push(Value::Array(styled_row(
         "$quota_error",
         Some(QUOTA_WARNING_COLOR),
@@ -1614,7 +1637,12 @@ rows = [["state_icon", "agent"]]
             assert!(!rows
                 .iter()
                 .any(|row| row_contains_token(row, "$quota_model")));
-            for token in ["$quota_cache", "$quota_cache_ttl", "$quota_error"] {
+            assert!(rows.iter().any(|row| {
+                row_contains_token(row, "$quota_cache")
+                    && row_contains_token(row, "$quota_cache_state")
+                    && !row_contains_token(row, "$quota_cache_ttl")
+            }));
+            for token in ["$quota_cache_ttl", "$quota_error"] {
                 assert!(row_is_only_token(rows, token), "{token} shares a row");
             }
             // The context row is the severity family here, not the plain

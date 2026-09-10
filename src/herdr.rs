@@ -694,6 +694,9 @@ fn apply_context(
 /// Keep the configured rows fixed. An empty TTL token collapses its row when
 /// both visible fields fit inside the cache token; the next refresh can split
 /// them again from the session evidence without rewriting Herdr's config.
+///
+/// `no cached` is not folded here: it keeps `$quota_cache_state` so the amber
+/// warning colour survives. Gauges puts that token on the cache row.
 fn fold_cache_row(tokens: &mut BTreeMap<String, String>, row: RowStyle) {
     use crate::cli::{SidebarField, SidebarLayout};
     if row.shape.layout != SidebarLayout::Gauges
@@ -1445,6 +1448,33 @@ mod tests {
             Some("cache 95.2%")
         );
         assert!(packed.contains_key("quota_cache_ttl"));
+    }
+
+    /// `no cached` stays on `$quota_cache_state` even when the joined text
+    /// would fit. Concatenating it into `$quota_cache` would share the line
+    /// and lose the amber warning; gauges puts the two tokens on one row.
+    #[test]
+    fn gauges_do_not_fold_no_cached_into_the_cache_token() {
+        let mut tokens = BTreeMap::from([
+            ("quota_cache".to_string(), "cache 70.7%".to_string()),
+            ("quota_cache_state".to_string(), "no cached".to_string()),
+        ]);
+        fold_cache_row(
+            &mut tokens,
+            RowStyle {
+                fields: FieldSet::all(),
+                percent: PercentStyle::Remaining,
+                shape: SidebarShape::new(SidebarLayout::Gauges, 36),
+            },
+        );
+        assert_eq!(
+            tokens.get("quota_cache").map(String::as_str),
+            Some("cache 70.7%")
+        );
+        assert_eq!(
+            tokens.get("quota_cache_state").map(String::as_str),
+            Some("no cached")
+        );
     }
 
     /// `packed` and `stacked` keep the plain uncoloured name they have always

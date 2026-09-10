@@ -16,6 +16,17 @@ struct Sidebar {
 
 impl Sidebar {
     fn new(style: PercentStyle) -> Self {
+        Self::with_prompt_cache(
+            style,
+            json!({"warm":true,"expires_at":CacheStore::now_unix() + 29 * 60 + 30}),
+        )
+    }
+
+    fn expired(style: PercentStyle) -> Self {
+        Self::with_prompt_cache(style, json!({"warm":false,"expires_at":null}))
+    }
+
+    fn with_prompt_cache(style: PercentStyle, prompt_cache: serde_json::Value) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         let cache = CacheStore::new(root);
@@ -27,7 +38,7 @@ impl Sidebar {
             "context_window":{"used_percentage":43.0,"current_usage":{
                 "input_tokens":48,"cache_read_input_tokens":952,"cache_creation_input_tokens":0
             }},
-            "prompt_cache":{"warm":true,"expires_at":CacheStore::now_unix() + 29 * 60 + 30},
+            "prompt_cache": prompt_cache,
             "rate_limits":{"five_hour":{"used_percentage":20.0},"seven_day":{"used_percentage":35.0}}
         });
         let snapshot = herdr_agent_quota::providers::claude::parse_statusline(
@@ -182,6 +193,18 @@ fn gauges_refresh_folds_cache_and_ttl_only_when_they_fit_and_suppresses_noops() 
     assert!(sidebar.tokens["quota_cache_ttl"].starts_with("ttl≈"));
     sidebar.refresh(36);
     assert!(!sidebar.tokens.contains_key("quota_cache_ttl"));
+}
+
+#[test]
+fn gauges_refresh_keeps_no_cached_on_its_amber_token() {
+    let mut sidebar = Sidebar::expired(PercentStyle::Remaining);
+    sidebar.refresh(36);
+    assert_eq!(sidebar.tokens["quota_cache"], "cache 95.2%");
+    assert_eq!(sidebar.tokens["quota_cache_state"], "no cached");
+    assert!(!sidebar.tokens.contains_key("quota_cache_ttl"));
+    sidebar.refresh(18);
+    assert_eq!(sidebar.tokens["quota_cache"], "cache 95.2%");
+    assert_eq!(sidebar.tokens["quota_cache_state"], "no cached");
 }
 
 #[test]
