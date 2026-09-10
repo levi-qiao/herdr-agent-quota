@@ -2610,7 +2610,7 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_layout_defaults_to_packed_and_persists_stacked() {
+    fn an_unset_sidebar_layout_file_round_trips_through_stacked() {
         let directory = tempdir().unwrap();
         let cache = CacheStore::new(directory.path());
         assert_eq!(cache.sidebar_layout(), None);

@@ -8,11 +8,10 @@
 [English](README.md)
 
 <table>
-<tr><th>gauges（默认）</th><th>packed</th><th>stacked</th></tr>
+<tr><th>gauges（默认）</th><th>窄屏</th></tr>
 <tr>
-<td valign="top"><img src="docs/screenshots/sidebar-gauges.png" alt="条形布局" width="287"></td>
-<td valign="top"><img src="docs/screenshots/sidebar-packed.png" alt="拼接布局" width="284"></td>
-<td valign="top"><img src="docs/screenshots/sidebar-stacked.png" alt="分行布局" width="177"></td>
+<td valign="top"><img src="docs/screenshots/sidebar-gauges.png" alt="条形布局" width="276"></td>
+<td valign="top"><img src="docs/screenshots/sidebar-gauges-narrow.png" alt="窄屏下的条形布局" width="244"></td>
 </tr>
 </table>
 
@@ -21,17 +20,14 @@
 避免 `grok` 叠在 `Grok/grok-4.6` 上面。按额度排序和低额度通知默认关闭。
 空字段自动折叠，百分比可选择显示剩余或已用额度。
 默认布局是 `gauges`：在每个额度数字旁加一条进度条。进度条长度始终对应旁边打印的数字；
-`cx`、`5h`、`7d`、`30d` 都跟随 `quota-percent`，整列是同一把尺子
-（`packed` 和 `stacked` 的 `context N%` 仍表示已用）。标签列三个字符，内置周期
-不用缩写也能对齐；服务商自定义的窗口名过长时退回 `stacked` 的普通样式，而不是截断。
+`cx`、`5h`、`7d`、`30d` 都跟随 `quota-percent`。标签列三个字符，内置周期对齐；
+服务商自定义的窗口名过长时退回普通数字行，而不是截断进度条。
 cache 和 TTL 放得下就拼成一行，侧栏变窄再拆回两行。进度条按当前连接的 Herdr
 endpoint 侧栏宽度定长（已计入缩进和滚动条），太窄时直接不画，不会截断数字。
-调整宽度后要等下一次刷新或窗格事件才会重算；多个客户端共享同一套 pane metadata，
-无法按窗口分别定长。
-`gauges` 下 `cx` 行也有自己的严重程度配色，与 `5h`、`7d` 共用同一套绿/黄/红：
-无论数字显示的是剩余还是已用，配色一律按剩余量分档——上下文剩余不足 50% 转黄，
-不足 20% 转红。`gauges` 各行采用这套配色的低饱和版本；`packed` 和 `stacked`
-仍沿用原来的颜色。
+调整宽度后用 `prefix+shift+r` 刷新。`gauges` 下 `cx` 行也有自己的严重程度配色，
+与 `5h`、`7d` 共用同一套低饱和绿/黄/红：无论数字显示的是剩余还是已用，配色一律按
+剩余量分档——上下文剩余不足 50% 转黄，不足 20% 转红。布局、字段和百分比口径
+都可以在设置面板里改。
 
 ## 安装与升级
 
@@ -115,8 +111,7 @@ Claude/Agy 没有可靠的服务账号 ID，因此不跨会话共享观测值。
 | OMP 缺少额度 | 检查 `omp usage --json --redact --provider <id>` |
 | Devin 缺少额度 | 检查 CLI 登录；使用自定义路径时检查 `DEVIN_CREDENTIALS_FILE` |
 | 缺少侧栏行 | 运行下面的 configure action 修复插件配置 |
-| packed 内容被截断 | 选择 `stacked` |
-| 侧栏太窄，`gauges` 不显示进度条 | 调宽侧栏，或选择 `stacked` |
+| 侧栏太窄，`gauges` 不显示进度条 | 约 24 列以下是预期行为；调宽后刷新即可 |
 | 调整宽度后 `gauges` 仍是旧长度 | 用 `prefix+shift+r` 刷新；没有随拖动实时发布的路径 |
 | `gauges` 下 cache 和 TTL 仍分两行 | 把侧栏加宽到放得下 `cache … · ttl≈…` |
 

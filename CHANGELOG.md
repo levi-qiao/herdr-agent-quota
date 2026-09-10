@@ -9,30 +9,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - A third sidebar layout, `gauges`, now the default: each quota field gets
-  its own row with a meter beside the number, so remaining headroom reads as
-  a bar length before any digit is read. Every bar fills to the number
-  printed next to it, so the `cx`, `5h`, `7d` and `30d` rows all print the
-  one quantity `quota-percent`
-  selects (remaining by default); `packed` and `stacked` keep printing
-  `context N%` as consumption. The label column is three characters, so those
-  built-in periods align without aliases, while a provider-named window too
-  long for the column keeps the plain stacked shape. Cache and TTL share a
-  line when they fit (`cache 95.2% · ttl≈29m`) and split when the sidebar is
-  too narrow. Meters size to the connected Herdr endpoint's sidebar after its
-  secondary-row indent and scrollbar — six cells at the default 26 columns,
-  twelve at 32 or wider — and disappear rather than clip. A resize takes
-  effect on the next refresh or pane event; clients that share pane metadata
-  cannot have independent meter lengths. The `cx` row takes a severity color
-  of its own on the same green/amber/red scale as the window rows. Color
-  always reads the headroom left — amber below 50% of the context left, red
-  below 20% — and so adds the `quota_context_normal`,
-  `quota_context_warning` and `quota_context_danger` token names. Only one of
-  the three is ever filled, and the report stays inside Herdr's token budget.
-  The `gauges` rows use a muted version of the severity palette (`#98b17d`,
-  `#dec27f`, `#df919b`); `packed` and `stacked` keep the original colours.
+  its own row with a meter beside the number. Bars fill to the printed
+  number, so `cx`, `5h`, `7d` and `30d` all follow `quota-percent`
+  (remaining by default). Labels are three characters so those periods
+  align; a provider-named window too long for the column keeps a plain row.
+  Cache and TTL share a line when they fit (`cache 95.2% · ttl≈29m`) and
+  split when the sidebar is too narrow. Meters size to the connected Herdr
+  endpoint after its secondary-row indent and scrollbar — six cells at the
+  default 26 columns, twelve at 32 or wider — and drop rather than clip.
+  The `cx` row takes a muted green/amber/red colour from remaining context.
   New installs use `gauges`. Existing `packed` or `stacked` preferences are
-  kept. Switch with `configure --sidebar-layout`, `./install.sh --sidebar-layout`,
-  or the settings pane's Layout row.
+  kept and can still be chosen from the settings pane.
 
 ### Fixed
 

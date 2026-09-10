@@ -8,11 +8,10 @@ Model, context, prompt-cache usage, and subscription quota in Herdr's Agent side
 [简体中文](README.zh-CN.md)
 
 <table>
-<tr><th>gauges (default)</th><th>packed</th><th>stacked</th></tr>
+<tr><th>gauges (default)</th><th>narrow</th></tr>
 <tr>
-<td valign="top"><img src="docs/screenshots/sidebar-gauges.png" alt="Gauges sidebar" width="287"></td>
-<td valign="top"><img src="docs/screenshots/sidebar-packed.png" alt="Packed sidebar" width="284"></td>
-<td valign="top"><img src="docs/screenshots/sidebar-stacked.png" alt="Stacked sidebar" width="177"></td>
+<td valign="top"><img src="docs/screenshots/sidebar-gauges.png" alt="Gauges sidebar" width="276"></td>
+<td valign="top"><img src="docs/screenshots/sidebar-gauges-narrow.png" alt="Gauges sidebar on a narrow width" width="244"></td>
 </tr>
 </table>
 
@@ -21,21 +20,19 @@ and worktree grouping. The branded provider/model line is the agent identity;
 the native `agent` row is omitted so `grok` does not sit above `Grok/grok-4.6`.
 Optional quota ordering and low-quota notifications are disabled by default.
 Empty fields collapse; percentages can show remaining or used quota.
-The default layout is `gauges`: a meter beside each quota number. Bars fill to the printed
-number, and `cx`, `5h`, `7d`, and `30d` all follow `quota-percent` so the
-column is one scale. (`packed` and `stacked` keep printing `context N%` as
-consumption.) Labels are three characters so those periods align without
-aliases; a provider-named window too long for that column keeps the plain
-stacked shape. Cache and TTL share a line when they fit, and split again
+The default layout is `gauges`: a meter beside each quota number. Bars fill
+to the printed number, and `cx`, `5h`, `7d`, and `30d` all follow
+`quota-percent`. Labels are three characters so those periods align; a
+provider-named window too long for that column keeps a plain row instead of
+a truncated bar. Cache and TTL share a line when they fit, and split again
 when the sidebar is too narrow. Meters size to the connected Herdr
-endpoint's sidebar — indent and scrollbar included — and disappear rather
-than clip. A resize takes effect on the next refresh or pane event; clients
-that share pane metadata cannot have independent meter lengths. Under
-`gauges` the `cx` row takes a severity colour of its own, on the same
-green/amber/red scale as `5h` and `7d`: colour always reads the headroom
-left — amber below 50% of the context left, red below 20%. The `gauges`
-rows use a muted version of that palette; `packed` and `stacked` keep the
-original colours.
+endpoint's sidebar — indent and scrollbar included — and drop on a narrow
+width rather than clip. A resize takes effect on the next refresh or pane
+event (`prefix+shift+r`). Under `gauges` the `cx` row takes a severity
+colour of its own, on the same muted green/amber/red scale as `5h` and
+`7d`: colour always reads the headroom left — amber below 50% of the
+context left, red below 20%. Switch layout, fields, and percentages from
+the settings pane.
 
 ## Install and upgrade
 
@@ -128,8 +125,7 @@ turn failures into zero usage.
 | OMP quota is missing | Check `omp usage --json --redact --provider <id>` |
 | Devin quota is missing | Check the CLI login and `DEVIN_CREDENTIALS_FILE` if customized |
 | Rows are missing | Run the configure action below to repair managed configuration |
-| Packed rows are truncated | Select `stacked` |
-| The `gauges` meter disappears on a narrow sidebar | Widen the sidebar, or select `stacked` |
+| The `gauges` meter disappears on a narrow sidebar | Expected below ~24 columns; widen the sidebar and refresh |
 | `gauges` still uses the old width after a resize | Refresh with `prefix+shift+r`; there is no live resize publish path |
 | Cache and TTL stay on two lines under `gauges` | Widen the sidebar until `cache … · ttl≈…` fits |
 
