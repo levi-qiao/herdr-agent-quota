@@ -25,6 +25,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   so that exact list is still read as every field. A selection that hides only
   the provider is stored with a leading `no-provider` marker, which names it
   without being mistaken for that legacy list.
+- Gauges now keeps `no cached` as an amber token when it joins the cache row;
+  live TTL continues to fold into the uncoloured cache token.
 
 ## [1.5.4] - 2026-09-10
 
