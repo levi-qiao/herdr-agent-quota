@@ -133,6 +133,13 @@ impl Settings {
         }
     }
 
+    /// Whether the sidebar Herdr is drawing has room for a meter at all.
+    /// Without one, `gauges` renders exactly as `stacked`, and the hint has
+    /// to say so rather than promise a bar the user will not see.
+    fn gauges_fit() -> bool {
+        crate::presentation::meter_cells(crate::configure::herdr::sidebar_width()).is_some()
+    }
+
     fn choice_hint(self, choice: Choice) -> &'static str {
         match choice {
             Choice::Percent => match self.percent {
@@ -142,6 +149,10 @@ impl Settings {
             Choice::Layout => match self.layout {
                 SidebarLayout::Packed => "cache·ttl and 5h·7d share a row",
                 SidebarLayout::Stacked => "every field on its own row",
+                SidebarLayout::Gauges => match Self::gauges_fit() {
+                    true => "a meter beside each quota number",
+                    false => "sidebar too narrow: renders as stacked",
+                },
             },
             Choice::RowGap => match self.gap.as_u8() {
                 0 => "panes packed flush",
@@ -195,10 +206,13 @@ impl Settings {
                 }
             }
             Row::Choice(Choice::Layout) => {
-                self.layout = match self.layout {
-                    SidebarLayout::Packed => SidebarLayout::Stacked,
-                    SidebarLayout::Stacked => SidebarLayout::Packed,
-                }
+                let current = SidebarLayout::CHOICES
+                    .iter()
+                    .position(|value| *value == self.layout)
+                    .unwrap_or(0);
+                let count = SidebarLayout::CHOICES.len() as i8;
+                let next = (current as i8 + step).rem_euclid(count);
+                self.layout = SidebarLayout::CHOICES[next as usize];
             }
             Row::Choice(Choice::RowGap) => {
                 self.gap = match self.gap.as_u8() {
@@ -648,6 +662,28 @@ mod tests {
         assert_eq!(draft.gap, SidebarRowGap::FLUSH);
         draft.cycle(Row::Choice(Choice::Brand), 1);
         assert_eq!(draft.brand, BrandColors::Off);
+    }
+
+    #[test]
+    fn the_layout_cycles_through_all_three_choices_in_both_directions() {
+        let mut draft = settings();
+        draft.cycle(Row::Choice(Choice::Layout), -1);
+        assert_eq!(draft.layout, SidebarLayout::Gauges);
+        draft.cycle(Row::Choice(Choice::Layout), 1);
+        assert_eq!(draft.layout, SidebarLayout::Packed);
+        for _ in 0..SidebarLayout::CHOICES.len() {
+            draft.cycle(Row::Choice(Choice::Layout), 1);
+        }
+        assert_eq!(draft.layout, SidebarLayout::Packed);
+
+        // The gauges hint is the longest of the three, so check it against the
+        // same width budget the frame test holds the other layouts to.
+        draft.cycle(Row::Choice(Choice::Layout), -1);
+        let frame = render(&draft, settings(), 2, 24, None);
+        assert!(frame.contains("gauges"), "{frame}");
+        for line in frame.trim_end_matches("\r\n").split("\r\n") {
+            assert!(line.chars().count() <= 70, "too wide: {line}");
+        }
     }
 
     #[test]

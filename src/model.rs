@@ -267,6 +267,17 @@ impl WindowKind {
         }
     }
 
+    /// The label the `gauges` layout uses, where the column is two characters
+    /// wide. Only `Monthly` differs: `30d` would not fit, and a monthly plan
+    /// carries its only recurring quota on that row, so it takes a two-letter
+    /// alias rather than losing its meter.
+    pub fn gauge_label(self) -> &'static str {
+        match self {
+            Self::Monthly => "mo",
+            other => other.label(),
+        }
+    }
+
     pub fn duration_seconds(self) -> u64 {
         match self {
             Self::FiveHour => 5 * 60 * 60,
@@ -381,6 +392,15 @@ impl UsageWindow {
         self.source_label
             .as_deref()
             .unwrap_or_else(|| self.kind.label())
+    }
+
+    /// The label for the `gauges` layout's two-character column. A
+    /// provider-supplied label is never rewritten - only the built-in kind
+    /// labels have a short form (see [`WindowKind::gauge_label`]).
+    pub fn gauge_display_label(&self) -> &str {
+        self.source_label
+            .as_deref()
+            .unwrap_or_else(|| self.kind.gauge_label())
     }
 
     /// Whether this window can still be shown as a live reading.
@@ -944,7 +964,23 @@ impl Severity {
     pub fn for_window(window: &UsageWindow, _now_unix: u64) -> Self {
         // Remaining quota only. Three sidebar bands so packed 5h/7d rows
         // do not mix two nearby greens. Classify the rounded integer shown.
-        let displayed_remaining = window.remaining_percent.round();
+        Self::for_headroom(window.remaining_percent)
+    }
+
+    /// Headroom left in the context window, on the same bands as
+    /// [`Self::for_window`] — a sidebar row means the same thing whichever
+    /// row it is.
+    ///
+    /// Never `Unknown`: a context row exists only when a percent was read.
+    pub fn for_context_remaining(remaining_percent: f64) -> Self {
+        Self::for_headroom(remaining_percent)
+    }
+
+    /// The one band table every sidebar row is coloured by. Classify the
+    /// rounded integer, so a row's colour and its printed number can never
+    /// disagree at a threshold.
+    fn for_headroom(remaining_percent: f64) -> Self {
+        let displayed_remaining = remaining_percent.round();
         if displayed_remaining >= 50.0 {
             Self::Normal
         } else if displayed_remaining >= 20.0 {
@@ -957,6 +993,16 @@ impl Severity {
 
 pub fn format_percent(value: f64) -> String {
     format!("{value:.0}")
+}
+
+/// The whole number the sidebar prints, for callers that must agree with it —
+/// the gauges meter derives its cell count from this.
+///
+/// Read back out of [`format_percent`] rather than rounded again: `{:.0}`
+/// rounds half to even while `f64::round` rounds half away from zero, so an
+/// exactly-reachable 18.5% would otherwise draw a two-cell bar beside `18%`.
+pub fn printed_percent(value: f64) -> u32 {
+    format_percent(value).parse().unwrap_or(0)
 }
 
 #[derive(Debug, Error)]
@@ -1110,6 +1156,33 @@ mod tests {
         ] {
             let window = UsageWindow::new(WindowKind::Weekly, used_percent, Some(reset)).unwrap();
             assert_eq!(Severity::for_window(&window, now), expected);
+        }
+    }
+
+    /// Context severity reads headroom, exactly like a window's: it bands on
+    /// the context left, so every sidebar row means the same thing.
+    #[test]
+    fn context_severity_is_thresholded_on_remaining_at_fifty_and_twenty() {
+        for (used_percent, expected) in [
+            (0.0, Severity::Normal),
+            (31.0, Severity::Normal),
+            (49.0, Severity::Normal),
+            (49.4, Severity::Normal),
+            (50.0, Severity::Normal),
+            (51.0, Severity::Warning),
+            (53.0, Severity::Warning),
+            (79.0, Severity::Warning),
+            (79.4, Severity::Warning),
+            (80.0, Severity::Warning),
+            (81.0, Severity::Danger),
+            (85.0, Severity::Danger),
+            (100.0, Severity::Danger),
+        ] {
+            assert_eq!(
+                Severity::for_context_remaining(100.0 - used_percent),
+                expected,
+                "{used_percent} used"
+            );
         }
     }
 

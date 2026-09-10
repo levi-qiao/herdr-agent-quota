@@ -87,7 +87,7 @@ pub enum Command {
         watch_interval_seconds: Option<u64>,
         /// Sidebar row layout: packed joins related tokens on one row;
         /// stacked puts provider, model, cache, TTL, context, 5h, and 7d on
-        /// their own rows.
+        /// their own rows; gauges adds a meter beside each quota number.
         /// Herdr plugin actions run a fixed command line, so install.sh
         /// passes this through $HERDR_AGENT_QUOTA_SIDEBAR_LAYOUT.
         #[arg(long, value_enum)]
@@ -175,7 +175,8 @@ pub enum AgentSelection {
 ///
 /// Packed is the historical layout: cache sits beside TTL, and 5h sits beside
 /// 7d. Stacked gives each field its own row so a narrow sidebar does not
-/// truncate both values. Empty tokens still collapse in both layouts.
+/// truncate both values. Gauges is stacked with a meter drawn beside each
+/// quota number. Empty tokens still collapse in every layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum SidebarLayout {
     /// Join related tokens on one row (`cache · ttl`, `5h · 7d`).
@@ -183,6 +184,8 @@ pub enum SidebarLayout {
     Packed,
     /// One field per row (provider, model, cache, TTL, context, 5h, 7d).
     Stacked,
+    /// One field per row, with a meter beside each quota percentage.
+    Gauges,
 }
 
 /// A quota field the sidebar can be told to leave out.
@@ -636,11 +639,14 @@ fn parse_low_quota_alert(value: &str) -> Result<LowQuotaAlert, String> {
 
 impl SidebarLayout {
     pub const ENV: &'static str = "HERDR_AGENT_QUOTA_SIDEBAR_LAYOUT";
+    /// The layouts the settings pane cycles through, the default first.
+    pub const CHOICES: [Self; 3] = [Self::Packed, Self::Stacked, Self::Gauges];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Packed => "packed",
             Self::Stacked => "stacked",
+            Self::Gauges => "gauges",
         }
     }
 
@@ -648,6 +654,7 @@ impl SidebarLayout {
         match name.trim().to_ascii_lowercase().as_str() {
             "packed" => Some(Self::Packed),
             "stacked" => Some(Self::Stacked),
+            "gauges" => Some(Self::Gauges),
             _ => None,
         }
     }
@@ -865,11 +872,18 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_layout_parses_packed_and_stacked_and_ignores_junk() {
-        assert_eq!(SidebarLayout::parse("packed"), Some(SidebarLayout::Packed));
+    fn sidebar_layout_parses_every_choice_and_ignores_junk() {
+        for layout in SidebarLayout::CHOICES {
+            assert_eq!(SidebarLayout::parse(layout.as_str()), Some(layout));
+        }
         assert_eq!(
             SidebarLayout::parse("Stacked"),
             Some(SidebarLayout::Stacked)
+        );
+        assert_eq!(SidebarLayout::parse("Gauges"), Some(SidebarLayout::Gauges));
+        assert_eq!(
+            SidebarLayout::parse(" gauges "),
+            Some(SidebarLayout::Gauges)
         );
         assert_eq!(SidebarLayout::parse("nonsense"), None);
         assert_eq!(

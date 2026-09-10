@@ -1902,6 +1902,114 @@ fn an_installer_can_select_flush_gap_through_the_plugin_config_dir() {
     );
 }
 
+#[test]
+fn gauges_sidebar_layout_is_persisted_across_a_repair() {
+    let root = tempdir().unwrap();
+    let homes = AgentHomes::new(root.path());
+    let output = homes.configure(&["--apply", "--sidebar-layout", "gauges"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        sidebar_is_gauges(&homes.sidebar()),
+        "first apply was not gauges: {}",
+        homes.sidebar()
+    );
+
+    assert!(homes.configure(&["--apply"]).status.success());
+    assert!(
+        sidebar_is_gauges(&homes.sidebar()),
+        "repair dropped gauges: {}",
+        homes.sidebar()
+    );
+
+    assert!(homes
+        .configure(&["--apply", "--sidebar-layout", "packed"])
+        .status
+        .success());
+    assert!(
+        sidebar_is_packed(&homes.sidebar()),
+        "explicit packed did not switch: {}",
+        homes.sidebar()
+    );
+}
+
+#[test]
+fn an_installer_can_select_gauges_layout_through_the_environment() {
+    let root = tempdir().unwrap();
+    let homes = AgentHomes::new(root.path());
+    let output = homes.configure_with_env(
+        &["--apply"],
+        &[("HERDR_AGENT_QUOTA_SIDEBAR_LAYOUT", "gauges")],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(sidebar_is_gauges(&homes.sidebar()), "{}", homes.sidebar());
+}
+
+#[test]
+fn an_installer_can_select_gauges_layout_through_the_plugin_config_dir() {
+    let root = tempdir().unwrap();
+    let homes = AgentHomes::new(root.path());
+    let config_dir = root.path().join("plugin-config");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(config_dir.join("sidebar-layout"), "gauges\n").unwrap();
+    let output = homes.configure_with_env(
+        &["--apply"],
+        &[("HERDR_PLUGIN_CONFIG_DIR", config_dir.to_str().unwrap())],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(sidebar_is_gauges(&homes.sidebar()), "{}", homes.sidebar());
+}
+
+/// A gauges install is only reversible if uninstall recognises the rows it
+/// wrote; otherwise it falls back to stripping tokens and the user never gets
+/// their own file back.
+#[test]
+fn a_full_uninstall_of_a_gauges_install_restores_the_original_config() {
+    let root = tempdir().unwrap();
+    let homes = AgentHomes::new(root.path());
+    let original = concat!(
+        "# hand-written\n",
+        "[ui]\nagent_panel_sort = \"spaces\"\n\n",
+        "[ui.sidebar.agents]\n",
+        "row_gap = 2\n",
+        "rows = [\n    [\"state_icon\", \"machine\"],\n    [\"agent\"],\n]\n",
+    );
+    fs::create_dir_all(homes.herdr_config.parent().unwrap()).unwrap();
+    fs::write(&homes.herdr_config, original).unwrap();
+
+    assert!(homes
+        .configure(&["--apply", "--sidebar-layout", "gauges"])
+        .status
+        .success());
+    assert!(sidebar_is_gauges(&homes.sidebar()), "{}", homes.sidebar());
+
+    assert!(homes.configure(&["--uninstall"]).status.success());
+    assert_eq!(homes.sidebar(), original);
+}
+
+fn sidebar_is_gauges(sidebar: &str) -> bool {
+    !quota_tokens_share_a_row(sidebar, "$quota_cache", "$quota_cache_ttl")
+        && !quota_tokens_share_a_row(sidebar, "$quota_context", "$quota_week_inline_normal")
+        && !quota_tokens_share_a_row(sidebar, "$quota_5h_normal", "$quota_week_normal")
+        && !tab_shares_row_with_provider_model(sidebar)
+        && sidebar_has_token(sidebar, "$quota_provider_model")
+        && !sidebar_has_token(sidebar, "$quota_provider")
+        && !sidebar_has_token(sidebar, "$quota_model")
+        && sidebar.contains("$quota_cache")
+        && sidebar.contains("$quota_week_normal")
+}
+
 fn sidebar_is_packed(sidebar: &str) -> bool {
     quota_tokens_share_a_row(sidebar, "$quota_cache", "$quota_cache_ttl")
         && quota_tokens_share_a_row(sidebar, "$quota_5h_normal", "$quota_week_normal")

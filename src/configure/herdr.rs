@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Value};
 
-const QUOTA_ROW_MARKERS: [&str; 40] = [
+const QUOTA_ROW_MARKERS: [&str; 43] = [
     "$quota_badge",
     "$quota_state",
     "$quota_icon",
@@ -18,6 +18,9 @@ const QUOTA_ROW_MARKERS: [&str; 40] = [
     "$quota_summary",
     "$quota_session",
     "$quota_context",
+    "$quota_context_normal",
+    "$quota_context_warning",
+    "$quota_context_danger",
     "$quota_cache",
     "$quota_cache_ttl",
     "$quota_cache_state",
@@ -65,6 +68,28 @@ const CONFIG_PRESENCE_FILE: &str = "herdr-config.original.present";
 const QUOTA_SAFE_COLOR: &str = "#82d978";
 const QUOTA_WARNING_COLOR: &str = "#e4b957";
 const QUOTA_DANGER_COLOR: &str = "#f16f7e";
+// The same three bands, muted, for the meter rows only. `packed` and
+// `stacked` tint one short token, where a full-strength hue is legible; a
+// `gauges` row repeats it across a dozen bar glyphs, where it reads as alarm
+// rather than as a reading. Both sets exist because Herdr fixes `fg` per token
+// name, so a layout cannot restyle a token it shares with another layout.
+const GAUGE_QUOTA_SAFE_COLOR: &str = "#98b17d";
+const GAUGE_QUOTA_WARNING_COLOR: &str = "#dec27f";
+const GAUGE_QUOTA_DANGER_COLOR: &str = "#df919b";
+const SEVERITY_PALETTE: [&str; 3] = [QUOTA_SAFE_COLOR, QUOTA_WARNING_COLOR, QUOTA_DANGER_COLOR];
+const GAUGE_SEVERITY_PALETTE: [&str; 3] = [
+    GAUGE_QUOTA_SAFE_COLOR,
+    GAUGE_QUOTA_WARNING_COLOR,
+    GAUGE_QUOTA_DANGER_COLOR,
+];
+
+/// The normal/warning/danger hues a layout paints its quota rows with.
+fn severity_palette(layout: SidebarLayout) -> [&'static str; 3] {
+    match layout {
+        SidebarLayout::Gauges => GAUGE_SEVERITY_PALETTE,
+        SidebarLayout::Packed | SidebarLayout::Stacked => SEVERITY_PALETTE,
+    }
+}
 const PROVIDER_STYLES: [(Harness, &str, Option<&str>, Option<&str>); 8] = [
     (Harness::Claude, "claude", Some("#e88461"), Some("#f0a080")),
     (Harness::Codex, "codex", Some("#c4d7f5"), Some("#aab9d0")),
@@ -213,6 +238,114 @@ pub fn config_path() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".config/herdr/config.toml"))
 }
 
+/// Herdr's own documented defaults for the sidebar width keys, used whenever
+/// its config does not say (or says something unusable).
+pub(crate) const DEFAULT_SIDEBAR_WIDTH: usize = 26;
+pub(crate) const DEFAULT_SIDEBAR_MIN_WIDTH: usize = 18;
+pub(crate) const DEFAULT_SIDEBAR_MAX_WIDTH: usize = 36;
+/// No terminal is this wide, so a larger value is a typo rather than a choice.
+const MAX_PLAUSIBLE_SIDEBAR_WIDTH: i64 = 1_000;
+
+/// The sidebar width Herdr is drawing, clamped into its own configured
+/// minimum and maximum.
+///
+/// Herdr auto-scales the sidebar and persists the width it settled on in its
+/// client-shell state, so that file describes the sidebar the user is looking
+/// at; `ui.sidebar_width` is a request they may never have made. Client state
+/// therefore wins, config is the second source, and Herdr's documented
+/// default the last.
+///
+/// Read live on every refresh pass rather than cached: the watcher is
+/// long-lived and each hook is its own process, so a cached width would let
+/// the two publish different meter widths for the same pane.
+pub fn sidebar_width() -> usize {
+    let config = config_path()
+        .ok()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    let (configured, minimum, maximum) = sidebar_width_settings(&config);
+    client_shell_sidebar_width()
+        .or(configured)
+        .unwrap_or(DEFAULT_SIDEBAR_WIDTH)
+        .clamp(minimum, maximum)
+}
+
+/// Where Herdr's client shell persists the width it rendered. Every failure
+/// along the way — no state directory, no file, unreadable, malformed JSON,
+/// missing or non-integer key — degrades to the next width source.
+fn client_shell_sidebar_width() -> Option<usize> {
+    let state = client_shell_state_dir()?;
+    let file = newest_json_file(&state)?;
+    let contents = fs::read_to_string(file).ok()?;
+    client_shell_width_for_config(&contents)
+}
+
+fn client_shell_state_dir() -> Option<PathBuf> {
+    if let Some(state) = std::env::var_os("XDG_STATE_HOME") {
+        if !state.is_empty() {
+            return Some(PathBuf::from(state).join("herdr/client-shell"));
+        }
+    }
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join(".local/state/herdr/client-shell"))
+}
+
+/// The state file is named for the client session (`local-<hash>.json`), so
+/// the most recently written one is the shell whose width is current.
+fn newest_json_file(directory: &Path) -> Option<PathBuf> {
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in fs::read_dir(directory).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        let better = match &newest {
+            Some((best, best_path)) => (modified, &path) > (*best, best_path),
+            None => true,
+        };
+        if better {
+            newest = Some((modified, path));
+        }
+    }
+    newest.map(|(_, path)| path)
+}
+
+fn client_shell_width_for_config(state: &str) -> Option<usize> {
+    let value: serde_json::Value = serde_json::from_str(state).ok()?;
+    let width = value.get("sidebar_width")?.as_i64()?;
+    (1..=MAX_PLAUSIBLE_SIDEBAR_WIDTH)
+        .contains(&width)
+        .then(|| usize::try_from(width).ok())
+        .flatten()
+}
+
+/// Strictly read-only: a refresh must never rewrite or reformat the user's
+/// config, and an unreadable or malformed one must not abort the refresh.
+///
+/// The configured width if the config states a usable one, and the bounds any
+/// width — wherever it came from — is clamped into.
+fn sidebar_width_settings(config: &str) -> (Option<usize>, usize, usize) {
+    let Ok(document) = config.parse::<DocumentMut>() else {
+        return (None, DEFAULT_SIDEBAR_MIN_WIDTH, DEFAULT_SIDEBAR_MAX_WIDTH);
+    };
+    let ui = document.get("ui").and_then(Item::as_table_like);
+    let width = |key: &str| {
+        ui.and_then(|table| table.get(key))
+            .and_then(Item::as_integer)
+            .filter(|value| (1..=MAX_PLAUSIBLE_SIDEBAR_WIDTH).contains(value))
+            .and_then(|value| usize::try_from(value).ok())
+    };
+    let minimum = width("sidebar_min_width").unwrap_or(DEFAULT_SIDEBAR_MIN_WIDTH);
+    let maximum = width("sidebar_max_width")
+        .unwrap_or(DEFAULT_SIDEBAR_MAX_WIDTH)
+        .max(minimum);
+    (width("sidebar_width"), minimum, maximum)
+}
+
 fn backup_path() -> Result<Option<PathBuf>> {
     let state = std::env::var_os("HERDR_PLUGIN_STATE_DIR");
     Ok(state.map(|directory| PathBuf::from(directory).join("herdr-config.original.toml")))
@@ -261,7 +394,7 @@ fn reversible_backup(
 /// The stored field set and brand choice come first: they are the ones that
 /// produced the rows on disk. The full defaults follow, so a configuration
 /// written before those settings existed is still recognised. Layout and row
-/// gap stay brute-forced — there are only four combinations, and neither is
+/// gap stay brute-forced — there are only six combinations, and neither is
 /// recoverable from a config this function is deciding whether to trust.
 fn matches_installed_quota_rows(
     original: &str,
@@ -274,7 +407,7 @@ fn matches_installed_quota_rows(
         variants.push((FieldSet::all(), BrandColors::On));
     }
     for (fields, brand) in variants {
-        for layout in [SidebarLayout::Packed, SidebarLayout::Stacked] {
+        for layout in SidebarLayout::CHOICES {
             for gap in [SidebarRowGap::FLUSH, SidebarRowGap::SEPARATED] {
                 if add_quota_row_with(
                     original,
@@ -793,13 +926,11 @@ fn is_standalone_agent_row(row: &Array) -> bool {
 }
 
 fn append_quota_rows(rows: &mut Array, layout: SidebarLayout) {
+    // Gauges shares packed's identity line and stacked's body: the identity is
+    // not a quota field so it stays compact, while a meter needs its own row
+    // per field. Both halves are shared rather than copied so they cannot drift.
     match layout {
-        SidebarLayout::Packed => rows.push(Value::Array(styled_row(
-            "$quota_provider_model",
-            None,
-            Some(true),
-            Some(false),
-        ))),
+        SidebarLayout::Packed | SidebarLayout::Gauges => append_identity_row(rows),
         SidebarLayout::Stacked => {
             rows.push(Value::Array(styled_row(
                 "$quota_provider",
@@ -824,21 +955,32 @@ fn append_quota_rows(rows: &mut Array, layout: SidebarLayout) {
     // Context folds the weekly quota when 5h is absent; empty rows collapse.
     match layout {
         SidebarLayout::Packed => append_packed_quota_rows(rows),
-        SidebarLayout::Stacked => append_stacked_quota_rows(rows),
+        SidebarLayout::Stacked | SidebarLayout::Gauges => append_stacked_quota_rows(rows, layout),
     }
 }
 
+fn append_identity_row(rows: &mut Array) {
+    rows.push(Value::Array(styled_row(
+        "$quota_provider_model",
+        None,
+        Some(true),
+        Some(false),
+    )));
+}
+
 fn append_packed_quota_rows(rows: &mut Array) {
+    let palette = severity_palette(SidebarLayout::Packed);
     append_cache_row(rows);
 
     let mut context_row = styled_row("$quota_context", None, Some(false), Some(false));
-    append_window_style_tokens(&mut context_row, "quota_week_inline");
+    append_window_style_tokens(&mut context_row, "quota_week_inline", palette);
     rows.push(Value::Array(context_row));
 
-    append_window_row(rows);
+    append_window_row(rows, palette);
 }
 
-fn append_stacked_quota_rows(rows: &mut Array) {
+fn append_stacked_quota_rows(rows: &mut Array, layout: SidebarLayout) {
+    let palette = severity_palette(layout);
     rows.push(Value::Array(styled_row(
         "$quota_cache",
         None,
@@ -863,21 +1005,30 @@ fn append_stacked_quota_rows(rows: &mut Array) {
         Some(false),
         Some(false),
     )));
-    rows.push(Value::Array(styled_row(
-        "$quota_context",
-        None,
-        Some(false),
-        Some(false),
-    )));
+    match layout {
+        // Beside two coloured window rows, an uncoloured context row reads as
+        // an oversight rather than a decision.
+        SidebarLayout::Gauges => {
+            let mut context_row = Array::new();
+            append_context_style_tokens(&mut context_row, palette);
+            rows.push(Value::Array(context_row));
+        }
+        _ => rows.push(Value::Array(styled_row(
+            "$quota_context",
+            None,
+            Some(false),
+            Some(false),
+        ))),
+    }
     let mut five_hour = Array::new();
-    append_window_style_tokens(&mut five_hour, "quota_5h");
+    append_window_style_tokens(&mut five_hour, "quota_5h", palette);
     rows.push(Value::Array(five_hour));
     // Both week style families live on this row so the existing publish
     // choice (inline when 5h is empty, limits when 5h is present) still
     // renders exactly one 7d line.
     let mut week = Array::new();
-    append_window_style_tokens(&mut week, "quota_week_inline");
-    append_window_style_tokens(&mut week, "quota_week");
+    append_window_style_tokens(&mut week, "quota_week_inline", palette);
+    append_window_style_tokens(&mut week, "quota_week", palette);
     rows.push(Value::Array(week));
 }
 
@@ -928,7 +1079,10 @@ fn field_for_token(token: &str) -> Option<SidebarField> {
         "$quota_model" | "$quota_provider_model" => Some(SidebarField::Model),
         "$quota_cache" | "$quota_cache_state" => Some(SidebarField::Cache),
         "$quota_cache_ttl" => Some(SidebarField::Ttl),
-        "$quota_context" => Some(SidebarField::Context),
+        "$quota_context"
+        | "$quota_context_normal"
+        | "$quota_context_warning"
+        | "$quota_context_danger" => Some(SidebarField::Context),
         _ if token.starts_with("$quota_5h") => Some(SidebarField::FiveHour),
         _ if token.starts_with("$quota_week") => Some(SidebarField::Week),
         _ => None,
@@ -954,16 +1108,16 @@ fn append_cache_row(rows: &mut Array) {
     ])));
 }
 
-fn append_window_style_tokens(row: &mut Array, base: &str) {
+fn append_window_style_tokens(row: &mut Array, base: &str, palette: [&'static str; 3]) {
     // One compact token per window (`5h 0% 1h18m`). Herdr joins sibling
     // tokens with ` · `, so splitting label/percent/eta cannot stay compact.
     // Exactly the bands `Severity::for_window` can produce. There is no
     // "caution" row: that variant was unreachable, so the token could never
     // be filled and only ever consumed a slot.
     for (suffix, color) in [
-        ("normal", Some(QUOTA_SAFE_COLOR)),
-        ("warning", Some(QUOTA_WARNING_COLOR)),
-        ("danger", Some(QUOTA_DANGER_COLOR)),
+        ("normal", Some(palette[0])),
+        ("warning", Some(palette[1])),
+        ("danger", Some(palette[2])),
         ("unknown", None),
     ] {
         row.push(styled_token(
@@ -975,10 +1129,24 @@ fn append_window_style_tokens(row: &mut Array, base: &str) {
     }
 }
 
-fn append_window_row(rows: &mut Array) {
+/// The context row's own severity family. Context severity is read from the
+/// context *left*, and `Severity::for_context_remaining` always lands on one
+/// of these three, so there is no `unknown` variant to fill.
+fn append_context_style_tokens(row: &mut Array, palette: [&'static str; 3]) {
+    for (suffix, color) in ["normal", "warning", "danger"].into_iter().zip(palette) {
+        row.push(styled_token(
+            &format!("$quota_context_{suffix}"),
+            Some(color),
+            Some(false),
+            Some(false),
+        ));
+    }
+}
+
+fn append_window_row(rows: &mut Array, palette: [&'static str; 3]) {
     let mut row = Array::new();
     for base in ["quota_5h", "quota_week"] {
-        append_window_style_tokens(&mut row, base);
+        append_window_style_tokens(&mut row, base, palette);
     }
     rows.push(Value::Array(row));
 }
@@ -1074,6 +1242,19 @@ fn print_diff_hint(layout: SidebarLayout, fields: FieldSet, brand: BrandColors) 
                 "  show provider, model, the user prompt, then cache, TTL, context, 5h, and 7d on their own rows"
             );
         }
+        SidebarLayout::Gauges if crate::presentation::meter_cells(sidebar_width()).is_some() => {
+            println!(
+                "  show the user prompt, then cache, TTL, context, 5h, and 7d on their own rows, each with a meter beside the number"
+            );
+        }
+        SidebarLayout::Gauges => {
+            println!(
+                "  show the user prompt, then cache, TTL, context, 5h, and 7d on their own rows"
+            );
+            println!(
+                "  draw no meter: this sidebar is too narrow for one, so the rows render as they do under stacked"
+            );
+        }
     }
     let hidden: Vec<&str> = SidebarField::ALL
         .into_iter()
@@ -1130,7 +1311,7 @@ mod tests {
         rows.insert(1, Value::Array(custom.clone()));
         let customized = document.to_string();
 
-        for layout in [SidebarLayout::Packed, SidebarLayout::Stacked] {
+        for layout in SidebarLayout::CHOICES {
             for brand in [BrandColors::On, BrandColors::Off] {
                 let apply = |input: &str| {
                     add_quota_row_with(
@@ -1180,7 +1361,7 @@ mod tests {
             "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"machine\", \"workspace\", \"tab\"], [\"agent\"]]\n",
             "[ui.sidebar.agents]\nrows = [[\"state_icon\", { token = \"tab\", bold = true }, \"$quota_provider_model\"], [\"$quota_topic\"]] # herdr-agent-quota-row\n",
         ] {
-            for layout in [SidebarLayout::Packed, SidebarLayout::Stacked] {
+            for layout in SidebarLayout::CHOICES {
                 let updated = add_quota_row_for(original, &[Harness::Claude], layout).unwrap();
                 let document = updated.parse::<DocumentMut>().unwrap();
                 for rows in [
@@ -1418,21 +1599,331 @@ rows = [["state_icon", "agent"]]
     }
 
     #[test]
-    fn switching_between_packed_and_stacked_is_idempotent() {
-        let original = "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"tab\", \"agent\"]]\n";
-        let packed = add_quota_row(original).unwrap();
-        let stacked =
-            add_quota_row_for(&packed, &AgentSelection::SUPPORTED, SidebarLayout::Stacked).unwrap();
-        let stacked_document = stacked.parse::<DocumentMut>().unwrap();
-        assert!(row_is_only_token(
-            stacked_document["ui"]["sidebar"]["agents"]["rows"]
+    fn gauges_layout_keeps_a_packed_identity_row_above_a_stacked_body() {
+        let original = "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"agent\"]]\n";
+        let updated =
+            add_quota_row_for(original, &AgentSelection::SUPPORTED, SidebarLayout::Gauges).unwrap();
+        let document = updated.parse::<DocumentMut>().unwrap();
+        for rows in [
+            document["ui"]["sidebar"]["agents"]["rows"]
                 .as_array()
                 .unwrap(),
-            "$quota_cache"
-        ));
-        let packed_again =
-            add_quota_row_for(&stacked, &AgentSelection::SUPPORTED, SidebarLayout::Packed).unwrap();
-        assert_eq!(packed_again, packed);
+            document["ui"]["sidebar"]["agents"]["rows_by_agent"]["claude"]
+                .as_array()
+                .unwrap(),
+        ] {
+            assert!(row_is_only_token(rows, "$quota_provider_model"));
+            assert!(!rows
+                .iter()
+                .any(|row| row_contains_token(row, "$quota_provider")));
+            assert!(!rows
+                .iter()
+                .any(|row| row_contains_token(row, "$quota_model")));
+            for token in ["$quota_cache", "$quota_cache_ttl", "$quota_error"] {
+                assert!(row_is_only_token(rows, token), "{token} shares a row");
+            }
+            // The context row is the severity family here, not the plain
+            // token, so it is a row of three names rather than one.
+            assert!(rows.iter().any(|row| {
+                row_contains_token(row, "$quota_context_normal")
+                    && !row_contains_token(row, "$quota_5h_normal")
+                    && !row_contains_token(row, "$quota_week_normal")
+            }));
+            assert!(rows.iter().any(|row| {
+                row_contains_token(row, "$quota_5h_normal")
+                    && !row_contains_token(row, "$quota_week_normal")
+            }));
+            assert!(rows.iter().any(|row| {
+                row_contains_token(row, "$quota_week_normal")
+                    && row_contains_token(row, "$quota_week_inline_normal")
+                    && !row_contains_token(row, "$quota_5h_normal")
+            }));
+        }
+        assert_eq!(
+            remove_quota_row(
+                &add_quota_row_for("", &AgentSelection::SUPPORTED, SidebarLayout::Gauges).unwrap()
+            )
+            .unwrap(),
+            ""
+        );
+    }
+
+    /// Herdr fixes `fg` per token name, so a coloured context row is a
+    /// severity-suffixed family exactly like the windows have.
+    #[test]
+    fn gauges_gives_the_context_row_its_own_severity_colours() {
+        let updated =
+            add_quota_row_for("", &AgentSelection::SUPPORTED, SidebarLayout::Gauges).unwrap();
+        let document = updated.parse::<DocumentMut>().unwrap();
+        let rows = document["ui"]["sidebar"]["agents"]["rows"]
+            .as_array()
+            .unwrap();
+        let context_row = rows
+            .iter()
+            .find(|row| row_contains_token(row, "$quota_context_normal"))
+            .and_then(Value::as_array)
+            .expect("gauges context row");
+        let styled = context_row
+            .iter()
+            .map(|item| {
+                let table = item.as_inline_table().expect("styled token");
+                (
+                    table.get("token").and_then(Value::as_str).unwrap_or(""),
+                    table.get("fg").and_then(Value::as_str).unwrap_or(""),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            styled,
+            vec![
+                ("$quota_context_normal", GAUGE_QUOTA_SAFE_COLOR),
+                ("$quota_context_warning", GAUGE_QUOTA_WARNING_COLOR),
+                ("$quota_context_danger", GAUGE_QUOTA_DANGER_COLOR),
+            ]
+        );
+        assert!(!rows
+            .iter()
+            .any(|row| row_contains_token(row, "$quota_context")));
+    }
+
+    /// `packed` and `stacked` keep the plain uncoloured context token.
+    #[test]
+    fn packed_and_stacked_leave_the_context_row_uncoloured() {
+        for layout in [SidebarLayout::Packed, SidebarLayout::Stacked] {
+            let updated = add_quota_row_for("", &AgentSelection::SUPPORTED, layout).unwrap();
+            let document = updated.parse::<DocumentMut>().unwrap();
+            let rows = document["ui"]["sidebar"]["agents"]["rows"]
+                .as_array()
+                .unwrap();
+            assert!(
+                rows.iter()
+                    .any(|row| row_contains_token(row, "$quota_context")),
+                "{layout:?}"
+            );
+            for suffix in ["normal", "warning", "danger"] {
+                let token = format!("$quota_context_{suffix}");
+                assert!(
+                    !rows.iter().any(|row| row_contains_token(row, &token)),
+                    "{layout:?} wrote {token}"
+                );
+            }
+        }
+    }
+
+    /// Uninstall strips by token name, so a name missing from the strip list
+    /// leaves an orphaned row behind.
+    #[test]
+    fn uninstall_strips_every_context_token_from_a_gauges_install() {
+        let installed = add_quota_row_for(
+            "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"agent\"]]\n",
+            &AgentSelection::SUPPORTED,
+            SidebarLayout::Gauges,
+        )
+        .unwrap();
+        assert!(installed.contains("$quota_context_normal"), "{installed}");
+        let removed = remove_quota_row(&installed).unwrap();
+        assert!(!removed.contains("quota_context"), "{removed}");
+        assert!(!removed.contains("$quota_"), "{removed}");
+    }
+
+    /// `--fields` without `context` has to drop the row whichever family the
+    /// layout publishes it into.
+    #[test]
+    fn hiding_context_drops_the_row_in_every_layout() {
+        for layout in SidebarLayout::CHOICES {
+            let updated = add_quota_row_with(
+                "",
+                &AgentSelection::SUPPORTED,
+                layout,
+                SidebarRowGap::default(),
+                FieldSet::all().toggled(SidebarField::Context),
+                BrandColors::On,
+            )
+            .unwrap();
+            assert!(
+                !updated.contains("$quota_context"),
+                "{layout:?}:\n{updated}"
+            );
+        }
+    }
+
+    #[test]
+    fn switching_between_any_two_layouts_is_idempotent() {
+        let original = "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"tab\", \"agent\"]]\n";
+        let apply = |input: &str, layout| {
+            add_quota_row_for(input, &AgentSelection::SUPPORTED, layout).unwrap()
+        };
+        for first in SidebarLayout::CHOICES {
+            for second in SidebarLayout::CHOICES {
+                let switched = apply(&apply(original, first), second);
+                assert_eq!(
+                    apply(&switched, second),
+                    switched,
+                    "{first:?} then {second:?} is not a fixed point"
+                );
+                assert_eq!(
+                    switched,
+                    apply(original, second),
+                    "{first:?} then {second:?} differs from a fresh {second:?} install"
+                );
+                assert_severity_palette(&switched, second);
+            }
+        }
+    }
+
+    /// The bytes `packed` and `stacked` write are the contract for every
+    /// installation that already exists: these digests were taken before
+    /// `gauges` was added, and a change to either is a defect.
+    #[test]
+    fn packed_and_stacked_write_the_same_bytes_as_before_gauges() {
+        use sha2::{Digest, Sha256};
+
+        for (original, expected) in [
+            (
+                "",
+                [
+                    "9209065bd93f9d5f6aa7786fa9cd5730d3e5ce61caeee510a99c0fee84700c0f",
+                    "6fa28ff4e54301637d40188c849aa161c9d5d55cbce21395f4ca94bc03d654fc",
+                ],
+            ),
+            (
+                "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"machine\", \"workspace\", \"tab\"], [\"agent\"]]\n",
+                [
+                    "142675cea142ff8ec5b170668586f0cad5456c73fd0d6206a8b762ca60e25956",
+                    "96b87721865ede810f1b730820f20c39429f991aa95917090e5fe1f002d2d996",
+                ],
+            ),
+            (
+                "[ui.sidebar.agents]\nrows = [[\"state_icon\", { token = \"tab\", bold = true }, \"$quota_provider_model\"], [\"$quota_topic\"]] # herdr-agent-quota-row\n",
+                [
+                    "142675cea142ff8ec5b170668586f0cad5456c73fd0d6206a8b762ca60e25956",
+                    "96b87721865ede810f1b730820f20c39429f991aa95917090e5fe1f002d2d996",
+                ],
+            ),
+        ] {
+            for (layout, digest) in [SidebarLayout::Packed, SidebarLayout::Stacked]
+                .into_iter()
+                .zip(expected)
+            {
+                let updated = add_quota_row_with(
+                    original,
+                    &AgentSelection::SUPPORTED,
+                    layout,
+                    SidebarRowGap::default(),
+                    FieldSet::all(),
+                    BrandColors::On,
+                )
+                .unwrap();
+                assert_eq!(
+                    format!("{:x}", Sha256::digest(updated.as_bytes())),
+                    digest,
+                    "{layout:?} output changed:\n{updated}"
+                );
+            }
+        }
+    }
+
+    /// The severity hexes a layout is expected to publish on its meter rows.
+    /// `gauges` gets the muted set; the other two keep the saturated one.
+    fn assert_severity_palette(sidebar: &str, layout: SidebarLayout) {
+        let document = sidebar.parse::<DocumentMut>().unwrap();
+        let expected = severity_palette(layout);
+        for base in ["quota_5h", "quota_week", "quota_week_inline"] {
+            for (suffix, hex) in ["normal", "warning", "danger"].into_iter().zip(expected) {
+                let token = format!("${base}_{suffix}");
+                assert_eq!(
+                    token_fg(&document, &token).as_deref(),
+                    Some(hex),
+                    "{layout:?} wrote the wrong fg on {token}"
+                );
+            }
+        }
+        for (suffix, hex) in ["normal", "warning", "danger"].into_iter().zip(expected) {
+            let token = format!("$quota_context_{suffix}");
+            let fg = token_fg(&document, &token);
+            match layout {
+                SidebarLayout::Gauges => assert_eq!(
+                    fg.as_deref(),
+                    Some(hex),
+                    "{layout:?} wrote the wrong fg on {token}"
+                ),
+                _ => assert_eq!(fg, None, "{layout:?} wrote {token}"),
+            }
+        }
+    }
+
+    /// The `fg` a named token carries in `rows`, or `None` when the layout
+    /// never publishes it.
+    fn token_fg(document: &DocumentMut, token: &str) -> Option<String> {
+        document["ui"]["sidebar"]["agents"]["rows"]
+            .as_array()?
+            .iter()
+            .filter_map(Value::as_array)
+            .flat_map(Array::iter)
+            .find(|item| configured_token_name(item) == Some(token))
+            .and_then(Value::as_inline_table)
+            .and_then(|table| table.get("fg"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    }
+
+    /// A whole row of bar glyphs in a full-strength hue reads as alarm, so
+    /// `gauges` publishes its own muted set. The other two layouts colour one
+    /// short token and must keep the saturated hexes byte for byte.
+    #[test]
+    fn only_gauges_publishes_the_muted_severity_palette() {
+        for layout in SidebarLayout::CHOICES {
+            let updated = add_quota_row_for("", &AgentSelection::SUPPORTED, layout).unwrap();
+            assert_severity_palette(&updated, layout);
+        }
+        let gauged =
+            add_quota_row_for("", &AgentSelection::SUPPORTED, SidebarLayout::Gauges).unwrap();
+        for hex in [
+            GAUGE_QUOTA_SAFE_COLOR,
+            GAUGE_QUOTA_WARNING_COLOR,
+            GAUGE_QUOTA_DANGER_COLOR,
+        ] {
+            assert!(gauged.contains(hex), "gauges lacks {hex}:\n{gauged}");
+        }
+        for hex in [QUOTA_SAFE_COLOR, QUOTA_DANGER_COLOR] {
+            assert!(
+                !gauged.contains(hex),
+                "gauges still writes {hex}:\n{gauged}"
+            );
+        }
+        for layout in [SidebarLayout::Packed, SidebarLayout::Stacked] {
+            let plain = add_quota_row_for("", &AgentSelection::SUPPORTED, layout).unwrap();
+            for hex in [
+                GAUGE_QUOTA_SAFE_COLOR,
+                GAUGE_QUOTA_WARNING_COLOR,
+                GAUGE_QUOTA_DANGER_COLOR,
+            ] {
+                assert!(!plain.contains(hex), "{layout:?} wrote {hex}:\n{plain}");
+            }
+        }
+    }
+
+    /// `rows_by_agent` is a themed copy of `rows`, so a palette that only
+    /// reached the shared rows would leave every per-provider row saturated.
+    #[test]
+    fn the_gauges_palette_reaches_the_per_provider_rows() {
+        let updated =
+            add_quota_row_for("", &AgentSelection::SUPPORTED, SidebarLayout::Gauges).unwrap();
+        let document = updated.parse::<DocumentMut>().unwrap();
+        let rows = document["ui"]["sidebar"]["agents"]["rows_by_agent"]["claude"]
+            .as_array()
+            .unwrap();
+        for token in ["$quota_5h_normal", "$quota_context_normal"] {
+            let fg = rows
+                .iter()
+                .filter_map(Value::as_array)
+                .flat_map(Array::iter)
+                .find(|item| configured_token_name(item) == Some(token))
+                .and_then(Value::as_inline_table)
+                .and_then(|table| table.get("fg"))
+                .and_then(Value::as_str);
+            assert_eq!(fg, Some(GAUGE_QUOTA_SAFE_COLOR), "{token}");
+        }
     }
 
     fn row_contains_token(row: &Value, token: &str) -> bool {
@@ -2164,6 +2655,38 @@ mod field_tests {
         assert_eq!(once, twice);
     }
 
+    /// The `gauges` body is stacked's, so a hidden field has to take its whole
+    /// row with it there too — and the identity row still has to survive
+    /// hiding the model.
+    #[test]
+    fn a_hidden_field_leaves_no_row_behind_in_gauges() {
+        let gauges = |fields| {
+            add_quota_row_with(
+                "",
+                &AgentSelection::SUPPORTED,
+                SidebarLayout::Gauges,
+                SidebarRowGap::default(),
+                fields,
+                BrandColors::On,
+            )
+            .unwrap()
+        };
+        let windowless = gauges(
+            FieldSet::all()
+                .toggled(SidebarField::FiveHour)
+                .toggled(SidebarField::Week),
+        );
+        assert!(!windowless.contains("$quota_5h"), "{windowless}");
+        assert!(!windowless.contains("$quota_week"), "{windowless}");
+        assert!(windowless.contains("$quota_context"), "{windowless}");
+        assert!(windowless.contains("$quota_provider_model"), "{windowless}");
+
+        let modelless = gauges(FieldSet::all().toggled(SidebarField::Model));
+        assert!(modelless.contains("$quota_provider\""), "{modelless}");
+        assert!(!modelless.contains("$quota_provider_model"), "{modelless}");
+        assert!(!modelless.contains("$quota_model"), "{modelless}");
+    }
+
     /// Uninstall has to recognise rows written with a non-default selection,
     /// or it falls back to token-stripping and leaves the file behind.
     #[test]
@@ -2173,6 +2696,185 @@ mod field_tests {
         assert!(
             matches_installed_quota_rows("", &installed, fields, BrandColors::Off).unwrap(),
             "{installed}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod sidebar_width_tests {
+    use super::*;
+
+    #[test]
+    fn a_config_without_a_sidebar_width_reads_as_herdrs_documented_default() {
+        assert_eq!(width_for_config(""), DEFAULT_SIDEBAR_WIDTH);
+        assert_eq!(width_for_config("[ui]\ntheme = \"dark\"\n"), 26);
+    }
+
+    #[test]
+    fn a_configured_sidebar_width_is_read_as_written() {
+        assert_eq!(width_for_config("[ui]\nsidebar_width = 30\n"), 30);
+        assert_eq!(width_for_config("ui = { sidebar_width = 22 }\n"), 22);
+    }
+
+    /// A user's typo must cost them the default bar, never the refresh.
+    #[test]
+    fn an_unusable_sidebar_width_degrades_to_the_documented_default() {
+        for config in [
+            "[ui]\nsidebar_width = \"wide\"\n",
+            "[ui]\nsidebar_width = 26.5\n",
+            "[ui]\nsidebar_width = -8\n",
+            "[ui]\nsidebar_width = 0\n",
+            "[ui]\nsidebar_width = 99999999\n",
+            "[ui]\nsidebar_width = true\n",
+            "[ui\nsidebar_width = 30\n",
+            "sidebar_width = 30\n",
+        ] {
+            assert_eq!(width_for_config(config), DEFAULT_SIDEBAR_WIDTH, "{config}");
+        }
+    }
+
+    #[test]
+    fn a_sidebar_width_outside_the_configured_bounds_is_clamped_into_them() {
+        assert_eq!(width_for_config("[ui]\nsidebar_width = 48\n"), 36);
+        assert_eq!(width_for_config("[ui]\nsidebar_width = 12\n"), 18);
+        assert_eq!(
+            width_for_config("[ui]\nsidebar_width = 48\nsidebar_max_width = 40\n"),
+            40
+        );
+        assert_eq!(
+            width_for_config("[ui]\nsidebar_width = 12\nsidebar_min_width = 10\n"),
+            12
+        );
+    }
+
+    /// The width sources in precedence order: what Herdr rendered, then what
+    /// the config asked for, then the documented default.
+    #[test]
+    fn client_shell_state_outranks_the_config_which_outranks_the_default() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = directory.path().join("config.toml");
+        let state = directory.path().join("state");
+        let shell = state.join("herdr/client-shell");
+        fs::create_dir_all(&shell).unwrap();
+        fs::write(&config, "[ui]\nsidebar_width = 30\n").unwrap();
+
+        with_width_sources(&config, &state, || assert_eq!(sidebar_width(), 30));
+
+        fs::write(shell.join("local-abc.json"), "{\"sidebar_width\": 22}").unwrap();
+        with_width_sources(&config, &state, || assert_eq!(sidebar_width(), 22));
+
+        fs::remove_file(&config).unwrap();
+        with_width_sources(&config, &state, || assert_eq!(sidebar_width(), 22));
+
+        fs::remove_file(shell.join("local-abc.json")).unwrap();
+        with_width_sources(&config, &state, || {
+            assert_eq!(sidebar_width(), DEFAULT_SIDEBAR_WIDTH)
+        });
+    }
+
+    /// Whatever source the width came from, it lands inside the bounds the
+    /// config sets.
+    #[test]
+    fn a_client_shell_width_outside_the_configured_bounds_is_clamped_into_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = directory.path().join("config.toml");
+        let state = directory.path().join("state");
+        let shell = state.join("herdr/client-shell");
+        fs::create_dir_all(&shell).unwrap();
+        fs::write(&config, "[ui]\nsidebar_max_width = 32\n").unwrap();
+        fs::write(shell.join("local-abc.json"), "{\"sidebar_width\": 48}").unwrap();
+        with_width_sources(&config, &state, || assert_eq!(sidebar_width(), 32));
+    }
+
+    /// A state file the plugin cannot make sense of costs the meter nothing:
+    /// the next source answers instead.
+    #[test]
+    fn an_unusable_client_shell_state_falls_through_to_the_config() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = directory.path().join("config.toml");
+        let state = directory.path().join("state");
+        let shell = state.join("herdr/client-shell");
+        fs::create_dir_all(&shell).unwrap();
+        fs::write(&config, "[ui]\nsidebar_width = 30\n").unwrap();
+        for contents in [
+            "",
+            "not json at all",
+            "{\"agent_panel_sort\": \"priority\"}",
+            "{\"sidebar_width\": \"35\"}",
+            "{\"sidebar_width\": 35.5}",
+            "{\"sidebar_width\": 0}",
+            "{\"sidebar_width\": -8}",
+            "{\"sidebar_width\": 99999999}",
+            "[35]",
+        ] {
+            fs::write(shell.join("local-abc.json"), contents).unwrap();
+            with_width_sources(&config, &state, || {
+                assert_eq!(sidebar_width(), 30, "{contents}")
+            });
+        }
+    }
+
+    /// Herdr names the file after the client session, so the plugin reads the
+    /// newest one rather than a name it cannot know.
+    #[test]
+    fn the_newest_state_file_is_the_one_read() {
+        let directory = tempfile::tempdir().unwrap();
+        let shell = directory.path().join("herdr/client-shell");
+        fs::create_dir_all(&shell).unwrap();
+        fs::write(shell.join("local-old.json"), "{\"sidebar_width\": 22}").unwrap();
+        fs::write(shell.join("notes.txt"), "{\"sidebar_width\": 30}").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(shell.join("local-new.json"), "{\"sidebar_width\": 35}").unwrap();
+        let absent = directory.path().join("absent.toml");
+        with_width_sources(&absent, directory.path(), || {
+            assert_eq!(sidebar_width(), 35)
+        });
+    }
+
+    #[test]
+    fn an_absent_config_and_state_directory_read_as_the_documented_default() {
+        let directory = tempfile::tempdir().unwrap();
+        with_width_sources(
+            &directory.path().join("absent.toml"),
+            &directory.path().join("absent-state"),
+            || assert_eq!(sidebar_width(), DEFAULT_SIDEBAR_WIDTH),
+        );
+    }
+
+    #[test]
+    fn reading_the_sidebar_width_leaves_the_config_file_byte_identical() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let original = "# my herdr config\n[ui]\nsidebar_width   =    30\ntheme='dark'\n";
+        fs::write(&path, original).unwrap();
+        with_width_sources(&path, &directory.path().join("absent-state"), || {
+            assert_eq!(sidebar_width(), 30)
+        });
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    /// The width a config alone resolves to, with no client-shell state for
+    /// it to lose to.
+    fn width_for_config(config: &str) -> usize {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        fs::write(&path, config).unwrap();
+        let mut width = 0;
+        with_width_sources(&path, &directory.path().join("absent-state"), || {
+            width = sidebar_width()
+        });
+        width
+    }
+
+    /// Both width sources are process-global environment lookups, so they
+    /// move under the one env lock.
+    fn with_width_sources(config: &Path, state: &Path, body: impl FnOnce()) {
+        crate::prefs::testing::with_env(
+            &[
+                ("HERDR_CONFIG_FILE", Some(config.as_os_str())),
+                ("XDG_STATE_HOME", Some(state.as_os_str())),
+            ],
+            body,
         );
     }
 }
