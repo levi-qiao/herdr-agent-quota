@@ -1,6 +1,6 @@
 use herdr_agent_quota::model::{BillingTarget, ResetAt, WindowKind};
 use herdr_agent_quota::presentation::MetadataTokens;
-use herdr_agent_quota::providers::{agy, claude, codex, devin, grok, omp};
+use herdr_agent_quota::providers::{agy, claude, codex, devin, grok, muse, omp};
 use serde_json::Value;
 
 fn fixture(value: &str) -> Value {
@@ -200,5 +200,29 @@ fn devin_fixture_flips_remaining_to_used_for_daily_and_weekly() {
     assert_eq!(
         weekly.resets_at.map(|reset| reset.unix_seconds()),
         Some(1_788_681_600)
+    );
+}
+
+/// Recorded from a live Muse Code `POST /muse-code/key` call, with the API key
+/// and account identity removed. Only `subs_usage` is read.
+#[test]
+fn muse_fixture_maps_the_session_window_to_5h_and_weekly_to_7d() {
+    let value = fixture(include_str!("fixtures/muse/subscription-power.json"));
+    let snapshot = muse::parse_subscription(&value, 1).expect("snapshot");
+    assert_eq!(snapshot.windows.len(), 2);
+
+    let session = snapshot.window(WindowKind::FiveHour).expect("5h window");
+    assert_eq!(session.used_percent, 4.0);
+    assert_eq!(session.display_label(), "5h");
+    assert_eq!(
+        session.resets_at.map(|reset| reset.unix_seconds()),
+        Some(1_789_068_250)
+    );
+
+    let weekly = snapshot.window(WindowKind::Weekly).expect("weekly window");
+    assert_eq!(weekly.remaining_percent, 72.0);
+    assert_eq!(
+        weekly.resets_at.map(|reset| reset.unix_seconds()),
+        Some(1_789_344_000)
     );
 }

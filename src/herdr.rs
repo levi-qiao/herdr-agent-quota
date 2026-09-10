@@ -281,6 +281,7 @@ pub fn list_agent_state() -> Result<AgentState> {
     collect_agent_panes(&value, &mut panes);
     panes.sort_by(|left, right| left.pane_id.cmp(&right.pane_id));
     panes.dedup_by(|left, right| left.pane_id == right.pane_id);
+    attach_muse_sessions(&mut panes);
     let mut working_pane_ids = Vec::new();
     collect_working_providers(&value, &mut Vec::new(), &mut working_pane_ids);
     working_pane_ids.sort();
@@ -290,6 +291,55 @@ pub fn list_agent_state() -> Result<AgentState> {
         working_providers: working_providers_from(&value),
         working_pane_ids,
     })
+}
+
+/// One pane from a single inventory read, for the event and focus paths.
+/// Only that pane's Muse session is resolved, so an event on another agent
+/// never walks Muse's process and session state.
+pub fn find_agent_pane(pane_id: &str) -> Result<Option<AgentPane>> {
+    let value = list_agent_value()?;
+    let mut panes = Vec::new();
+    collect_agent_panes(&value, &mut panes);
+    let Some(pane) = panes.into_iter().find(|pane| pane.pane_id == pane_id) else {
+        return Ok(None);
+    };
+    let mut panes = [pane];
+    attach_muse_sessions(&mut panes);
+    let [pane] = panes;
+    Ok(Some(pane))
+}
+
+/// Herdr has no Muse session integration, so a Muse pane arrives without a
+/// session. Resolve it from Muse's own session lock; a session Herdr does
+/// report is always kept as-is.
+fn attach_muse_sessions(panes: &mut [AgentPane]) {
+    attach_muse_sessions_with(panes, crate::providers::muse::session_ids_for_panes);
+}
+
+fn attach_muse_sessions_with(
+    panes: &mut [AgentPane],
+    resolve: impl FnOnce(&[String]) -> BTreeMap<String, String>,
+) {
+    let missing = panes
+        .iter()
+        .filter(|pane| pane.harness == Harness::Muse && pane.session.is_none())
+        .map(|pane| pane.pane_id.clone())
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return;
+    }
+    let resolved = resolve(&missing);
+    for pane in panes {
+        if pane.harness != Harness::Muse || pane.session.is_some() {
+            continue;
+        }
+        if let Some(session_id) = resolved.get(&pane.pane_id) {
+            pane.session = Some(AgentSession {
+                kind: Some("id".to_string()),
+                value: session_id.clone(),
+            });
+        }
+    }
 }
 
 fn list_agent_value() -> Result<Value> {
@@ -938,6 +988,49 @@ mod tests {
         CacheUsage, ContextUsage, ProviderSnapshot, ResetAt, UsageWindow, WindowKind,
     };
     use serde_json::json;
+
+    #[test]
+    fn muse_sessions_fill_only_session_less_muse_panes() {
+        let pane = |id: &str, harness: Harness, session: Option<&str>| AgentPane {
+            pane_id: id.to_string(),
+            harness,
+            session: session.map(|value| AgentSession {
+                kind: Some("id".to_string()),
+                value: value.to_string(),
+            }),
+            session_summary: String::new(),
+            topic: String::new(),
+            tokens: BTreeMap::new(),
+        };
+        let mut panes = vec![
+            pane("w1:p1", Harness::Muse, None),
+            pane("w1:p2", Harness::Muse, Some("herdr-session")),
+            pane("w1:p3", Harness::Claude, None),
+        ];
+        let mut asked = Vec::new();
+        attach_muse_sessions_with(&mut panes, |pane_ids| {
+            asked = pane_ids.to_vec();
+            ["w1:p1", "w1:p2", "w1:p3"]
+                .into_iter()
+                .map(|id| (id.to_string(), format!("lock-{id}")))
+                .collect()
+        });
+        assert_eq!(asked, vec!["w1:p1".to_string()]);
+        assert_eq!(
+            panes[0].session.as_ref().and_then(AgentSession::id),
+            Some("lock-w1:p1")
+        );
+        assert_eq!(
+            panes[1].session.as_ref().and_then(AgentSession::id),
+            Some("herdr-session")
+        );
+        assert_eq!(panes[2].session, None);
+
+        let mut without_muse = vec![pane("w1:p3", Harness::Claude, None)];
+        attach_muse_sessions_with(&mut without_muse, |_| {
+            panic!("a pane list without a session-less Muse pane never resolves")
+        });
+    }
 
     /// Herdr orders an Agent view by the token's own value, so the padding is
     /// the whole contract: `007` must sort before `042`, and `100` last.

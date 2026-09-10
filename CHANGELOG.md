@@ -8,6 +8,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Muse Code (Meta Muse Spark) is a supported harness: `--agent muse`,
+  `--provider muse`, its own settings row, and a sidebar row with a Muse brand
+  color. Quota is the `subs_usage` block of the same `muse-code/key` call the
+  CLI makes at startup and for `/usage`, authenticated with the account login
+  in `~/.config/muse/auth.json` (or `$XDG_CONFIG_HOME` / `$MUSE_AUTH_PATH`).
+  The call returns the key the CLI already stored, so polling it does not
+  sign Muse out. The session window is published as 5h and the weekly window
+  as 7d; a different advertised session length keeps its own label. Only the
+  usage block is read — the key and account identity in the same response
+  are discarded. Snapshots are stamped with `sha256("muse\0" || token)`.
+  API-key logins and inactive subscriptions show no quota but keep the
+  session fields below. A rejected token or a failed request keeps the last
+  quota cached for that account.
+- Muse panes get model, topic, context, and cache like other agents. Herdr
+  reports no Muse session, so on Linux the pane is matched to its session
+  through Muse's own `.session.lock` (`pid=<n>`) and the `HERDR_PANE_ID` the
+  `muse-bin` process inherited. The session's `session.jsonl` tail supplies
+  the last model call's model and token usage — context against the local
+  `model-catalog` limit, cache as that call's read share — and the last
+  submitted prompt as the topic, so Muse panes are never read for a topic.
+  Muse publishes no prompt-cache lifetime, so there is no TTL. Without that
+  evidence (for example on macOS) the pane shows quota and the default model
+  only.
 - The provider name is a sidebar field like any other: `--fields` and the
   settings pane accept `provider`, listed first. It defaults on, so an
   existing configuration renders exactly as before; turning it off leaves the

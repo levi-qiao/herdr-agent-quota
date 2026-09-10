@@ -90,7 +90,7 @@ fn severity_palette(layout: SidebarLayout) -> [&'static str; 3] {
         SidebarLayout::Packed | SidebarLayout::Stacked => SEVERITY_PALETTE,
     }
 }
-const PROVIDER_STYLES: [(Harness, &str, Option<&str>, Option<&str>); 8] = [
+const PROVIDER_STYLES: [(Harness, &str, Option<&str>, Option<&str>); 9] = [
     (Harness::Claude, "claude", Some("#e88461"), Some("#f0a080")),
     (Harness::Codex, "codex", Some("#c4d7f5"), Some("#aab9d0")),
     (Harness::Grok, "grok", Some("#d5d5d8"), Some("#acb0b7")),
@@ -101,6 +101,7 @@ const PROVIDER_STYLES: [(Harness, &str, Option<&str>, Option<&str>); 8] = [
     (Harness::Pi, "pi", Some("#d4a0c8"), None),
     (Harness::Omp, "omp", Some("#bba3e8"), None),
     (Harness::Devin, "devin", Some("#6c5ce7"), None),
+    (Harness::Muse, "muse", Some("#0082fb"), None),
 ];
 const THEME_SELECTION_KEYS: [&str; 2] = ["selection_bg", "active_row_bg"];
 const OFFICIAL_IDENTITY_TOKENS: [&str; 4] = ["state_icon", "machine", "workspace", "tab"];
@@ -1245,6 +1246,7 @@ fn skipped_provider_label(provider: &str) -> &str {
         "pi" => "Pi",
         "omp" => "OMP",
         "devin" => "Devin",
+        "muse" => "Muse",
         other => other,
     }
 }
@@ -1796,10 +1798,15 @@ rows = [["state_icon", "agent"]]
 
     /// The bytes `packed` and `stacked` write are the contract for every
     /// installation that already exists: these digests were taken before
-    /// `gauges` was added, and a change to either is a defect.
+    /// `gauges` was added, and a change to either is a defect. They cover the
+    /// agents supported at the time; an agent added since (Muse) only appends
+    /// its own row style and is left out so the digests stay comparable.
     #[test]
     fn packed_and_stacked_write_the_same_bytes_as_before_gauges() {
         use sha2::{Digest, Sha256};
+
+        let agents_before_gauges = &AgentSelection::SUPPORTED[..8];
+        assert!(!agents_before_gauges.contains(&Harness::Muse));
 
         for (original, expected) in [
             (
@@ -1830,7 +1837,7 @@ rows = [["state_icon", "agent"]]
             {
                 let updated = add_quota_row_with(
                     original,
-                    &AgentSelection::SUPPORTED,
+                    agents_before_gauges,
                     layout,
                     SidebarRowGap::default(),
                     FieldSet::all(),
