@@ -759,20 +759,27 @@ impl ProviderSnapshot {
     /// True when a stored quota window's reset is now in the past.
     ///
     /// Missing reset times cannot be proved expired, so they do not qualify.
-    /// An empty window list is "no quota", not a lapsed window.
+    /// An empty window list is "no quota", not a lapsed window. Provider
+    /// fetches use this; a pane uses [`Self::displayed_quota_has_expired`].
     pub fn has_expired_quota(&self, now_unix: u64) -> bool {
-        fn expired(windows: &[UsageWindow], now_unix: u64) -> bool {
-            windows.iter().any(|window| !window.is_current(now_unix))
-        }
-        expired(&self.windows, now_unix)
+        quota_windows_expired(&self.windows, now_unix)
             || self
                 .session_windows
                 .values()
-                .any(|windows| expired(windows, now_unix))
+                .any(|windows| quota_windows_expired(windows, now_unix))
             || self
                 .quota_scope_windows
                 .values()
-                .any(|windows| expired(windows, now_unix))
+                .any(|windows| quota_windows_expired(windows, now_unix))
+    }
+
+    /// True when the windows this pane would render have already reset.
+    ///
+    /// Codex/Grok/Devin share account-level windows, so every pane of that
+    /// login agrees. Claude/Agy key windows by session, so one idle chat
+    /// expiring must not pull its siblings into a watch pass.
+    pub fn displayed_quota_has_expired(&self, session_id: Option<&str>, now_unix: u64) -> bool {
+        quota_windows_expired(self.windows_for_session(session_id), now_unix)
     }
 
     /// Keep a previously observed quota window when the latest payload omits
@@ -818,6 +825,10 @@ impl ProviderSnapshot {
             .map(|window| Severity::for_window(window, now_unix))
             .unwrap_or(Severity::Unknown)
     }
+}
+
+fn quota_windows_expired(windows: &[UsageWindow], now_unix: u64) -> bool {
+    windows.iter().any(|window| !window.is_current(now_unix))
 }
 
 pub(crate) fn window_in(windows: &[UsageWindow], kind: WindowKind) -> Option<&UsageWindow> {
@@ -1651,5 +1662,7 @@ mod tests {
             vec![quota_window(WindowKind::FiveHour, 90.0, 1_000)],
         );
         assert!(session.has_expired_quota(1_001));
+        assert!(session.displayed_quota_has_expired(Some("s1"), 1_001));
+        assert!(!session.displayed_quota_has_expired(Some("other"), 1_001));
     }
 }

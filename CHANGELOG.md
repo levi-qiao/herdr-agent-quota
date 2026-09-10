@@ -8,12 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- Idle Codex (and other API-backed) panes no longer keep a frozen 5h remaining
-  count after the window resets. A cached window whose reset is in the past
-  bypasses the 60-second fetch debounce, and a watcher already running for
-  another agent includes those expired targets so the sidebar is rewritten
-  without waiting for that pane to start a turn. Codex `/status` is still a
-  session-local cache and is not scraped.
+- Idle panes no longer keep a frozen remaining count after a quota window
+  resets. One policy covers every collector: a cached window whose reset is in
+  the past bypasses the 60-second fetch debounce, and a watcher already running
+  for another agent includes only those panes whose *displayed* windows have
+  expired. Codex `/status` is still a session-local cache and is not scraped.
 
 ## [1.5.2] - 2026-09-08
 
