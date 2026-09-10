@@ -98,8 +98,8 @@ pub enum Command {
         #[arg(long, value_enum)]
         quota_percent: Option<PercentStyle>,
         /// Quota fields the sidebar shows: all (default), none, or a
-        /// comma-separated list of topic, model, cache, ttl, context, 5h, 7d.
-        /// Provider and the error token are always shown.
+        /// comma-separated list of provider, topic, model, cache, ttl,
+        /// context, 5h, 7d. The error token is always shown.
         #[arg(long, value_parser = parse_field_set)]
         fields: Option<FieldSet>,
         /// Whether provider and model carry each agent's brand hue. Severity
@@ -191,12 +191,14 @@ pub enum SidebarLayout {
 
 /// A quota field the sidebar can be told to leave out.
 ///
-/// Provider is not here: it is the identity of the row, and a row that cannot
-/// say which subscription it belongs to is worse than no row. `$quota_error`
-/// is not here either — it is how the plugin reports that it could not speak
-/// for a pane at all, and hiding it would hide the failure, not the field.
+/// Provider is the identity of the row, so leaving it out costs the row its
+/// name; it is a real choice (a sidebar of numbers alone is a choice someone
+/// can make) and not a safe default, which is why it starts on. `$quota_error`
+/// is not here: it is how the plugin reports that it could not speak for a pane
+/// at all, and hiding it would hide the failure, not the field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarField {
+    Provider,
     Topic,
     Model,
     Cache,
@@ -207,7 +209,8 @@ pub enum SidebarField {
 }
 
 impl SidebarField {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
+        Self::Provider,
         Self::Topic,
         Self::Model,
         Self::Cache,
@@ -219,6 +222,7 @@ impl SidebarField {
 
     pub fn name(self) -> &'static str {
         match self {
+            Self::Provider => "provider",
             Self::Topic => "topic",
             Self::Model => "model",
             Self::Cache => "cache",

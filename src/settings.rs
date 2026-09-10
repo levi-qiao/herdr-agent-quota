@@ -742,7 +742,7 @@ mod tests {
                 "--brand-colors",
                 "on",
                 "--fields",
-                "model,cache,ttl,context,5h,7d",
+                "provider,model,cache,ttl,context,5h,7d",
                 "--agent-order",
                 "default",
                 "--low-quota-alert",
