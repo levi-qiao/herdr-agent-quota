@@ -246,14 +246,9 @@ pub(crate) const DEFAULT_SIDEBAR_MAX_WIDTH: usize = 36;
 /// No terminal is this wide, so a larger value is a typo rather than a choice.
 const MAX_PLAUSIBLE_SIDEBAR_WIDTH: i64 = 1_000;
 
-/// The sidebar width Herdr is drawing, clamped into its own configured
-/// minimum and maximum.
-///
-/// Herdr auto-scales the sidebar and persists the width it settled on in its
-/// client-shell state, so that file describes the sidebar the user is looking
-/// at; `ui.sidebar_width` is a request they may never have made. Client state
-/// therefore wins, config is the second source, and Herdr's documented
-/// default the last.
+/// The connected endpoint's saved manual width, then its configured width.
+/// Herdr persists chrome preferences per socket, not per rendering client;
+/// metadata shared by several clients cannot be sized independently for each.
 ///
 /// Read live on every refresh pass rather than cached: the watcher is
 /// long-lived and each hook is its own process, so a cached width would let
@@ -270,12 +265,12 @@ pub fn sidebar_width() -> usize {
         .clamp(minimum, maximum)
 }
 
-/// Where Herdr's client shell persists the width it rendered. Every failure
-/// along the way — no state directory, no file, unreadable, malformed JSON,
-/// missing or non-integer key — degrades to the next width source.
+/// Read only the connected endpoint's chrome preferences. Without a socket
+/// identity or a usable saved width, use config rather than another endpoint.
 fn client_shell_sidebar_width() -> Option<usize> {
     let state = client_shell_state_dir()?;
-    let file = newest_json_file(&state)?;
+    let socket = std::env::var_os("HERDR_SOCKET_PATH").filter(|socket| !socket.is_empty())?;
+    let file = state.join(client_shell_file_name(Path::new(&socket)));
     let contents = fs::read_to_string(file).ok()?;
     client_shell_width_for_config(&contents)
 }
@@ -290,28 +285,15 @@ fn client_shell_state_dir() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".local/state/herdr/client-shell"))
 }
 
-/// The state file is named for the client session (`local-<hash>.json`), so
-/// the most recently written one is the shell whose width is current.
-fn newest_json_file(directory: &Path) -> Option<PathBuf> {
-    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
-    for entry in fs::read_dir(directory).ok()?.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
-            continue;
-        }
-        let modified = entry
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .unwrap_or(std::time::UNIX_EPOCH);
-        let better = match &newest {
-            Some((best, best_path)) => (modified, &path) > (*best, best_path),
-            None => true,
-        };
-        if better {
-            newest = Some((modified, path));
-        }
+/// Herdr 0.9 `client/shell/preferences.rs::path_for_local_endpoint`: FNV-1a
+/// over the socket path. Keep the persisted filename contract pinned by a test.
+fn client_shell_file_name(socket: &Path) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in socket.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
     }
-    newest.map(|(_, path)| path)
+    format!("local-{hash:016x}.json")
 }
 
 fn client_shell_width_for_config(state: &str) -> Option<usize> {
@@ -2704,6 +2686,16 @@ mod field_tests {
 mod sidebar_width_tests {
     use super::*;
 
+    const SHELL_FILE: &str = "local-82d9e482d8820ee2.json";
+
+    #[test]
+    fn shell_filename_matches_herdrs_persisted_socket_hash() {
+        assert_eq!(
+            client_shell_file_name(Path::new("/test/herdr.sock")),
+            SHELL_FILE
+        );
+    }
+
     #[test]
     fn a_config_without_a_sidebar_width_reads_as_herdrs_documented_default() {
         assert_eq!(width_for_config(""), DEFAULT_SIDEBAR_WIDTH);
@@ -2760,13 +2752,13 @@ mod sidebar_width_tests {
 
         with_width_sources(&config, &state, || assert_eq!(sidebar_width(), 30));
 
-        fs::write(shell.join("local-abc.json"), "{\"sidebar_width\": 22}").unwrap();
+        fs::write(shell.join(SHELL_FILE), "{\"sidebar_width\": 22}").unwrap();
         with_width_sources(&config, &state, || assert_eq!(sidebar_width(), 22));
 
         fs::remove_file(&config).unwrap();
         with_width_sources(&config, &state, || assert_eq!(sidebar_width(), 22));
 
-        fs::remove_file(shell.join("local-abc.json")).unwrap();
+        fs::remove_file(shell.join(SHELL_FILE)).unwrap();
         with_width_sources(&config, &state, || {
             assert_eq!(sidebar_width(), DEFAULT_SIDEBAR_WIDTH)
         });
@@ -2782,7 +2774,7 @@ mod sidebar_width_tests {
         let shell = state.join("herdr/client-shell");
         fs::create_dir_all(&shell).unwrap();
         fs::write(&config, "[ui]\nsidebar_max_width = 32\n").unwrap();
-        fs::write(shell.join("local-abc.json"), "{\"sidebar_width\": 48}").unwrap();
+        fs::write(shell.join(SHELL_FILE), "{\"sidebar_width\": 48}").unwrap();
         with_width_sources(&config, &state, || assert_eq!(sidebar_width(), 32));
     }
 
@@ -2807,28 +2799,49 @@ mod sidebar_width_tests {
             "{\"sidebar_width\": 99999999}",
             "[35]",
         ] {
-            fs::write(shell.join("local-abc.json"), contents).unwrap();
+            fs::write(shell.join(SHELL_FILE), contents).unwrap();
             with_width_sources(&config, &state, || {
                 assert_eq!(sidebar_width(), 30, "{contents}")
             });
         }
     }
 
-    /// Herdr names the file after the client session, so the plugin reads the
-    /// newest one rather than a name it cannot know.
+    /// Another endpoint can write its preferences later without changing the
+    /// connected endpoint's meter size.
     #[test]
-    fn the_newest_state_file_is_the_one_read() {
+    fn another_endpoints_newer_state_file_cannot_change_the_width() {
         let directory = tempfile::tempdir().unwrap();
         let shell = directory.path().join("herdr/client-shell");
         fs::create_dir_all(&shell).unwrap();
-        fs::write(shell.join("local-old.json"), "{\"sidebar_width\": 22}").unwrap();
+        fs::write(shell.join(SHELL_FILE), "{\"sidebar_width\": 22}").unwrap();
         fs::write(shell.join("notes.txt"), "{\"sidebar_width\": 30}").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
         fs::write(shell.join("local-new.json"), "{\"sidebar_width\": 35}").unwrap();
         let absent = directory.path().join("absent.toml");
         with_width_sources(&absent, directory.path(), || {
-            assert_eq!(sidebar_width(), 35)
+            assert_eq!(sidebar_width(), 22)
         });
+        fs::remove_file(shell.join(SHELL_FILE)).unwrap();
+        with_width_sources(&absent, directory.path(), || {
+            assert_eq!(sidebar_width(), DEFAULT_SIDEBAR_WIDTH)
+        });
+    }
+
+    #[test]
+    fn a_direct_invocation_without_socket_identity_uses_config() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = directory.path().join("config.toml");
+        let shell = directory.path().join("herdr/client-shell");
+        fs::create_dir_all(&shell).unwrap();
+        fs::write(shell.join(SHELL_FILE), "{\"sidebar_width\": 35}").unwrap();
+        fs::write(&config, "[ui]\nsidebar_width = 22\n").unwrap();
+        crate::prefs::testing::with_env(
+            &[
+                ("HERDR_CONFIG_FILE", Some(config.as_os_str())),
+                ("XDG_STATE_HOME", Some(directory.path().as_os_str())),
+                ("HERDR_SOCKET_PATH", None),
+            ],
+            || assert_eq!(sidebar_width(), 22),
+        );
     }
 
     #[test]
@@ -2873,6 +2886,10 @@ mod sidebar_width_tests {
             &[
                 ("HERDR_CONFIG_FILE", Some(config.as_os_str())),
                 ("XDG_STATE_HOME", Some(state.as_os_str())),
+                (
+                    "HERDR_SOCKET_PATH",
+                    Some(std::ffi::OsStr::new("/test/herdr.sock")),
+                ),
             ],
             body,
         );

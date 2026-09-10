@@ -8,8 +8,9 @@
 [English](README.md)
 
 <table>
-<tr><th>packed（默认）</th><th>stacked</th></tr>
+<tr><th>gauges（默认）</th><th>packed</th><th>stacked</th></tr>
 <tr>
+<td valign="top"><img src="docs/screenshots/sidebar-gauges.png" alt="条形布局" width="287"></td>
 <td valign="top"><img src="docs/screenshots/sidebar-packed.png" alt="拼接布局" width="284"></td>
 <td valign="top"><img src="docs/screenshots/sidebar-stacked.png" alt="分行布局" width="177"></td>
 </tr>
@@ -19,17 +20,18 @@
 带品牌色的 provider/model 行就是 agent 身份，因此不再保留灰色的原生 `agent` 行，
 避免 `grok` 叠在 `Grok/grok-4.6` 上面。按额度排序和低额度通知默认关闭。
 空字段自动折叠，百分比可选择显示剩余或已用额度。
-`gauges` 在每个额度数字旁加一条进度条。进度条长度始终对应旁边打印的数字；
-`gauges` 下 `cx`、`5h`、`7d` 三行统一采用 `quota-percent` 选定的口径，
-整列读起来是同一把尺子（`packed` 和 `stacked` 的 `context N%` 仍表示已用）。
-进度条按 Herdr 实际渲染的侧栏宽度自动定长（Herdr 自动伸缩后的宽度，没有记录时才回退到 `ui.sidebar_width`）；侧栏太窄时直接不画进度条，不会截断内容。
-标签列固定两个字符宽：内置周期都放得下（`30d` 显示为 `mo`，按月计费的账号因此不会
-在唯一的周期行上丢掉进度条）；服务商自定义的窗口名不会被改写，会退回 `stacked`
-的普通样式，而不是截断标签。
+默认布局是 `gauges`：在每个额度数字旁加一条进度条。进度条长度始终对应旁边打印的数字；
+`cx`、`5h`、`7d`、`30d` 都跟随 `quota-percent`，整列是同一把尺子
+（`packed` 和 `stacked` 的 `context N%` 仍表示已用）。标签列三个字符，内置周期
+不用缩写也能对齐；服务商自定义的窗口名过长时退回 `stacked` 的普通样式，而不是截断。
+cache 和 TTL 放得下就拼成一行，侧栏变窄再拆回两行。进度条按当前连接的 Herdr
+endpoint 侧栏宽度定长（已计入缩进和滚动条），太窄时直接不画，不会截断数字。
+调整宽度后要等下一次刷新或窗格事件才会重算；多个客户端共享同一套 pane metadata，
+无法按窗口分别定长。
 `gauges` 下 `cx` 行也有自己的严重程度配色，与 `5h`、`7d` 共用同一套绿/黄/红：
 无论数字显示的是剩余还是已用，配色一律按剩余量分档——上下文剩余不足 50% 转黄，
-不足 20% 转红。`gauges` 各行采用这套配色的低饱和版本：整行进度条重复同一个高饱和色调
-读起来像告警而不像读数；`packed` 和 `stacked` 仍沿用原来的颜色。
+不足 20% 转红。`gauges` 各行采用这套配色的低饱和版本；`packed` 和 `stacked`
+仍沿用原来的颜色。
 
 ## 安装与升级
 
@@ -68,7 +70,7 @@ herdr plugin pane open --plugin herdr-agent-quota --entrypoint settings --focus
 | 设置 | 可选项 |
 | --- | --- |
 | Percentages | 剩余或已用比例；颜色始终表示剩余额度 |
-| Layout | `packed` 合并相关字段，`stacked` 将字段分行显示，`gauges` 在每个额度数字旁加进度条 |
+| Layout | `gauges`（默认）在每个额度数字旁加进度条；`packed` 合并相关字段；`stacked` 将字段分行显示 |
 | Row gap | Agent 之间保留零行或一行空白 |
 | Watch interval | 30 秒–1 小时，默认 60 秒 |
 | Fields | 主题、模型、缓存、TTL、上下文、短期／长期额度 |
@@ -115,6 +117,8 @@ Claude/Agy 没有可靠的服务账号 ID，因此不跨会话共享观测值。
 | 缺少侧栏行 | 运行下面的 configure action 修复插件配置 |
 | packed 内容被截断 | 选择 `stacked` |
 | 侧栏太窄，`gauges` 不显示进度条 | 调宽侧栏，或选择 `stacked` |
+| 调整宽度后 `gauges` 仍是旧长度 | 用 `prefix+shift+r` 刷新；没有随拖动实时发布的路径 |
+| `gauges` 下 cache 和 TTL 仍分两行 | 把侧栏加宽到放得下 `cache … · ttl≈…` |
 
 ```sh
 herdr plugin action invoke refresh --plugin herdr-agent-quota

@@ -267,17 +267,6 @@ impl WindowKind {
         }
     }
 
-    /// The label the `gauges` layout uses, where the column is two characters
-    /// wide. Only `Monthly` differs: `30d` would not fit, and a monthly plan
-    /// carries its only recurring quota on that row, so it takes a two-letter
-    /// alias rather than losing its meter.
-    pub fn gauge_label(self) -> &'static str {
-        match self {
-            Self::Monthly => "mo",
-            other => other.label(),
-        }
-    }
-
     pub fn duration_seconds(self) -> u64 {
         match self {
             Self::FiveHour => 5 * 60 * 60,
@@ -392,15 +381,6 @@ impl UsageWindow {
         self.source_label
             .as_deref()
             .unwrap_or_else(|| self.kind.label())
-    }
-
-    /// The label for the `gauges` layout's two-character column. A
-    /// provider-supplied label is never rewritten - only the built-in kind
-    /// labels have a short form (see [`WindowKind::gauge_label`]).
-    pub fn gauge_display_label(&self) -> &str {
-        self.source_label
-            .as_deref()
-            .unwrap_or_else(|| self.kind.gauge_label())
     }
 
     /// Whether this window can still be shown as a live reading.
