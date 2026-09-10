@@ -6,6 +6,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- A third sidebar layout, `gauges`: each quota field gets its own row with a
+  meter beside the number, so remaining headroom reads as a bar length before
+  any digit is read. Every bar fills to the number printed next to it, so the
+  `cx`, `5h` and `7d` rows all print the one quantity `quota-percent` selects
+  (remaining by default), so the column reads as a single scale; `packed` and
+  `stacked` keep printing `context N%` as consumption.
+  The meter sizes itself from the sidebar width Herdr is rendering —
+  four cells at 20 columns, ten at 26, twelve at 30 or wider — and steps aside
+  on a sidebar too narrow to hold it, leaving the row exactly as `stacked`
+  renders it rather than truncating the number the bar labels. The bars live
+  inside the values of the tokens the plugin already publishes. The label
+  column is two characters wide: the built-in periods fit it (`30d` renders as
+  `mo`, so a monthly plan keeps the meter on its only recurring row), while a
+  window an omp workspace names itself is never rewritten and keeps the plain
+  `stacked` shape instead of a truncated label. The one exception is the
+  `cx` row, which under `gauges` takes a severity color of its own on the same
+  green/amber/red scale as the window rows. Color always reads the headroom
+  left, never the number printed — amber below 50% of the context left, red
+  below 20% — and so adds the `quota_context_normal`,
+  `quota_context_warning` and `quota_context_danger` token names. Only one of
+  the three is ever filled, and the report stays inside Herdr's token budget.
+  The `gauges` rows use a muted version of the severity palette (`#98b17d`,
+  `#dec27f`, `#df919b`), because a full-strength hue repeated across a whole
+  row of bar glyphs reads as alarm rather than as a reading.
+  `packed` and `stacked` are unchanged, including their uncolored context row
+  and their original severity colors.
+  Select it with `configure --sidebar-layout gauges`,
+  `./install.sh --sidebar-layout gauges`, or the settings pane's Layout row.
+
 ## [1.5.3] - 2026-09-10
 
 ### Fixed

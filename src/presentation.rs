@@ -1,8 +1,112 @@
-use crate::cli::PercentStyle;
+use crate::cli::{PercentStyle, SidebarLayout};
+use crate::configure::herdr::{DEFAULT_SIDEBAR_MAX_WIDTH, DEFAULT_SIDEBAR_MIN_WIDTH};
 use crate::model::{
-    format_percent, live_windows, long_window, window_in, Provider, ProviderSnapshot, ResetAt,
-    Severity, UsageWindow, WindowKind,
+    format_percent, live_windows, long_window, printed_percent, window_in, Provider,
+    ProviderSnapshot, ResetAt, Severity, UsageWindow, WindowKind,
 };
+
+/// A window row's fixed cost in columns: a two-character label, the two
+/// spaces separating it from the meter and the number, `100%`, and the longest
+/// ETA `format_duration` can print (`23h59m`, `29d23h`).
+const METER_ROW_OVERHEAD: usize = 15;
+/// One column the meter never claims, because Herdr auto-scales the rendered
+/// sidebar around the configured width.
+const METER_SAFETY_MARGIN: usize = 1;
+/// Past a dozen cells a bar stops being read at a glance and becomes texture.
+const MAX_METER_CELLS: usize = 12;
+/// Below four cells the bar cannot distinguish enough levels to be worth the
+/// columns it costs, so the row keeps its non-gauge shape instead.
+const MIN_METER_CELLS: usize = 4;
+// `\u{25b0}` and `\u{25b1}` are East-Asian-Width Neutral, so both are one
+// column wide in a CJK locale and identical in width to each other.
+const METER_FILLED: char = '\u{25b0}';
+const METER_EMPTY: char = '\u{25b1}';
+/// The gauges label column, the width of `5h` and `7d`. A longer label —
+/// `30d`, or an omp window naming itself — renders through the non-gauge
+/// shape rather than being truncated.
+const GAUGE_LABEL_WIDTH: usize = 2;
+/// `context` does not fit the label column; `cx` does, and only here.
+const GAUGE_CONTEXT_LABEL: &str = "cx";
+/// How many meter cells a window row can afford at `sidebar_width` columns,
+/// or `None` when the row should render through its existing non-gauge shape
+/// rather than lose the number the bar labels to truncation.
+pub(crate) fn meter_cells(sidebar_width: usize) -> Option<usize> {
+    let width = sidebar_width.clamp(DEFAULT_SIDEBAR_MIN_WIDTH, DEFAULT_SIDEBAR_MAX_WIDTH);
+    let cells = width
+        .saturating_sub(METER_SAFETY_MARGIN + METER_ROW_OVERHEAD)
+        .min(MAX_METER_CELLS);
+    (cells >= MIN_METER_CELLS).then_some(cells)
+}
+
+/// How the sidebar draws a row: the layout the user chose, and the meter size
+/// their configured sidebar width affords. The two always travel together,
+/// from the publish sites down to each rendered row.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SidebarShape {
+    pub layout: SidebarLayout,
+    pub meter_cells: Option<usize>,
+}
+
+impl SidebarShape {
+    pub fn new(layout: SidebarLayout, sidebar_width: usize) -> Self {
+        Self {
+            layout,
+            meter_cells: meter_cells(sidebar_width),
+        }
+    }
+}
+
+/// The two rendering knobs a pane's tokens are drawn with: whether a percent
+/// reads remaining or used, and the shape of the row it sits in. They are
+/// chosen together once per refresh pass and never vary between panes, so
+/// they travel as one value rather than as two parallel parameters.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RowStyle {
+    pub percent: PercentStyle,
+    pub shape: SidebarShape,
+}
+
+impl RowStyle {
+    pub fn new(percent: PercentStyle, shape: SidebarShape) -> Self {
+        Self { percent, shape }
+    }
+}
+
+impl From<SidebarLayout> for SidebarShape {
+    fn from(layout: SidebarLayout) -> Self {
+        Self {
+            layout,
+            meter_cells: None,
+        }
+    }
+}
+
+/// A meter that agrees with the integer printed beside it: only 0
+/// draws an empty bar and only 100 draws a full one, so a window with quota
+/// left never reads as spent.
+fn meter(printed: u32, cells: usize) -> String {
+    let filled = (f64::from(printed) * cells as f64 / 100.0).round() as usize;
+    let filled = if (1..=99).contains(&printed) {
+        filled.clamp(1, cells - 1)
+    } else {
+        filled.min(cells)
+    };
+    std::iter::repeat_n(METER_FILLED, filled)
+        .chain(std::iter::repeat_n(METER_EMPTY, cells - filled))
+        .collect()
+}
+
+/// How many meter cells a row labelled `label` draws, or `None` when it keeps
+/// its existing non-gauge shape: another layout, a sidebar too narrow for a
+/// bar, or a label that would not fit the label column.
+fn gauge_cells(shape: SidebarShape, label: &str) -> Option<usize> {
+    match shape.layout {
+        SidebarLayout::Packed | SidebarLayout::Stacked => None,
+        SidebarLayout::Gauges => shape
+            .meter_cells
+            .filter(|_| label.chars().count() <= GAUGE_LABEL_WIDTH),
+    }
+}
 
 /// Exactly the values a pane can be given.
 ///
@@ -21,6 +125,9 @@ pub struct MetadataTokens {
     pub quota_week: String,
     pub quota_week_severity: Option<Severity>,
     pub quota_context: String,
+    /// Read from context *left*, on the same bands as the window severities,
+    /// whichever side of the ledger the row prints. Only `gauges` renders it.
+    pub quota_context_severity: Option<Severity>,
     pub quota_cache: String,
     pub quota_cache_ttl: String,
     /// A lapsed prompt cache (`no cached`). Normal, unlike `quota_error`.
@@ -38,7 +145,13 @@ pub struct MetadataTokens {
 
 impl MetadataTokens {
     pub fn from_snapshot(snapshot: &ProviderSnapshot, now_unix: u64) -> Self {
-        Self::from_snapshot_for_session(snapshot, now_unix, None, PercentStyle::default())
+        Self::from_snapshot_for_session(
+            snapshot,
+            now_unix,
+            None,
+            PercentStyle::default(),
+            SidebarShape::default(),
+        )
     }
 
     pub fn from_snapshot_for_session(
@@ -46,6 +159,7 @@ impl MetadataTokens {
         now_unix: u64,
         session_id: Option<&str>,
         style: PercentStyle,
+        shape: SidebarShape,
     ) -> Self {
         Self::from_snapshot_parts(
             snapshot,
@@ -58,6 +172,7 @@ impl MetadataTokens {
                 snapshot.windows_for_session(session_id)
             },
             style,
+            shape,
         )
     }
 
@@ -74,6 +189,7 @@ impl MetadataTokens {
         now_unix: u64,
         session_id: Option<&str>,
         style: PercentStyle,
+        shape: SidebarShape,
     ) -> Self {
         let quota_model = match session_id {
             Some(session_id) => snapshot.model_for_session(Some(session_id)),
@@ -82,7 +198,15 @@ impl MetadataTokens {
         let context =
             session_id.and_then(|session_id| snapshot.context_for_session(Some(session_id)));
         let windows = snapshot.windows_for_session(session_id);
-        Self::from_snapshot_parts(snapshot, now_unix, quota_model, context, windows, style)
+        Self::from_snapshot_parts(
+            snapshot,
+            now_unix,
+            quota_model,
+            context,
+            windows,
+            style,
+            shape,
+        )
     }
 
     fn from_snapshot_parts(
@@ -92,6 +216,7 @@ impl MetadataTokens {
         context: Option<&crate::model::ContextUsage>,
         windows: &[UsageWindow],
         style: PercentStyle,
+        shape: SidebarShape,
     ) -> Self {
         let live = live_windows(windows, now_unix);
         let windows = live.as_slice();
@@ -106,10 +231,10 @@ impl MetadataTokens {
         let long = long_window(windows);
         let quota_5h = if omp_windows {
             short_window
-                .map(|window| compact_window_parts(window, now_unix, style).rendered())
+                .map(|window| compact_window_parts(window, now_unix, style, shape).rendered())
                 .unwrap_or_default()
         } else {
-            five_hour_slot(windows, snapshot.provider, now_unix, style)
+            five_hour_slot(windows, snapshot.provider, now_unix, style, shape)
         };
         Self {
             quota_provider_model: provider_model_label(&quota_provider, &quota_model),
@@ -125,10 +250,11 @@ impl MetadataTokens {
                 }),
             quota_5h,
             quota_week: long
-                .map(|window| compact_window_parts(window, now_unix, style).rendered())
+                .map(|window| compact_window_parts(window, now_unix, style, shape).rendered())
                 .unwrap_or_default(),
             quota_week_severity: long.map(|window| Severity::for_window(window, now_unix)),
-            quota_context: sidebar_context(context),
+            quota_context: sidebar_context(context, style, shape),
+            quota_context_severity: context.map(|context| context_severity(context, style)),
             quota_cache: sidebar_cache(context),
             quota_cache_ttl: sidebar_cache_ttl(context, now_unix),
             quota_cache_state: sidebar_cache_state(context, now_unix),
@@ -153,6 +279,7 @@ impl MetadataTokens {
             quota_week: "7d N/A".to_string(),
             quota_week_severity: Some(Severity::Unknown),
             quota_context: String::new(),
+            quota_context_severity: None,
             quota_cache: String::new(),
             quota_cache_ttl: String::new(),
             quota_cache_state: String::new(),
@@ -236,9 +363,10 @@ fn five_hour_slot(
     provider: Provider,
     now_unix: u64,
     style: PercentStyle,
+    shape: SidebarShape,
 ) -> String {
     match window_in(windows, WindowKind::FiveHour) {
-        Some(window) => compact_window_parts(window, now_unix, style).rendered(),
+        Some(window) => compact_window_parts(window, now_unix, style, shape).rendered(),
         None => missing_five_hour_label(provider)
             .unwrap_or_default()
             .to_string(),
@@ -263,11 +391,58 @@ fn missing_five_hour_severity(provider: Provider, quota_5h: &str) -> Option<Seve
         .then_some(Severity::Unknown)
 }
 
-pub(crate) fn sidebar_context(context: Option<&crate::model::ContextUsage>) -> String {
+/// The percentage the `gauges` context row prints under `style`.
+///
+/// One scale per sidebar: the context row joins a column with the window
+/// rows, and a column of aligned numbers reads as one quantity, so it prints
+/// the same side of the ledger they do.
+fn context_percent(context: &crate::model::ContextUsage, style: PercentStyle) -> f64 {
+    match style {
+        PercentStyle::Remaining => 100.0 - context.used_percent,
+        PercentStyle::Used => context.used_percent,
+    }
+}
+
+/// The context row's colour, always read from headroom and never from the
+/// number printed beside it. The meter still fills to that number, so under
+/// `used` a filling bar runs green → amber → red and under `remaining` a
+/// draining one does the same: colour means "how much is left" either way.
+///
+/// Classified on the integer the row prints, like [`Severity::for_window`],
+/// so colour and number cannot disagree at a band edge.
+pub(crate) fn context_severity(
+    context: &crate::model::ContextUsage,
+    style: PercentStyle,
+) -> Severity {
+    let printed = f64::from(printed_percent(context_percent(context, style)));
+    let remaining = match style {
+        PercentStyle::Remaining => printed,
+        PercentStyle::Used => 100.0 - printed,
+    };
+    Severity::for_context_remaining(remaining)
+}
+
+pub(crate) fn sidebar_context(
+    context: Option<&crate::model::ContextUsage>,
+    style: PercentStyle,
+    shape: SidebarShape,
+) -> String {
     let Some(context) = context else {
         return String::new();
     };
-    format!("context {}%", format_percent(context.used_percent))
+    match gauge_cells(shape, GAUGE_CONTEXT_LABEL) {
+        Some(cells) => {
+            let percent = context_percent(context, style);
+            format!(
+                "{GAUGE_CONTEXT_LABEL} {} {:>3}%",
+                meter(printed_percent(percent), cells),
+                format_percent(percent)
+            )
+        }
+        // `packed` and `stacked` never joined that column, and their row has
+        // always printed consumption; the style must not leak into them.
+        None => format!("context {}%", format_percent(context.used_percent)),
+    }
 }
 
 pub(crate) fn sidebar_cache(context: Option<&crate::model::ContextUsage>) -> String {
@@ -338,6 +513,9 @@ struct WindowParts {
     label: String,
     percent: String,
     eta: String,
+    /// Set only when this row draws a meter, so every caller of `rendered`
+    /// picks up the gauge shape without deciding anything itself.
+    meter: Option<String>,
 }
 
 impl WindowParts {
@@ -345,21 +523,46 @@ impl WindowParts {
     /// ` · `. The period label leads, so the value is self-describing however
     /// the sidebar arranges it.
     fn rendered(&self) -> String {
+        let head = match &self.meter {
+            Some(meter) => format!("{} {meter} {}", self.label, self.percent),
+            None => format!("{} {}", self.label, self.percent),
+        };
         if self.eta.is_empty() {
-            return format!("{} {}", self.label, self.percent);
+            return head;
         }
-        format!("{} {} {}", self.label, self.percent, self.eta)
+        format!("{head} {}", self.eta)
     }
 }
 
-fn compact_window_parts(window: &UsageWindow, now_unix: u64, style: PercentStyle) -> WindowParts {
-    WindowParts {
-        label: window.display_label().to_string(),
-        percent: format!("{}%", format_percent(style.percent_of(window))),
-        eta: window
-            .resets_at
-            .map(|reset| format_reset_eta(reset, now_unix))
-            .unwrap_or_default(),
+fn compact_window_parts(
+    window: &UsageWindow,
+    now_unix: u64,
+    style: PercentStyle,
+    shape: SidebarShape,
+) -> WindowParts {
+    let label = match shape.layout {
+        SidebarLayout::Gauges => window.gauge_display_label(),
+        SidebarLayout::Packed | SidebarLayout::Stacked => window.display_label(),
+    };
+    let percent = style.percent_of(window);
+    let eta = window
+        .resets_at
+        .map(|reset| format_reset_eta(reset, now_unix))
+        .unwrap_or_default();
+    match gauge_cells(shape, label) {
+        // The number is right-aligned so the ETA column lines up across rows.
+        Some(cells) => WindowParts {
+            label: format!("{label:<width$}", width = GAUGE_LABEL_WIDTH),
+            percent: format!("{:>3}%", format_percent(percent)),
+            eta,
+            meter: Some(meter(printed_percent(percent), cells)),
+        },
+        None => WindowParts {
+            label: label.to_string(),
+            percent: format!("{}%", format_percent(percent)),
+            eta,
+            meter: None,
+        },
     }
 }
 
@@ -567,17 +770,104 @@ mod tests {
             ],
             0,
         );
-        let remaining =
-            MetadataTokens::from_snapshot_for_session(&snapshot, 0, None, PercentStyle::Remaining);
+        let remaining = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            SidebarShape::default(),
+        );
         assert_eq!(remaining.quota_5h, "5h 42% 4h07m");
         assert_eq!(remaining.quota_week, "7d 73% 2d3h");
 
-        let used =
-            MetadataTokens::from_snapshot_for_session(&snapshot, 0, None, PercentStyle::Used);
+        let used = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Used,
+            SidebarShape::default(),
+        );
         assert_eq!(used.quota_5h, "5h 58% 4h07m");
         assert_eq!(used.quota_week, "7d 27% 2d3h");
         assert_eq!(used.quota_5h_severity, remaining.quota_5h_severity);
         assert_eq!(used.quota_week_severity, remaining.quota_week_severity);
+    }
+
+    /// U4 gives `gauges` a meter; `packed` and `stacked` must stay identical
+    /// to each other and to what they printed before the layout existed.
+    #[test]
+    fn the_sidebar_layout_does_not_move_any_packed_or_stacked_token() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![
+                window(WindowKind::FiveHour, 19.0, 2_580),
+                window(WindowKind::Weekly, 27.0, 183_600),
+            ],
+            0,
+        )
+        .with_context(Some(crate::model::ContextUsage::new(23.5).unwrap()));
+        let packed = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::default(),
+            SidebarLayout::Packed.into(),
+        );
+        let stacked = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::default(),
+            SidebarLayout::Stacked.into(),
+        );
+        assert_eq!(packed, stacked);
+        assert_eq!(packed.quota_5h, "5h 81% 43m");
+    }
+
+    #[test]
+    fn the_existing_literals_survive_every_layout() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![
+                window(WindowKind::FiveHour, 58.0, 14_820),
+                window(WindowKind::Weekly, 27.0, 183_600),
+            ],
+            0,
+        )
+        .with_context(Some(crate::model::ContextUsage::new(23.5).unwrap()));
+        for layout in [SidebarLayout::Packed, SidebarLayout::Stacked] {
+            let values = MetadataTokens::from_snapshot_for_session(
+                &snapshot,
+                0,
+                None,
+                PercentStyle::default(),
+                layout.into(),
+            );
+            assert_eq!(values.quota_5h, "5h 42% 4h07m");
+            assert_eq!(values.quota_week, "7d 73% 2d3h");
+            assert_eq!(values.quota_context, "context 24%");
+        }
+    }
+
+    /// The dashboard renders through `format_window`, not the sidebar path,
+    /// so no layout may ever reach it.
+    #[test]
+    fn the_dashboard_never_carries_a_meter() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![
+                window(WindowKind::FiveHour, 58.0, 14_820),
+                window(WindowKind::Weekly, 27.0, 183_600),
+            ],
+            0,
+        );
+        let summary = dashboard_summary(&snapshot, 0, PercentStyle::default());
+        assert_eq!(
+            summary,
+            "5h 42% left reset 4h07m \u{b7} 7d 73% left reset 2d3h"
+        );
+        assert!(!summary.contains('\u{25b0}'));
+        assert!(!summary.contains('\u{25b1}'));
     }
 
     #[test]
@@ -647,6 +937,7 @@ mod tests {
             0,
             Some("session-1"),
             PercentStyle::default(),
+            SidebarShape::default(),
         );
         assert_eq!(session_one.quota_model, "Sonnet");
         assert_eq!(session_one.quota_provider_model, "Claude/Sonnet");
@@ -656,6 +947,7 @@ mod tests {
             0,
             Some("session-2"),
             PercentStyle::default(),
+            SidebarShape::default(),
         );
         assert_eq!(session_two.quota_model, "");
         assert_eq!(session_two.quota_provider_model, "Claude");
@@ -674,6 +966,7 @@ mod tests {
             0,
             Some("session-a"),
             PercentStyle::default(),
+            SidebarShape::default(),
         );
         assert_eq!(pane.quota_model, "SWE-1.7 Medium");
         assert_eq!(pane.quota_provider_model, "Devin/SWE-1.7 Medium");
@@ -696,6 +989,7 @@ mod tests {
             0,
             Some("session-a"),
             PercentStyle::default(),
+            SidebarShape::default(),
         );
         assert_eq!(switched.quota_model, "Opus 4.6");
         assert_eq!(switched.quota_provider_model, "Devin/Opus 4.6");
@@ -705,6 +999,7 @@ mod tests {
             0,
             Some("session-b"),
             PercentStyle::default(),
+            SidebarShape::default(),
         );
         assert_eq!(untouched.quota_model, "SWE-1.7 Medium");
         assert_eq!(untouched.quota_provider_model, "Devin/SWE-1.7 Medium");
@@ -724,6 +1019,7 @@ mod tests {
             0,
             Some("session-1"),
             PercentStyle::default(),
+            SidebarShape::default(),
         );
         assert_eq!(values.quota_context, "context 43%");
         assert_eq!(values.quota_cache, "cache 72.7%");
@@ -732,7 +1028,8 @@ mod tests {
                 &snapshot,
                 0,
                 Some("session-2"),
-                PercentStyle::default()
+                PercentStyle::default(),
+                SidebarShape::default()
             )
             .quota_context,
             ""
@@ -748,8 +1045,13 @@ mod tests {
                     .unwrap()
                     .with_cache(crate::model::CacheUsage::from_token_counts(200, 800, 100)),
             ));
-        let values =
-            MetadataTokens::from_snapshot_for_pane(&snapshot, 0, None, PercentStyle::default());
+        let values = MetadataTokens::from_snapshot_for_pane(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::default(),
+            SidebarShape::default(),
+        );
         assert_eq!(values.quota_provider_model, "Grok/grok-4.6");
         assert_eq!(values.quota_context, "");
         assert_eq!(values.quota_cache, "");
@@ -806,6 +1108,7 @@ mod tests {
             1_000,
             Some("codex-session"),
             PercentStyle::default(),
+            SidebarShape::default(),
         );
         assert_eq!(values.quota_cache, "cache 80.0%");
         assert_eq!(values.quota_cache_ttl, "ttl≈1h");
@@ -883,6 +1186,7 @@ mod tests {
             0,
             Some("session-1"),
             PercentStyle::default(),
+            SidebarShape::default(),
         );
         assert_eq!(grok_pane.quota_week, "7d 69% 6d0h");
         assert_eq!(grok_pane.quota_5h, "");
@@ -900,6 +1204,7 @@ mod tests {
             0,
             Some("session-1"),
             PercentStyle::default(),
+            SidebarShape::default(),
         );
         assert_eq!(codex_pane.quota_5h, "5h 60% 4h07m");
         assert_eq!(codex_pane.quota_week, "7d 69% 6d0h");
@@ -932,6 +1237,7 @@ mod tests {
             0,
             Some("work"),
             PercentStyle::default(),
+            SidebarShape::default(),
         );
         assert_eq!(work.quota_5h, "5h 82% 4h07m");
         assert_eq!(work.quota_week, "7d 90% 6d0h");
@@ -941,6 +1247,7 @@ mod tests {
             0,
             Some("personal"),
             PercentStyle::default(),
+            SidebarShape::default(),
         );
         assert_eq!(personal.quota_5h, "5h 18% 4h07m");
         assert_eq!(personal.quota_week, "7d 10% 6d0h");
@@ -950,6 +1257,7 @@ mod tests {
             0,
             Some("other"),
             PercentStyle::default(),
+            SidebarShape::default(),
         );
         assert_eq!(unknown.quota_5h, "5h N/A");
         assert_eq!(unknown.quota_week, "");
@@ -986,12 +1294,14 @@ mod tests {
             0,
             Some("session-c"),
             PercentStyle::default(),
+            SidebarShape::default(),
         );
         let live = MetadataTokens::from_snapshot_for_pane(
             &snapshot,
             0,
             Some("session-a"),
             PercentStyle::default(),
+            SidebarShape::default(),
         );
         assert_eq!(idle.quota_5h, "5h 8% 4h07m");
         assert_eq!(live.quota_5h, "5h 8% 4h07m");
@@ -1055,5 +1365,598 @@ mod tests {
         ));
         let values = MetadataTokens::from_snapshot(&snapshot, 0);
         assert_eq!(values.quota_cache, "cache 99.2%");
+    }
+
+    /// The bar shortens with the sidebar and disappears rather
+    /// than truncating the number it labels.
+    #[test]
+    fn the_meter_cell_count_follows_the_configured_sidebar_width() {
+        assert_eq!(meter_cells(18), None);
+        assert_eq!(meter_cells(22), Some(6));
+        assert_eq!(meter_cells(26), Some(10));
+        assert_eq!(meter_cells(30), Some(12));
+        assert_eq!(meter_cells(36), Some(12));
+    }
+
+    #[test]
+    fn a_sidebar_width_outside_the_documented_range_is_sized_as_its_nearest_bound() {
+        assert_eq!(meter_cells(0), meter_cells(18));
+        assert_eq!(meter_cells(12), meter_cells(18));
+        assert_eq!(meter_cells(48), meter_cells(36));
+    }
+
+    /// At the narrowest meter the clamp does all the work: one spent cell
+    /// cannot read as empty, and one unspent cell cannot read as full.
+    #[test]
+    fn the_narrowest_meter_still_separates_almost_empty_from_almost_full() {
+        assert_eq!(
+            meter(1, MIN_METER_CELLS),
+            "\u{25b0}\u{25b1}\u{25b1}\u{25b1}"
+        );
+        assert_eq!(
+            meter(99, MIN_METER_CELLS),
+            "\u{25b0}\u{25b0}\u{25b0}\u{25b1}"
+        );
+        assert_eq!(
+            meter(0, MIN_METER_CELLS),
+            "\u{25b1}\u{25b1}\u{25b1}\u{25b1}"
+        );
+        assert_eq!(
+            meter(100, MIN_METER_CELLS),
+            "\u{25b0}\u{25b0}\u{25b0}\u{25b0}"
+        );
+    }
+
+    /// `METER_ROW_OVERHEAD` budgets six columns for the ETA, so every reset a
+    /// provider can plausibly quote has to print within six. Past 99 days it
+    /// does not, and the meter would then be one column too long.
+    #[test]
+    fn a_reset_eta_prints_within_the_six_columns_the_row_overhead_budgets() {
+        for seconds in [
+            0,
+            1,
+            59,
+            60,
+            59 * 60 + 59,
+            60 * 60,
+            23 * 60 * 60 + 59 * 60,
+            24 * 60 * 60,
+            29 * 24 * 60 * 60 + 23 * 60 * 60,
+            99 * 24 * 60 * 60 + 23 * 60 * 60,
+        ] {
+            let printed = format_duration(seconds);
+            assert!(
+                printed.chars().count() <= 6,
+                "{seconds}s printed as {printed}"
+            );
+        }
+        assert_eq!(format_duration(1_000 * 24 * 60 * 60), "1000d0h");
+    }
+
+    #[test]
+    fn a_sidebar_too_narrow_for_four_cells_asks_for_no_meter_at_all() {
+        for width in 18..20 {
+            assert_eq!(meter_cells(width), None, "width {width}");
+        }
+        assert_eq!(meter_cells(20), Some(4));
+    }
+
+    /// The shape a `gauges` sidebar of `width` columns resolves to. Every
+    /// exact-string test below names the cell count it assumes, so a width
+    /// change moves one fixture rather than the suite.
+    fn gauges(width: usize) -> SidebarShape {
+        SidebarShape::new(SidebarLayout::Gauges, width)
+    }
+
+    /// Ten cells, the default 26-column sidebar. The bar fills to the
+    /// number beside it: 81% remaining draws a bar 81% full.
+    #[test]
+    fn the_gauges_meter_fills_to_the_remaining_number_it_prints() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![window(WindowKind::FiveHour, 19.0, 2_580)],
+            0,
+        );
+        let values = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            gauges(26),
+        );
+        assert_eq!(
+            values.quota_5h,
+            "5h \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}  81% 43m"
+        );
+        assert_eq!(values.quota_5h_severity, Some(Severity::Normal));
+    }
+
+    /// Ten cells. The `used` style flips both the number and the bar, and
+    /// neither touches severity, which still reads remaining.
+    #[test]
+    fn the_used_style_shortens_the_gauges_meter_without_changing_its_colour() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![window(WindowKind::FiveHour, 19.0, 2_580)],
+            0,
+        );
+        let remaining = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            gauges(26),
+        );
+        let used = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Used,
+            gauges(26),
+        );
+        assert_eq!(
+            used.quota_5h,
+            "5h \u{25b0}\u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}  19% 43m"
+        );
+        assert_eq!(used.quota_5h_severity, remaining.quota_5h_severity);
+    }
+
+    /// One scale per sidebar: under `gauges` the context row prints through
+    /// the same percent style as the window rows, so the column of numbers
+    /// reads as one quantity. Twelve cells, a 30-column sidebar.
+    #[test]
+    fn the_gauges_context_row_prints_through_the_chosen_percent_style() {
+        let snapshot = ProviderSnapshot::new(Provider::Claude, vec![], 0)
+            .with_context(Some(crate::model::ContextUsage::new(43.0).unwrap()));
+        let remaining = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            gauges(30),
+        );
+        assert_eq!(
+            remaining.quota_context,
+            "cx \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}  57%"
+        );
+        let used = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Used,
+            gauges(30),
+        );
+        assert_eq!(
+            used.quota_context,
+            "cx \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}  43%"
+        );
+    }
+
+    /// The style must not leak into the layouts that never joined the column:
+    /// `packed` and `stacked` keep printing consumption as `context N%`.
+    #[test]
+    fn packed_and_stacked_print_context_used_under_either_percent_style() {
+        let snapshot = ProviderSnapshot::new(Provider::Claude, vec![], 0)
+            .with_context(Some(crate::model::ContextUsage::new(43.0).unwrap()));
+        for layout in [SidebarLayout::Packed, SidebarLayout::Stacked] {
+            for style in [PercentStyle::Remaining, PercentStyle::Used] {
+                let plain = MetadataTokens::from_snapshot_for_session(
+                    &snapshot,
+                    0,
+                    None,
+                    style,
+                    layout.into(),
+                );
+                assert_eq!(plain.quota_context, "context 43%", "{layout:?} {style:?}");
+            }
+        }
+    }
+
+    /// The whole point of the fix: cntx, 5h and 7d print the same quantity,
+    /// and all three move together when the style flips.
+    #[test]
+    fn every_gauges_row_prints_the_same_quantity_when_the_style_flips() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![
+                window(WindowKind::FiveHour, 31.0, 2_400),
+                window(WindowKind::Weekly, 23.0, 388_200),
+            ],
+            0,
+        )
+        .with_context(Some(crate::model::ContextUsage::new(43.0).unwrap()));
+        let used = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Used,
+            gauges(30),
+        );
+        for (token, expected) in [
+            (&used.quota_context, "43%"),
+            (&used.quota_5h, "31%"),
+            (&used.quota_week, "23%"),
+        ] {
+            assert!(token.contains(expected), "{token} lacks {expected}");
+        }
+        let remaining = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            gauges(30),
+        );
+        for (token, expected) in [
+            (&remaining.quota_context, "57%"),
+            (&remaining.quota_5h, "69%"),
+            (&remaining.quota_week, "77%"),
+        ] {
+            assert!(token.contains(expected), "{token} lacks {expected}");
+        }
+    }
+
+    /// Colour reads headroom on every row, so the context row bands on
+    /// remaining context and not on the number it happens to print.
+    #[test]
+    fn the_context_row_is_coloured_by_remaining_context_under_either_style() {
+        for (used, expected) in [
+            (0.0, Severity::Normal),
+            (31.0, Severity::Normal),
+            (49.0, Severity::Normal),
+            (50.0, Severity::Normal),
+            (51.0, Severity::Warning),
+            (53.0, Severity::Warning),
+            (79.0, Severity::Warning),
+            (80.0, Severity::Warning),
+            (81.0, Severity::Danger),
+            (85.0, Severity::Danger),
+            (100.0, Severity::Danger),
+        ] {
+            let snapshot = ProviderSnapshot::new(Provider::Claude, vec![], 0)
+                .with_context(Some(crate::model::ContextUsage::new(used).unwrap()));
+            for style in [PercentStyle::Remaining, PercentStyle::Used] {
+                let values = MetadataTokens::from_snapshot_for_session(
+                    &snapshot,
+                    0,
+                    None,
+                    style,
+                    gauges(30),
+                );
+                assert_eq!(
+                    values.quota_context_severity,
+                    Some(expected),
+                    "{used} used, {style:?}"
+                );
+            }
+        }
+    }
+
+    /// Ten cells, the default 26-column sidebar. The meter fills to the
+    /// number beside it, and `cx` exists only under `gauges`.
+    #[test]
+    fn the_context_meter_fills_to_its_number_and_is_labelled_cx_only_under_gauges() {
+        let snapshot = ProviderSnapshot::new(Provider::Claude, vec![], 0)
+            .with_context(Some(crate::model::ContextUsage::new(31.0).unwrap()));
+        let gauged = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Used,
+            gauges(26),
+        );
+        assert_eq!(
+            gauged.quota_context,
+            "cx \u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}  31%"
+        );
+        for layout in [SidebarLayout::Packed, SidebarLayout::Stacked] {
+            let plain = MetadataTokens::from_snapshot_for_session(
+                &snapshot,
+                0,
+                None,
+                PercentStyle::Used,
+                layout.into(),
+            );
+            assert_eq!(plain.quota_context, "context 31%", "{layout:?}");
+        }
+    }
+
+    /// Ten cells. The weekly slot renders through `from_snapshot_parts`
+    /// rather than `five_hour_slot`, so it needs its own pin.
+    #[test]
+    fn the_weekly_window_carries_a_meter_of_its_own() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![window(WindowKind::Weekly, 17.0, 424_800)],
+            0,
+        );
+        let values = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            gauges(26),
+        );
+        assert_eq!(
+            values.quota_week,
+            "7d \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}  83% 4d22h"
+        );
+        assert_eq!(values.quota_week.chars().count(), 24);
+    }
+
+    /// Eight cells. Only 0 may draw nothing and only 100 may draw everything,
+    /// so a window with quota left never looks spent.
+    #[test]
+    fn only_zero_draws_an_empty_meter_and_only_a_hundred_draws_a_full_one() {
+        assert_eq!(
+            meter(0, 8),
+            "\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}"
+        );
+        assert_eq!(
+            meter(100, 8),
+            "\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}"
+        );
+        for printed in [1, 6] {
+            assert_eq!(
+                meter(printed, 8).matches('\u{25b0}').count(),
+                1,
+                "printed {printed}"
+            );
+        }
+        assert_eq!(meter(99, 8).matches('\u{25b0}').count(), 7);
+        assert_eq!(meter(50, 8).matches('\u{25b0}').count(), 4);
+        assert_eq!(meter(56, 8).matches('\u{25b0}').count(), 4);
+        assert_eq!(meter(57, 8).matches('\u{25b0}').count(), 5);
+    }
+
+    /// Eight cells, at 24 columns. `{:.0}` rounds half to even and
+    /// `f64::round` rounds half away from zero; at exactly 18.5 they
+    /// disagree, and a bar that read the float directly would show two cells
+    /// beside `18%`.
+    #[test]
+    fn the_meter_and_the_number_round_the_same_way_at_a_half_percent() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![window(WindowKind::FiveHour, 81.5, 2_580)],
+            0,
+        );
+        let values = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            gauges(24),
+        );
+        assert_eq!(
+            values.quota_5h,
+            "5h \u{25b0}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}\u{25b1}  18% 43m"
+        );
+    }
+
+    /// Twelve cells at 36 columns; none at 18, where the row must be exactly
+    /// what `stacked` publishes rather than a truncated meter.
+    #[test]
+    fn a_wider_sidebar_lengthens_the_meter_and_a_narrow_one_drops_it() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![window(WindowKind::Weekly, 17.0, 424_800)],
+            0,
+        );
+        let wide = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            gauges(36),
+        );
+        assert_eq!(
+            wide.quota_week,
+            "7d \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}  83% 4d22h"
+        );
+
+        let narrow = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            gauges(18),
+        );
+        let stacked = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            SidebarLayout::Stacked.into(),
+        );
+        assert_eq!(narrow.quota_week, stacked.quota_week);
+        assert!(!narrow.quota_week.contains('\u{2026}'));
+    }
+
+    /// `missing_five_hour_severity` finds the placeholder by string equality,
+    /// so padding its label would silently drop the Unknown severity.
+    #[test]
+    fn the_missing_five_hour_placeholder_is_byte_identical_under_every_layout() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![window(WindowKind::Weekly, 17.0, 424_800)],
+            0,
+        );
+        for shape in [
+            SidebarLayout::Packed.into(),
+            SidebarLayout::Stacked.into(),
+            gauges(26),
+        ] {
+            let values = MetadataTokens::from_snapshot_for_session(
+                &snapshot,
+                0,
+                None,
+                PercentStyle::Remaining,
+                shape,
+            );
+            assert_eq!(values.quota_5h, "5h N/A", "{shape:?}");
+            assert_eq!(
+                values.quota_5h_severity,
+                Some(Severity::Unknown),
+                "{shape:?}"
+            );
+        }
+    }
+
+    /// A label wider than the two-character column keeps the whole row on
+    /// the non-gauge shape, because truncating a label is worse than
+    /// dropping a bar.
+    #[test]
+    fn a_label_too_long_for_the_gauges_column_keeps_the_non_gauge_shape() {
+        let mut snapshot = ProviderSnapshot::new(
+            Provider::Omp,
+            vec![window(WindowKind::FiveHour, 58.0, 11_400).with_source_window("usage", None)],
+            0,
+        );
+        snapshot.source = "omp.acme".to_string();
+        let values = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            gauges(26),
+        );
+        assert_eq!(values.quota_5h, "usage 42% 3h10m");
+    }
+
+    /// Ten cells. `week_style_base` folds week beside context when 5h is
+    /// empty; the meter has to ride along into that token too.
+    #[test]
+    fn a_week_row_folded_beside_context_still_carries_its_meter() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Grok,
+            vec![window(WindowKind::Weekly, 17.0, 424_800)],
+            0,
+        );
+        let values = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            gauges(26),
+        );
+        assert_eq!(values.quota_5h, "");
+        assert_eq!(
+            values.quota_week,
+            "7d \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}\u{25b1}  83% 4d22h"
+        );
+    }
+
+    /// Herdr joins sibling tokens with ` \u{b7} `, so a value carrying one
+    /// reads as two tokens; and no value may approach the token budget.
+    #[test]
+    fn no_gauges_token_carries_a_separator_or_approaches_the_token_budget() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![
+                window(WindowKind::FiveHour, 0.0, 86_340),
+                window(WindowKind::Weekly, 17.0, 424_800),
+            ],
+            0,
+        )
+        .with_context(Some(crate::model::ContextUsage::new(31.0).unwrap()));
+        let values = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            gauges(26),
+        );
+        // 100% with the longest ETA `format_duration` prints is the widest
+        // row the default width has to hold.
+        assert_eq!(
+            values.quota_5h,
+            "5h \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0} 100% 23h59m"
+        );
+        for value in [&values.quota_5h, &values.quota_week, &values.quota_context] {
+            assert!(!value.contains('\u{b7}'), "{value}");
+            assert!(value.chars().count() < 80, "{value}");
+        }
+        assert_eq!(values.quota_5h.chars().count(), 25);
+    }
+
+    /// Ten cells. The label column is two characters wide, so every label the
+    /// gauges layout can draw a meter for is already exactly that wide and no
+    /// row pads.
+    #[test]
+    fn the_gauges_label_column_is_two_characters_wide() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![window(WindowKind::FiveHour, 19.0, 2_580)],
+            0,
+        )
+        .with_context(Some(crate::model::ContextUsage::new(31.0).unwrap()));
+        let values = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Used,
+            gauges(26),
+        );
+        assert!(
+            values.quota_5h.starts_with("5h \u{25b0}"),
+            "{}",
+            values.quota_5h
+        );
+        assert!(
+            values.quota_context.starts_with("cx \u{25b0}"),
+            "{}",
+            values.quota_context
+        );
+    }
+
+    /// A monthly allowance rides the long-window slot when a plan has no
+    /// weekly bucket, so losing its meter would leave that user without one
+    /// on their only recurring row. `30d` is one character past the column;
+    /// the short form fits, and `packed` keeps the full label.
+    #[test]
+    fn a_monthly_window_keeps_its_meter_under_a_two_letter_label() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![window(WindowKind::Monthly, 17.0, 424_800)],
+            0,
+        );
+        let gauged = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            gauges(26),
+        );
+        assert_eq!(gauged.quota_week, "mo ▰▰▰▰▰▰▰▰▱▱  83% 4d22h");
+
+        let packed = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            SidebarLayout::Packed.into(),
+        );
+        assert_eq!(packed.quota_week, "30d 83% 4d22h");
+    }
+
+    /// A provider-supplied label is never rewritten, so one too long for the
+    /// column keeps the plain row rather than being abbreviated by guesswork.
+    #[test]
+    fn a_provider_supplied_long_label_still_keeps_the_plain_row() {
+        let long = UsageWindow::new(
+            WindowKind::Monthly,
+            17.0,
+            Some(ResetAt::from_unix_seconds(424_800)),
+        )
+        .unwrap()
+        .with_source_window("Monthly", None);
+        let snapshot = ProviderSnapshot::new(Provider::Omp, vec![long], 0);
+        let values = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            gauges(26),
+        );
+        assert_eq!(values.quota_week, "Monthly 83% 4d22h");
     }
 }

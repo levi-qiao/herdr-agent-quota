@@ -71,13 +71,15 @@ pub fn clear(name: &str) -> Result<()> {
     }
 }
 
-/// Scoped overrides of the process-global config directory.
+/// Scoped overrides of the process-global environment.
 ///
-/// `HERDR_PLUGIN_CONFIG_DIR` is read from the environment, and Rust runs unit
-/// tests as threads of one process, so every test that touches it has to share
-/// a single lock. This is that one lock — do not add another.
+/// `HERDR_PLUGIN_CONFIG_DIR` and the other variables the plugin reads live in
+/// the environment, and Rust runs unit tests as threads of one process, so
+/// every test that writes one has to share a single lock. This is that one
+/// lock — do not add another.
 #[cfg(test)]
 pub(crate) mod testing {
+    use std::ffi::{OsStr, OsString};
     use std::path::Path;
     use std::sync::{Mutex, MutexGuard};
 
@@ -95,6 +97,41 @@ pub(crate) mod testing {
     /// Run `body` as a direct CLI invocation, with no Herdr config directory.
     pub(crate) fn without_config_dir(body: impl FnOnce()) {
         swap(None, body);
+    }
+
+    /// Run `body` with `variables` applied to the process environment, each
+    /// restored to its previous value afterwards.
+    ///
+    /// There is one process environment, so this shares the lock above rather
+    /// than taking one of its own.
+    pub(crate) fn with_env(variables: &[(&str, Option<&OsStr>)], body: impl FnOnce()) {
+        let _guard = guard();
+        let previous: Vec<(&str, Option<OsString>)> = variables
+            .iter()
+            .map(|(name, _)| (*name, std::env::var_os(name)))
+            .collect();
+        // SAFETY: every writer of these variables holds `LOCK`, and the
+        // previous values are restored before the guard is released.
+        unsafe {
+            for (name, value) in variables {
+                set(name, *value);
+            }
+        }
+        body();
+        unsafe {
+            for (name, value) in &previous {
+                set(name, value.as_deref());
+            }
+        }
+    }
+
+    /// # Safety
+    /// The caller must hold `LOCK`.
+    unsafe fn set(name: &str, value: Option<&OsStr>) {
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
     }
 
     fn swap(path: Option<&Path>, body: impl FnOnce()) {

@@ -1,5 +1,5 @@
 use crate::model::{ContextUsage, Harness, Provider};
-use crate::presentation::MetadataTokens;
+use crate::presentation::{MetadataTokens, RowStyle, SidebarShape};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -14,11 +14,14 @@ const MAX_METADATA_TOKENS: usize = 16;
 /// not free: it is compared on every refresh and it competes for Herdr's
 /// 16-token report budget. Add a name here only together with the field that
 /// fills it.
-const METADATA_TOKEN_NAMES: [&str; 22] = [
+const METADATA_TOKEN_NAMES: [&str; 25] = [
     "quota_provider",
     "quota_model",
     "quota_provider_model",
     "quota_context",
+    "quota_context_normal",
+    "quota_context_warning",
+    "quota_context_danger",
     "quota_cache",
     "quota_cache_ttl",
     "quota_cache_state",
@@ -74,15 +77,32 @@ const LEGACY_METADATA_TOKEN_NAMES: [&str; 4] = [
     "quota_week_inline_label",
     "quota_week_inline_eta",
 ];
+/// The names the context row can be published into, in the order a report
+/// clears them. Herdr fixes a token's colour by name, so the only way to
+/// colour the context row is to publish it into a name whose row template
+/// already carries that colour — which is why `gauges` needs the three
+/// severity variants and `packed`/`stacked` keep the plain one.
+///
+/// Exactly one is ever filled. Publishing a second would draw two context
+/// rows in the same pane.
+const CONTEXT_TOKEN_NAMES: [&str; 4] = [
+    "quota_context",
+    "quota_context_normal",
+    "quota_context_warning",
+    "quota_context_danger",
+];
 /// Values that must reach the pane in the *same* report that changed them,
 /// even when the budget is tight: the identity, the live diagnostics, and the
 /// inline week variants, whose styling flips as soon as a 5h window appears.
-const ROWS_THAT_MUST_NOT_LAG: [&str; 12] = [
+const ROWS_THAT_MUST_NOT_LAG: [&str; 15] = [
     "quota_provider",
     "quota_model",
     "quota_provider_model",
     "quota_topic",
     "quota_context",
+    "quota_context_normal",
+    "quota_context_warning",
+    "quota_context_danger",
     "quota_cache",
     "quota_cache_ttl",
     "quota_cache_state",
@@ -460,6 +480,7 @@ pub fn publish_pane_tokens(
     panes: &[AgentPane],
     tokens: &[PaneTokens],
     sequence: u64,
+    row: RowStyle,
 ) -> Result<()> {
     let executable = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
     let mut reported = 0usize;
@@ -470,7 +491,7 @@ pub fn publish_pane_tokens(
         };
         let topic = display_topic(pane);
         let mut desired = match &pane_tokens.quota {
-            PaneQuotaUpdate::Replace(values) => desired_tokens(values, &topic),
+            PaneQuotaUpdate::Replace(values) => desired_tokens(values, &topic, row.shape),
             PaneQuotaUpdate::Clear => desired_cleared_quota(pane),
             PaneQuotaUpdate::Preserve => pane.tokens.clone(),
         };
@@ -478,7 +499,7 @@ pub fn publish_pane_tokens(
             apply_identity(&mut desired, identity);
         }
         if let Some(context) = &pane_tokens.context {
-            apply_context(&mut desired, context, sequence / 1_000);
+            apply_context(&mut desired, context, sequence / 1_000, row);
         }
         if metadata_matches(&pane.tokens, &desired) {
             continue;
@@ -545,7 +566,11 @@ fn pane_is_scrolled(executable: &std::ffi::OsStr, pane_id: &str) -> bool {
         .is_some_and(|offset| offset > 0)
 }
 
-fn desired_tokens(values: &MetadataTokens, topic: &str) -> BTreeMap<String, String> {
+fn desired_tokens(
+    values: &MetadataTokens,
+    topic: &str,
+    shape: SidebarShape,
+) -> BTreeMap<String, String> {
     let mut tokens = BTreeMap::from([
         ("quota_provider".to_string(), values.quota_provider.clone()),
         (
@@ -554,7 +579,12 @@ fn desired_tokens(values: &MetadataTokens, topic: &str) -> BTreeMap<String, Stri
         ),
     ]);
     insert_optional_token(&mut tokens, "quota_model", &values.quota_model);
-    insert_optional_token(&mut tokens, "quota_context", &values.quota_context);
+    insert_context_token(
+        &mut tokens,
+        &values.quota_context,
+        values.quota_context_severity,
+        shape,
+    );
     insert_optional_token(&mut tokens, "quota_cache", &values.quota_cache);
     insert_optional_token(&mut tokens, "quota_cache_ttl", &values.quota_cache_ttl);
     insert_optional_token(&mut tokens, "quota_cache_state", &values.quota_cache_state);
@@ -624,11 +654,17 @@ fn apply_identity(tokens: &mut BTreeMap<String, String>, identity: &PaneIdentity
     }
 }
 
-fn apply_context(tokens: &mut BTreeMap<String, String>, context: &ContextUsage, now_unix: u64) {
-    insert_optional_token(
+fn apply_context(
+    tokens: &mut BTreeMap<String, String>,
+    context: &ContextUsage,
+    now_unix: u64,
+    row: RowStyle,
+) {
+    insert_context_token(
         tokens,
-        "quota_context",
-        &crate::presentation::sidebar_context(Some(context)),
+        &crate::presentation::sidebar_context(Some(context), row.percent, row.shape),
+        Some(crate::presentation::context_severity(context, row.percent)),
+        row.shape,
     );
     let cache = crate::presentation::sidebar_cache(Some(context));
     if cache.is_empty() {
@@ -718,6 +754,46 @@ fn week_style_base(quota_5h: &str) -> &'static str {
         "quota_week_inline"
     } else {
         "quota_week"
+    }
+}
+
+/// Publish the context row into the one name its layout and severity choose,
+/// and clear the other three.
+///
+/// The clear is the point: a severity change or a layout switch moves the
+/// value to a different name, and a pane that kept the old one would show two
+/// context rows at once.
+fn insert_context_token(
+    tokens: &mut BTreeMap<String, String>,
+    value: &str,
+    severity: Option<crate::model::Severity>,
+    shape: SidebarShape,
+) {
+    for name in CONTEXT_TOKEN_NAMES {
+        tokens.remove(name);
+    }
+    if value.trim().is_empty() {
+        return;
+    }
+    tokens.insert(
+        context_token_name(shape, severity).to_string(),
+        value.to_string(),
+    );
+}
+
+fn context_token_name(
+    shape: SidebarShape,
+    severity: Option<crate::model::Severity>,
+) -> &'static str {
+    if shape.layout != crate::cli::SidebarLayout::Gauges {
+        return "quota_context";
+    }
+    // `Severity::for_context_remaining` never returns `Unknown`, and a caller
+    // with no severity has no coloured band to claim, so both read as normal.
+    match severity {
+        Some(crate::model::Severity::Warning) => "quota_context_warning",
+        Some(crate::model::Severity::Danger) => "quota_context_danger",
+        _ => "quota_context_normal",
     }
 }
 
@@ -830,6 +906,7 @@ fn is_status_line(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::PercentStyle;
     use crate::model::{
         CacheUsage, ContextUsage, ProviderSnapshot, ResetAt, UsageWindow, WindowKind,
     };
@@ -842,7 +919,9 @@ mod tests {
         let token = |headroom: Option<u8>| {
             let mut values = MetadataTokens::unavailable(Provider::Claude, "test");
             values.quota_headroom = headroom;
-            desired_tokens(&values, "").get(HEADROOM_TOKEN).cloned()
+            desired_tokens(&values, "", SidebarShape::default())
+                .get(HEADROOM_TOKEN)
+                .cloned()
         };
         assert_eq!(token(Some(7)).as_deref(), Some("007"));
         assert_eq!(token(Some(42)).as_deref(), Some("042"));
@@ -964,6 +1043,7 @@ mod tests {
             let desired = desired_tokens(
                 &MetadataTokens::from_snapshot(&snapshot, 0),
                 "a topic that is present",
+                SidebarShape::default(),
             );
             assert!(
                 desired.len() <= HERDR_TOKEN_REPORT_CAP,
@@ -1137,7 +1217,11 @@ mod tests {
                         ),
                 )),
         ));
-        let desired = desired_tokens(&MetadataTokens::from_snapshot(&snapshot, 0), "prompt");
+        let desired = desired_tokens(
+            &MetadataTokens::from_snapshot(&snapshot, 0),
+            "prompt",
+            SidebarShape::default(),
+        );
         let pane = AgentPane {
             pane_id: "w1:p1".to_string(),
             harness: Harness::Grok,
@@ -1179,7 +1263,11 @@ mod tests {
                         ),
                 )),
         ));
-        let desired = desired_tokens(&MetadataTokens::from_snapshot(&snapshot, 0), "prompt");
+        let desired = desired_tokens(
+            &MetadataTokens::from_snapshot(&snapshot, 0),
+            "prompt",
+            SidebarShape::default(),
+        );
         let pane = AgentPane {
             pane_id: "w1:p1".to_string(),
             harness: Harness::Claude,
@@ -1194,6 +1282,163 @@ mod tests {
         assert!(names.contains(&"quota_cache_ttl"));
     }
 
+    /// The context row is coloured by the context *left* under `gauges`, on
+    /// the windows' own bands, whichever side of the ledger it prints.
+    #[test]
+    fn gauges_publishes_context_into_the_severity_name_its_headroom_earns() {
+        let gauges = SidebarShape::from(crate::cli::SidebarLayout::Gauges);
+        for (used, expected) in [
+            (31.0, "quota_context_normal"),
+            (49.0, "quota_context_normal"),
+            (50.0, "quota_context_normal"),
+            (51.0, "quota_context_warning"),
+            (53.0, "quota_context_warning"),
+            (79.0, "quota_context_warning"),
+            (80.0, "quota_context_warning"),
+            (81.0, "quota_context_danger"),
+            (85.0, "quota_context_danger"),
+        ] {
+            for percent in [PercentStyle::Remaining, PercentStyle::Used] {
+                let mut tokens = BTreeMap::new();
+                apply_context(
+                    &mut tokens,
+                    &ContextUsage::new(used).unwrap(),
+                    0,
+                    RowStyle::new(percent, gauges),
+                );
+                let published = CONTEXT_TOKEN_NAMES
+                    .into_iter()
+                    .filter(|name| tokens.contains_key(*name))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    published,
+                    vec![expected],
+                    "context {used} used, {percent:?}"
+                );
+            }
+        }
+    }
+
+    /// Only one context name is ever filled, so a severity change or a layout
+    /// switch can never leave a pane showing two context rows.
+    #[test]
+    fn a_context_severity_change_clears_the_name_it_moved_away_from() {
+        let gauges = SidebarShape::from(crate::cli::SidebarLayout::Gauges);
+        let mut tokens = BTreeMap::new();
+        let row = RowStyle::new(PercentStyle::Used, gauges);
+        apply_context(&mut tokens, &ContextUsage::new(31.0).unwrap(), 0, row);
+        apply_context(&mut tokens, &ContextUsage::new(85.0).unwrap(), 0, row);
+        assert!(!tokens.contains_key("quota_context_normal"));
+        assert_eq!(
+            tokens.get("quota_context_danger").map(String::as_str),
+            Some("context 85%")
+        );
+        apply_context(
+            &mut tokens,
+            &ContextUsage::new(85.0).unwrap(),
+            0,
+            RowStyle::default(),
+        );
+        assert_eq!(
+            tokens.get("quota_context").map(String::as_str),
+            Some("context 85%")
+        );
+        for name in ["quota_context_normal", "quota_context_danger"] {
+            assert!(!tokens.contains_key(name), "{name}");
+        }
+    }
+
+    /// `packed` and `stacked` keep the plain uncoloured name they have always
+    /// published, and the used percent they have always printed, whatever the
+    /// context value and whichever percent style the windows are drawn with.
+    #[test]
+    fn packed_and_stacked_keep_publishing_the_plain_context_token() {
+        for layout in [
+            crate::cli::SidebarLayout::Packed,
+            crate::cli::SidebarLayout::Stacked,
+        ] {
+            for percent in [PercentStyle::Remaining, PercentStyle::Used] {
+                let mut tokens = BTreeMap::new();
+                apply_context(
+                    &mut tokens,
+                    &ContextUsage::new(85.0).unwrap(),
+                    0,
+                    RowStyle::new(percent, SidebarShape::from(layout)),
+                );
+                assert_eq!(
+                    tokens.get("quota_context").map(String::as_str),
+                    Some("context 85%"),
+                    "{layout:?} {percent:?}"
+                );
+                for name in [
+                    "quota_context_normal",
+                    "quota_context_warning",
+                    "quota_context_danger",
+                ] {
+                    assert!(!tokens.contains_key(name), "{layout:?} wrote {name}");
+                }
+            }
+        }
+    }
+
+    /// The three context names are three more slots against Herdr's sixteen,
+    /// even though at most one of them is ever filled.
+    #[test]
+    fn a_full_gauges_pane_stays_inside_herdr_metadata_cap() {
+        let gauges = SidebarShape::from(crate::cli::SidebarLayout::Gauges);
+        let snapshot = crate::model::ProviderSnapshot::new(
+            Provider::Claude,
+            vec![
+                crate::model::UsageWindow::new(
+                    crate::model::WindowKind::FiveHour,
+                    20.0,
+                    Some(crate::model::ResetAt::from_unix_seconds(18_000)),
+                )
+                .unwrap(),
+                crate::model::UsageWindow::new(
+                    crate::model::WindowKind::Weekly,
+                    30.0,
+                    Some(crate::model::ResetAt::from_unix_seconds(183_600)),
+                )
+                .unwrap(),
+            ],
+            0,
+        )
+        .with_context(Some(
+            crate::model::ContextUsage::new(85.0)
+                .unwrap()
+                .with_cache(Some(
+                    crate::model::CacheUsage::from_token_counts(100, 800, 100)
+                        .unwrap()
+                        .with_ttl_estimate(3_600, 0)
+                        .with_session_totals(
+                            crate::model::CacheTotals::from_token_counts(100, 800, 100),
+                            "session-1",
+                            1,
+                        ),
+                )),
+        ));
+        let values = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            crate::cli::PercentStyle::default(),
+            gauges,
+        );
+        let desired = desired_tokens(&values, "prompt", gauges);
+        assert!(desired.contains_key("quota_context_danger"));
+        let pane = AgentPane {
+            pane_id: "w1:p1".to_string(),
+            harness: Harness::Claude,
+            session: None,
+            session_summary: String::new(),
+            topic: String::new(),
+            tokens: BTreeMap::new(),
+        };
+        let names = metadata_report_names(&pane, &desired);
+        assert!(names.len() <= MAX_METADATA_TOKENS, "{names:?}");
+    }
+
     #[test]
     fn exact_context_without_cache_clears_stale_cache_diagnostics() {
         let mut tokens = BTreeMap::from([
@@ -1201,7 +1446,12 @@ mod tests {
             ("quota_cache".to_string(), "cache 95.0%".to_string()),
             ("quota_cache_ttl".to_string(), "ttl≈1h".to_string()),
         ]);
-        apply_context(&mut tokens, &ContextUsage::new(12.0).unwrap(), 0);
+        apply_context(
+            &mut tokens,
+            &ContextUsage::new(12.0).unwrap(),
+            0,
+            RowStyle::default(),
+        );
         assert_eq!(
             tokens.get("quota_context").map(String::as_str),
             Some("context 12%")
@@ -1236,7 +1486,11 @@ mod tests {
                         ),
                 )),
         ));
-        let desired = desired_tokens(&MetadataTokens::from_snapshot(&snapshot, 0), "prompt");
+        let desired = desired_tokens(
+            &MetadataTokens::from_snapshot(&snapshot, 0),
+            "prompt",
+            SidebarShape::default(),
+        );
         let mut tokens = desired.clone();
         tokens.insert("quota_icon".to_string(), "✦Cl".to_string());
         tokens.insert("quota_status".to_string(), "OK".to_string());
@@ -1324,7 +1578,11 @@ mod tests {
             .unwrap()],
             0,
         );
-        let desired = desired_tokens(&MetadataTokens::from_snapshot(&snapshot, 0), "prompt");
+        let desired = desired_tokens(
+            &MetadataTokens::from_snapshot(&snapshot, 0),
+            "prompt",
+            SidebarShape::default(),
+        );
         assert_eq!(
             desired.get("quota_5h_unknown").map(String::as_str),
             Some("5h N/A")
@@ -1348,7 +1606,11 @@ mod tests {
             .unwrap()],
             0,
         );
-        let desired = desired_tokens(&MetadataTokens::from_snapshot(&snapshot, 0), "prompt");
+        let desired = desired_tokens(
+            &MetadataTokens::from_snapshot(&snapshot, 0),
+            "prompt",
+            SidebarShape::default(),
+        );
         assert!(!desired.contains_key("quota_5h_normal"));
         assert!(!desired.contains_key("quota_5h_label"));
         assert!(desired.contains_key("quota_week_inline_normal"));
@@ -1376,7 +1638,11 @@ mod tests {
             ],
             0,
         );
-        let desired = desired_tokens(&MetadataTokens::from_snapshot(&snapshot, 0), "prompt");
+        let desired = desired_tokens(
+            &MetadataTokens::from_snapshot(&snapshot, 0),
+            "prompt",
+            SidebarShape::default(),
+        );
         assert_eq!(
             desired.get("quota_5h_normal").map(String::as_str),
             Some("5h 95% 4h07m")
@@ -1406,7 +1672,11 @@ mod tests {
             .unwrap()],
             0,
         );
-        let desired = desired_tokens(&MetadataTokens::from_snapshot(&snapshot, 0), "prompt");
+        let desired = desired_tokens(
+            &MetadataTokens::from_snapshot(&snapshot, 0),
+            "prompt",
+            SidebarShape::default(),
+        );
         let mut tokens = desired.clone();
         tokens.remove("quota_week_inline_normal");
         tokens.insert("quota_week_normal".to_string(), "7d 75% 5d0h".to_string());
@@ -1446,7 +1716,11 @@ mod tests {
             ],
             0,
         );
-        let desired = desired_tokens(&MetadataTokens::from_snapshot(&snapshot, 0), "prompt");
+        let desired = desired_tokens(
+            &MetadataTokens::from_snapshot(&snapshot, 0),
+            "prompt",
+            SidebarShape::default(),
+        );
         let mut tokens = desired.clone();
         tokens.insert("quota_week_inline_normal".to_string(), "7d 99%".to_string());
         let pane = AgentPane {
