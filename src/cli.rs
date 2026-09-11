@@ -785,8 +785,9 @@ impl AgentSelection {
     /// A Herdr plugin action runs a fixed command line in the *server's*
     /// environment, so a variable exported around `herdr plugin action invoke`
     /// never reaches it. The plugin config directory is the channel that does
-    /// work, and it is what `install.sh` writes; the environment is still
-    /// honoured first for a direct CLI run.
+    /// work, and it is what `install.sh` writes. A direct-CLI environment
+    /// override is still honoured first, but it is explicit and therefore
+    /// parsed exactly; only persisted preferences get the legacy-full upgrade.
     ///
     /// Anything unparsable falls through to the next source and finally to
     /// every supported agent, so `--uninstall` alone still removes everything.
@@ -794,24 +795,25 @@ impl AgentSelection {
         if !values.is_empty() {
             return Self::resolve(values);
         }
-        [
-            std::env::var("HERDR_AGENT_QUOTA_AGENTS").ok(),
-            crate::prefs::read(crate::prefs::AGENTS),
-        ]
-        .into_iter()
-        .flatten()
-        .find_map(|raw| Self::parse_list(&raw))
-        .unwrap_or_else(|| Self::SUPPORTED.to_vec())
+        if let Ok(raw) = std::env::var("HERDR_AGENT_QUOTA_AGENTS") {
+            if let Some(agents) = Self::parse_list(&raw, false) {
+                return agents;
+            }
+        }
+        crate::prefs::read(crate::prefs::AGENTS)
+            .and_then(|raw| Self::parse_list(&raw, true))
+            .unwrap_or_else(|| Self::SUPPORTED.to_vec())
     }
 
     /// A comma-separated selection, or `None` when it names nothing valid.
     ///
-    /// An unmarked list that is a proper prefix of `SUPPORTED` of length
-    /// [`Self::FIRST_PERSISTED_FULL`] or more was complete when written, so it
-    /// is read as every agent — the same shape as a pre-`provider` field list.
-    /// `only` keeps a later subset that happens to match that prefix from
-    /// being upgraded.
-    fn parse_list(raw: &str) -> Option<Vec<Harness>> {
+    /// When `upgrade_legacy_full` is true, an unmarked list that is a proper
+    /// prefix of `SUPPORTED` of length [`Self::FIRST_PERSISTED_FULL`] or more
+    /// was complete when written, so it is read as every agent. That upgrade
+    /// is for persisted preferences only; direct environment overrides are
+    /// explicit selections and stay exact. `only` keeps a newly-stored subset
+    /// from colliding with the legacy persisted form.
+    fn parse_list(raw: &str, upgrade_legacy_full: bool) -> Option<Vec<Harness>> {
         let mut explicit = false;
         let mut parsed = Vec::new();
         for name in raw
@@ -831,7 +833,7 @@ impl AgentSelection {
             return None;
         }
         let resolved = Self::resolve(&parsed);
-        if !explicit && Self::is_legacy_full(&resolved) {
+        if upgrade_legacy_full && !explicit && Self::is_legacy_full(&resolved) {
             Some(Self::SUPPORTED.to_vec())
         } else {
             Some(resolved)
@@ -969,6 +971,19 @@ mod tests {
         assert_eq!(
             AgentSelection::from_args_or_env(&[AgentSelection::Grok]),
             vec![Harness::Grok]
+        );
+    }
+
+    #[test]
+    fn an_explicit_list_matching_a_legacy_full_prefix_stays_exact() {
+        let raw = "claude,codex,grok,agy,opencode,pi";
+        assert_eq!(
+            AgentSelection::parse_list(raw, false),
+            Some(AgentSelection::SUPPORTED[..AgentSelection::FIRST_PERSISTED_FULL].to_vec())
+        );
+        assert_eq!(
+            AgentSelection::parse_list(raw, true),
+            Some(AgentSelection::SUPPORTED.to_vec())
         );
     }
 
