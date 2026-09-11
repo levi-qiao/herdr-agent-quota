@@ -40,7 +40,11 @@ Timing-sensitive tests can be diagnosed with `-- --test-threads=1`.
 
 A harness and a billing provider are different concepts. Add a subscription
 route only when the credential source is verified; use session diagnostics
-without quota for unsupported or unconfirmed routes.
+without quota for unsupported or unconfirmed routes. When adding a harness,
+append it to `AgentSelection::SUPPORTED` and follow the checklist in
+[AGENTS.md](AGENTS.md#adding-a-harness) — a saved complete agent list is a
+prefix of that array, and inserting or forgetting the settings height, sidebar
+style, or `SUPPORTED`-driven tests recreates #81.
 
 ## Pull requests and documentation
 

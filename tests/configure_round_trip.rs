@@ -1,6 +1,7 @@
 use herdr_agent_quota::cache::CacheStore;
+use herdr_agent_quota::cli::AgentSelection;
 use herdr_agent_quota::configure::herdr::{add_quota_row, remove_quota_row};
-use herdr_agent_quota::model::{Provider, ProviderSnapshot, UsageWindow, WindowKind};
+use herdr_agent_quota::model::{Harness, Provider, ProviderSnapshot, UsageWindow, WindowKind};
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -1652,9 +1653,13 @@ fn installing_one_agent_leaves_every_other_agent_untouched() {
     );
 
     let sidebar = homes.sidebar();
-    assert!(sidebar.contains("claude ="), "{sidebar}");
-    for other in ["codex =", "grok =", "agy =", "opencode =", "pi =", "omp ="] {
-        assert!(!sidebar.contains(other), "{other} was written: {sidebar}");
+    assert!(sidebar.contains(&style_row(Harness::Claude)), "{sidebar}");
+    for harness in AgentSelection::SUPPORTED {
+        if harness == Harness::Claude {
+            continue;
+        }
+        let other = style_row(harness);
+        assert!(!sidebar.contains(&other), "{other} was written: {sidebar}");
     }
 
     // Someone who does not use Agy or Grok must end up with nothing of theirs
@@ -1681,16 +1686,13 @@ fn installing_only_pi_adds_only_its_sidebar_style() {
         String::from_utf8_lossy(&output.stderr)
     );
     let sidebar = homes.sidebar();
-    assert!(sidebar.contains("pi ="), "{sidebar}");
-    for other in [
-        "claude =",
-        "codex =",
-        "grok =",
-        "agy =",
-        "opencode =",
-        "omp =",
-    ] {
-        assert!(!sidebar.contains(other), "{other} was written: {sidebar}");
+    assert!(sidebar.contains(&style_row(Harness::Pi)), "{sidebar}");
+    for harness in AgentSelection::SUPPORTED {
+        if harness == Harness::Pi {
+            continue;
+        }
+        let other = style_row(harness);
+        assert!(!sidebar.contains(&other), "{other} was written: {sidebar}");
     }
     assert!(!homes.claude_settings.exists());
     assert!(!homes.agy_settings.exists());
@@ -1712,16 +1714,16 @@ fn uninstalling_one_agent_keeps_the_rest_working() {
     );
 
     let sidebar = homes.sidebar();
-    assert!(!sidebar.contains("grok ="), "grok survived: {sidebar}");
-    for kept in [
-        "claude =",
-        "codex =",
-        "agy =",
-        "opencode =",
-        "pi =",
-        "omp =",
-    ] {
-        assert!(sidebar.contains(kept), "{kept} was lost: {sidebar}");
+    assert!(
+        !sidebar.contains(&style_row(Harness::Grok)),
+        "grok survived: {sidebar}"
+    );
+    for harness in AgentSelection::SUPPORTED {
+        if harness == Harness::Grok {
+            continue;
+        }
+        let kept = style_row(harness);
+        assert!(sidebar.contains(&kept), "{kept} was lost: {sidebar}");
     }
     assert!(
         homes.claude_settings.exists(),
@@ -1786,6 +1788,110 @@ fn an_installer_can_narrow_the_selection_through_the_environment() {
     assert!(!homes.claude_settings.exists());
 }
 
+fn stub_missing_omp_integration(state: &Path) {
+    fs::create_dir_all(state).unwrap();
+    let herdr = state.join("herdr-absent");
+    fs::write(
+        &herdr,
+        r#"#!/bin/sh
+if [ "$1 $2" = "integration status" ]; then
+  printf '%s\n' 'omp: not installed (/home/u/.omp/agent/extensions/herdr-agent-state.ts)'
+  exit 0
+fi
+if [ "$1 $2 $3" = "integration install omp" ]; then
+  printf '%s\n' 'omp extension directory not found at /home/u/.omp/agent/extensions. install omp first' >&2
+  exit 1
+fi
+exit 0
+"#,
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&herdr).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&herdr, permissions).unwrap();
+}
+
+/// The Herdr configure action has no `--agent` flag, so a list saved before
+/// Muse is what `is_full` sees. Without the upgrade that list is partial,
+/// and a machine without omp dies before any sidebar row is written.
+#[test]
+fn a_saved_pre_muse_full_list_still_configures_when_omp_is_absent() {
+    let root = tempdir().unwrap();
+    let homes = AgentHomes::new(root.path());
+    stub_missing_omp_integration(&homes.state);
+    let config = root.path().join("config");
+    fs::create_dir_all(&config).unwrap();
+    fs::write(
+        config.join("agents"),
+        "claude,codex,grok,agy,opencode,pi,omp,devin\n",
+    )
+    .unwrap();
+
+    let output = homes.configure_with_env(
+        &["--apply"],
+        &[
+            ("HERDR_PLUGIN_CONFIG_DIR", config.to_str().unwrap()),
+            ("HERDR_AGENT_QUOTA_AGENTS", ""),
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "stderr: {stderr}\nstdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("Skipped omp"),
+        "omp should be skipped on a full selection: {stdout}"
+    );
+    let sidebar = homes.sidebar();
+    assert!(
+        sidebar.contains("muse ="),
+        "a once-complete list must include Muse: {sidebar}"
+    );
+    assert!(sidebar.contains("claude ="), "{sidebar}");
+}
+
+#[test]
+fn an_explicit_pre_muse_subset_still_fails_when_omp_is_absent() {
+    let root = tempdir().unwrap();
+    let homes = AgentHomes::new(root.path());
+    stub_missing_omp_integration(&homes.state);
+    let config = root.path().join("config");
+    fs::create_dir_all(&config).unwrap();
+    fs::write(
+        config.join("agents"),
+        "only,claude,codex,grok,agy,opencode,pi,omp,devin\n",
+    )
+    .unwrap();
+
+    let output = homes.configure_with_env(
+        &["--apply"],
+        &[
+            ("HERDR_PLUGIN_CONFIG_DIR", config.to_str().unwrap()),
+            ("HERDR_AGENT_QUOTA_AGENTS", ""),
+        ],
+    );
+    assert!(
+        !output.status.success(),
+        "an explicit omp subset must fail loudly when omp is absent"
+    );
+    let detail = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        detail.contains("omp extension directory not found"),
+        "{detail}"
+    );
+    assert!(
+        !homes.sidebar().contains("muse ="),
+        "a failed configure must not write Muse rows: {}",
+        homes.sidebar()
+    );
+}
+
 #[test]
 fn an_unusable_environment_selection_still_installs_everything() {
     let root = tempdir().unwrap();
@@ -1795,17 +1901,14 @@ fn an_unusable_environment_selection_still_installs_everything() {
         .status
         .success());
     let sidebar = homes.sidebar();
-    for expected in [
-        "claude =",
-        "codex =",
-        "grok =",
-        "agy =",
-        "opencode =",
-        "pi =",
-        "omp =",
-    ] {
-        assert!(sidebar.contains(expected), "{expected} missing: {sidebar}");
+    for harness in AgentSelection::SUPPORTED {
+        let expected = style_row(harness);
+        assert!(sidebar.contains(&expected), "{expected} missing: {sidebar}");
     }
+}
+
+fn style_row(harness: Harness) -> String {
+    format!("{} =", AgentSelection::harness_name(harness))
 }
 
 #[test]

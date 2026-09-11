@@ -71,7 +71,7 @@ every time they press Enter. Budget accordingly.
 
 The working event starts one global `watch` pulse. It calls `herdr agent list`
 once per configured interval for every supported harness, including Pi, OMP,
-and OpenCode. Event-spawned watchers defer their first poll. They resolve local
+OpenCode, and Muse. Event-spawned watchers defer their first poll. They resolve local
 billing targets, refresh active/settling targets, and publish to siblings with
 the same target without reading terminal output. A finishing target stays in
 the pass until the 60-second debounce has elapsed. The interval defaults to
@@ -236,6 +236,44 @@ clients from redirecting a refresh to another pane:
 `find_agent` and `find_pane_id` in `src/refresh.rs` walk the tree rather than
 assuming a fixed path. Keep them tolerant — the shapes differ per event and are
 not part of a stable contract.
+
+## Adding a harness
+
+Append to `AgentSelection::SUPPORTED`. Never insert. A saved complete agent
+list is a proper prefix of that array, and `parse_list` still reads an unmarked
+prefix of length ≥ 6 as every agent. That is what #81 was: Muse grew
+`SUPPORTED`, a settings-saved
+`claude,codex,grok,agy,opencode,pi,omp,devin` became "partial", `ensure_omp`
+took the hard-failure path, and `configure` aborted on a machine without omp.
+The first six entries are the first complete list the settings pane wrote; do
+not reorder them.
+
+You do not add a historical snapshot by hand when you append — the prefix
+rule covers the new tail. Settings and `install.sh --agent` write `all` or
+`only,<names>` so a later "everything except the newest one" is not mistaken
+for a legacy full list.
+
+Wiring the new name is not enough. Also:
+
+1. `Harness`, `from_agent_name`, `AgentSelection` (the enum, `parse`,
+   `harness`, `harness_name`), clap `--agent` help, `install.sh` comments,
+   both READMEs, and the plugin description.
+2. A `PROVIDER_STYLES` row in `src/configure/herdr.rs`, in `SUPPORTED` order.
+3. Settings popup `height` in `herdr-plugin.toml` — one more row. The
+   `rows().len()` check fails if this is skipped.
+4. If it has a subscription collector: `Provider`, `Provider::ALL`,
+   `ProviderSelection`, the fetch path, and a cache identity. If Herdr has
+   no integration for it, `integration_id` returns `None` (Agy, Muse).
+5. If its own transcript is the evidence, `event` must not read the pane
+   (Pi, omp, Muse).
+6. Tests that name agents must walk `SUPPORTED`, not a copied list. A copied
+   list is how Muse missed the watcher-alive check and the "installs
+   everything" sidebar assertions.
+
+Adding a **sidebar field** is the same shape as #76: a saved "everything on"
+list will not name the new field. `FieldSet::parse` has to keep reading that
+exact legacy list as `all()`, and `as_list` needs a marker for the one new
+selection that would collide with it.
 
 ## Verifying
 

@@ -272,7 +272,7 @@ impl Settings {
             "configure".to_string(),
             "--apply".to_string(),
             "--agent".to_string(),
-            agent_list(&self.agents()),
+            AgentSelection::as_cli_list(&self.agents()),
             "--quota-percent".to_string(),
             self.percent.as_str().to_string(),
             "--sidebar-layout".to_string(),
@@ -306,27 +306,8 @@ impl Settings {
     }
 }
 
-fn agent_name(harness: Harness) -> &'static str {
-    match harness {
-        Harness::Claude => "claude",
-        Harness::Codex => "codex",
-        Harness::Grok => "grok",
-        Harness::Agy => "agy",
-        Harness::OpenCode => "opencode",
-        Harness::Pi => "pi",
-        Harness::Omp => "omp",
-        Harness::Devin => "devin",
-        Harness::Muse => "muse",
-    }
-}
-
 fn agent_list(agents: &[Harness]) -> String {
-    agents
-        .iter()
-        .copied()
-        .map(agent_name)
-        .collect::<Vec<_>>()
-        .join(",")
+    AgentSelection::names(agents)
 }
 
 fn format_interval(seconds: u64) -> String {
@@ -448,7 +429,10 @@ fn apply(settings: Settings, removed: &[Harness]) -> Result<()> {
     }
     // A Herdr plugin action runs a fixed command line, so the agent selection
     // has to be stored where a later "Install / repair" will find it.
-    prefs::write(prefs::AGENTS, &agent_list(&settings.agents()))?;
+    prefs::write(
+        prefs::AGENTS,
+        &AgentSelection::as_stored_list(&settings.agents()),
+    )?;
     run_self(&executable, &settings.apply_arguments())?;
 
     let herdr = std::env::var("HERDR_BIN_PATH").unwrap_or_else(|_| "herdr".to_string());
@@ -599,7 +583,7 @@ fn render_row(draft: &Settings, applied: Settings, row: Row, selected: bool) -> 
             format!(
                 "{cursor} {changed} {} {}\r\n",
                 checkbox(draft.has_agent(harness)),
-                agent_name(harness)
+                AgentSelection::harness_name(harness)
             )
         }
     }
@@ -721,6 +705,8 @@ mod tests {
 
     /// Applying names every value, so it cannot inherit a stale preference,
     /// and it names the agents so a narrowed selection is what gets installed.
+    /// A complete selection is `all`, so a later provider is included without
+    /// rewriting the preference.
     #[test]
     fn applying_names_every_value_including_the_agent_selection() {
         let mut draft = settings();
@@ -751,6 +737,47 @@ mod tests {
                 "--watch-interval-seconds",
                 "60",
             ]
+        );
+    }
+
+    #[test]
+    fn the_declared_popup_height_fits_every_row() {
+        let manifest = include_str!("../herdr-plugin.toml");
+        let height: usize = manifest
+            .split("[[panes]]")
+            .find(|pane| pane.contains("id = \"settings\""))
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("height = "))
+            .expect("the settings popup declares a height")
+            .trim()
+            .parse()
+            .unwrap();
+        // rows() is every option plus section headers. Reserve the four TUI
+        // chrome lines and Herdr's two-row pane border.
+        let needed = rows().len() + 4 + 2;
+        assert!(
+            height >= needed,
+            "height = {height}, need {needed} after adding a row"
+        );
+    }
+
+    #[test]
+    fn a_complete_selection_is_applied_as_all() {
+        let arguments = settings().apply_arguments();
+        let agent = arguments.iter().position(|flag| flag == "--agent").unwrap();
+        assert_eq!(arguments[agent + 1], "all");
+    }
+
+    #[test]
+    fn turning_the_newest_agent_off_is_an_exact_cli_list() {
+        let mut draft = settings();
+        draft.cycle(Row::Agent(Harness::Muse), 1);
+        let arguments = draft.apply_arguments();
+        let agent = arguments.iter().position(|flag| flag == "--agent").unwrap();
+        assert_eq!(
+            arguments[agent + 1],
+            "claude,codex,grok,agy,opencode,pi,omp,devin"
         );
     }
 
