@@ -42,6 +42,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- An idle pane now follows its own session's quota as soon as the cache has it.
+  A Claude statusLine hook only writes the observation mailbox, so a pane that
+  never starts a turn kept publishing whatever it last published: one pane sat
+  on `7d 24%` and `5h N/A` while its session's stored windows had moved on and
+  every sibling pane showed the new reading. A watch pass now also covers an
+  idle pane whose published quota rows differ from the ones its cached
+  snapshot would render, alongside the existing expired-window case.
 - A `fields` preference saved before the provider was a field no longer hides
   the provider on upgrade. Those builds wrote "everything on" as
   `topic,model,cache,ttl,context,5h,7d` and drew the provider name regardless,

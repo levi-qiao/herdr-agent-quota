@@ -224,10 +224,11 @@ fn pane_in_watch_scope(pane: &AgentPane, providers: &[Provider]) -> bool {
             .is_some_and(|provider| providers.contains(&provider))
 }
 
-/// Working and settling panes, plus idle panes whose displayed quota has lapsed.
+/// Working and settling panes, plus idle panes the cache has left behind.
 ///
-/// An expired window is no longer a live reading. Including those pane ids in
-/// an already-running watch pass rewrites the sidebar after a reset without
+/// An idle pane is only ever republished by a pass it is named in, so a pane
+/// that never starts a turn shows whatever it last published. Including those
+/// pane ids in an already-running watch pass rewrites the sidebar without
 /// waiting for that pane to start a turn, and without starting a second
 /// watcher while everything is idle.
 fn watch_pass_ids(
@@ -240,31 +241,51 @@ fn watch_pass_ids(
     now: u64,
 ) -> Vec<String> {
     let mut affected = watch_targets(active, previous, settling, now);
+    // Reading the row style costs the config file, so a pass with no idle
+    // candidate at all must not pay for it.
+    let mut style = None;
     for pane in panes {
         if !pane_in_watch_scope(pane, providers) || affected.contains(&pane.pane_id) {
             continue;
         }
-        if cached_quota_has_expired(cache, pane, now) {
+        let row = *style.get_or_insert_with(|| publish_row(cache));
+        if cached_quota_is_stale(cache, pane, now, row) {
             affected.push(pane.pane_id.clone());
         }
     }
     affected
 }
 
-fn cached_quota_has_expired(cache: &CacheStore, pane: &AgentPane, now: u64) -> bool {
+/// True when what this pane is showing is no longer what the cache says.
+///
+/// Two separate readings are stale, and neither implies the other:
+///
+/// - the window the pane shows has reset, so the number on it is not a live
+///   reading whatever the cache holds; and
+/// - the cache has moved on while nothing woke this pane to republish it.
+///   Claude's statusLine hook only writes the observation mailbox, so an idle
+///   pane whose session gained a fresh window has no other way back in.
+///
+/// A pane already showing `N/A` for an expired window is the case the second
+/// reading misses: the rendered rows agree, and only the first pulls it in for
+/// the fetch that replaces them.
+///
+/// This decides membership only. It loads the one snapshot the pass would read
+/// anyway and publishes nothing.
+fn cached_quota_is_stale(cache: &CacheStore, pane: &AgentPane, now: u64, row: RowStyle) -> bool {
     let Resolution::Subscription(target) = route::resolve(pane) else {
         return false;
     };
-    cache
-        .load_target(&target)
-        .ok()
-        .flatten()
-        .is_some_and(|snapshot| {
-            snapshot.displayed_quota_has_expired(
-                pane.session.as_ref().and_then(|session| session.id()),
-                now,
-            )
-        })
+    let Some(snapshot) = cache.load_target(&target).ok().flatten() else {
+        return false;
+    };
+    let session_id = pane.session.as_ref().and_then(|session| session.id());
+    if snapshot.displayed_quota_has_expired(session_id, now) {
+        return true;
+    }
+    let values =
+        MetadataTokens::from_snapshot_for_pane(&snapshot, now, session_id, row.percent, row.shape);
+    crate::herdr::quota_rows_have_drifted(&pane.tokens, &values, row.shape)
 }
 
 fn wait_for_watch_tick(
@@ -454,11 +475,7 @@ fn handle_named_pane(cache: &CacheStore, pane: AgentPane, topic_pane: Option<&st
             refresh_selected(cache, &[provider], false, &panes)?;
         }
     }
-    let shape = sidebar_shape(cache);
-    let row = RowStyle {
-        fields: cache.fields().unwrap_or_default(),
-        ..RowStyle::new(cache.percent_style().unwrap_or_default(), shape)
-    };
+    let row = publish_row(cache);
     let tokens = resolved_pane_tokens(
         cache,
         &mut panes[0],
@@ -486,6 +503,17 @@ fn sidebar_shape(cache: &CacheStore) -> SidebarShape {
         cache.sidebar_layout().unwrap_or_default(),
         crate::configure::herdr::sidebar_width(),
     )
+}
+
+/// The row style every pane in one pass is rendered with.
+fn publish_row(cache: &CacheStore) -> RowStyle {
+    RowStyle {
+        fields: cache.fields().unwrap_or_default(),
+        ..RowStyle::new(
+            cache.percent_style().unwrap_or_default(),
+            sidebar_shape(cache),
+        )
+    }
 }
 
 /// Muse's session summary is the last submitted prompt, the same evidence
@@ -1053,11 +1081,7 @@ fn publish_resolved(
     }
     let mut tokens = Vec::new();
     let now = CacheStore::now_unix();
-    let shape = sidebar_shape(cache);
-    let row = RowStyle {
-        fields: cache.fields().unwrap_or_default(),
-        ..RowStyle::new(cache.percent_style().unwrap_or_default(), shape)
-    };
+    let row = publish_row(cache);
     let mut refreshed_targets = Vec::new();
     for pane in panes.iter_mut() {
         let resolved = route::resolve_with_identity(pane);
@@ -1581,6 +1605,149 @@ mod tests {
         assert!(!affected.contains(&"claude-live".to_string()));
     }
 
+    #[test]
+    fn an_idle_pane_follows_its_sessions_new_windows_without_an_agent_event() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        let mut snapshot = ProviderSnapshot::new(Provider::Claude, vec![], 900).session_local();
+        snapshot.session_windows.insert(
+            "sibling".to_string(),
+            vec![window(WindowKind::FiveHour, 20.0, 9_000)],
+        );
+        cache.save(&snapshot).unwrap();
+
+        // Its own session had no stored window, so the pane published N/A.
+        let mut idle = test_pane_with_session("claude-idle", Harness::Claude, "s1");
+        idle.tokens
+            .insert("quota_5h_unknown".to_string(), "5h N/A".to_string());
+        let panes = [idle, test_pane("grok-working", Harness::Grok)];
+        let grok = "grok-working".to_string();
+        let mut settling = BTreeMap::new();
+
+        let unchanged = watch_pass_ids(
+            &cache,
+            &panes,
+            &Provider::ALL,
+            std::slice::from_ref(&grok),
+            std::slice::from_ref(&grok),
+            &mut settling,
+            1_001,
+        );
+        assert!(!unchanged.contains(&"claude-idle".to_string()));
+
+        snapshot.session_windows.insert(
+            "s1".to_string(),
+            vec![
+                window(WindowKind::FiveHour, 40.0, 9_000),
+                window(WindowKind::Weekly, 20.0, 90_000),
+            ],
+        );
+        cache.save(&snapshot).unwrap();
+
+        let affected = watch_pass_ids(
+            &cache,
+            &panes,
+            &Provider::ALL,
+            std::slice::from_ref(&grok),
+            std::slice::from_ref(&grok),
+            &mut settling,
+            1_001,
+        );
+        assert!(affected.contains(&"claude-idle".to_string()));
+    }
+
+    #[test]
+    fn an_idle_pane_already_showing_the_cached_windows_stays_out_of_the_pass() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        let mut snapshot = ProviderSnapshot::new(Provider::Claude, vec![], 900).session_local();
+        snapshot.session_windows.insert(
+            "s1".to_string(),
+            vec![
+                window(WindowKind::FiveHour, 40.0, 9_000),
+                window(WindowKind::Weekly, 20.0, 90_000),
+            ],
+        );
+        cache.save(&snapshot).unwrap();
+
+        let row = publish_row(&cache);
+        let values = MetadataTokens::from_snapshot_for_pane(
+            &snapshot,
+            1_001,
+            Some("s1"),
+            row.percent,
+            row.shape,
+        );
+        assert_eq!(
+            values.quota_5h_severity,
+            Some(crate::model::Severity::Normal)
+        );
+        assert_eq!(
+            values.quota_week_severity,
+            Some(crate::model::Severity::Normal)
+        );
+        let mut idle = test_pane_with_session("claude-idle", Harness::Claude, "s1");
+        idle.tokens
+            .insert("quota_5h_normal".to_string(), values.quota_5h.clone());
+        idle.tokens
+            .insert("quota_week_normal".to_string(), values.quota_week.clone());
+        idle.tokens.insert(
+            "quota_headroom".to_string(),
+            format!("{:03}", values.quota_headroom.unwrap()),
+        );
+        let panes = [idle, test_pane("grok-working", Harness::Grok)];
+        let grok = "grok-working".to_string();
+        let mut settling = BTreeMap::new();
+
+        let affected = watch_pass_ids(
+            &cache,
+            &panes,
+            &Provider::ALL,
+            std::slice::from_ref(&grok),
+            std::slice::from_ref(&grok),
+            &mut settling,
+            1_001,
+        );
+        assert_eq!(affected, vec![grok]);
+    }
+
+    #[test]
+    fn new_windows_for_one_session_leave_another_sessions_idle_pane_alone() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        let mut snapshot = ProviderSnapshot::new(Provider::Claude, vec![], 900).session_local();
+        cache.save(&snapshot).unwrap();
+
+        let mut first = test_pane_with_session("claude-first", Harness::Claude, "s1");
+        first
+            .tokens
+            .insert("quota_5h_unknown".to_string(), "5h N/A".to_string());
+        let mut second = test_pane_with_session("claude-second", Harness::Claude, "s2");
+        second
+            .tokens
+            .insert("quota_5h_unknown".to_string(), "5h N/A".to_string());
+        let panes = [first, second, test_pane("grok-working", Harness::Grok)];
+        let grok = "grok-working".to_string();
+        let mut settling = BTreeMap::new();
+
+        snapshot.session_windows.insert(
+            "s1".to_string(),
+            vec![window(WindowKind::FiveHour, 40.0, 9_000)],
+        );
+        cache.save(&snapshot).unwrap();
+
+        let affected = watch_pass_ids(
+            &cache,
+            &panes,
+            &Provider::ALL,
+            std::slice::from_ref(&grok),
+            std::slice::from_ref(&grok),
+            &mut settling,
+            1_001,
+        );
+        assert!(affected.contains(&"claude-first".to_string()));
+        assert!(!affected.contains(&"claude-second".to_string()));
+    }
     #[test]
     fn omp_panes_keep_both_accounts_from_one_debounced_report() {
         let dir = tempdir().unwrap();

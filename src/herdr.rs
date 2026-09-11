@@ -52,6 +52,24 @@ const METADATA_TOKEN_NAMES: [&str; 25] = [
 /// costs no extra writes — the value only moves when a quota token beside it
 /// moves anyway.
 pub(crate) const HEADROOM_TOKEN: &str = "quota_headroom";
+/// The subset of [`METADATA_TOKEN_NAMES`] whose value comes from the cached
+/// quota windows and nothing else. [`quota_rows_have_drifted`] compares these,
+/// so a name added here must be one a snapshot alone can render.
+const QUOTA_WINDOW_TOKEN_NAMES: [&str; 13] = [
+    "quota_5h_normal",
+    "quota_5h_warning",
+    "quota_5h_danger",
+    "quota_5h_unknown",
+    "quota_week_normal",
+    "quota_week_warning",
+    "quota_week_danger",
+    "quota_week_unknown",
+    "quota_week_inline_normal",
+    "quota_week_inline_warning",
+    "quota_week_inline_danger",
+    "quota_week_inline_unknown",
+    HEADROOM_TOKEN,
+];
 /// Names a pane may still carry from an older build of this plugin. They are
 /// never produced again, so a report clears them until the pane is clean.
 const OBSOLETE_METADATA_TOKEN_NAMES: [&str; 15] = [
@@ -765,6 +783,33 @@ fn fold_cache_row(tokens: &mut BTreeMap<String, String>, row: RowStyle) {
         tokens.insert("quota_cache".to_string(), joined);
         tokens.remove("quota_cache_ttl");
     }
+}
+
+/// True when the quota rows this pane is carrying are not the ones `values`
+/// would render.
+///
+/// Only the window rows are comparable against a snapshot alone: publishing
+/// rewrites provider, model, context and cache rows from pane-local evidence
+/// this caller does not have, so including them would report drift that no
+/// republish can settle.
+///
+/// A pane carrying no quota row at all has never been published to, and is not
+/// drift: waking those would pull every quota-less pane into every pass.
+pub(crate) fn quota_rows_have_drifted(
+    current: &BTreeMap<String, String>,
+    values: &MetadataTokens,
+    shape: SidebarShape,
+) -> bool {
+    if !QUOTA_WINDOW_TOKEN_NAMES
+        .into_iter()
+        .any(|name| current.contains_key(name))
+    {
+        return false;
+    }
+    let desired = desired_tokens(values, "", shape);
+    QUOTA_WINDOW_TOKEN_NAMES
+        .into_iter()
+        .any(|name| current.get(name) != desired.get(name))
 }
 
 fn metadata_matches(
