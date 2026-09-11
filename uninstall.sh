@@ -75,7 +75,7 @@ select_agents() {
     AGENTS_PREF_EXISTED=1
   fi
   trap restore_agents_pref EXIT
-  printf '%s\n' "$AGENTS" > "$AGENTS_PREF"
+  printf '%s\n' "$(agents_pref_value "$AGENTS")" > "$AGENTS_PREF"
 }
 
 if herdr plugin list 2>/dev/null | grep -q 'herdr-agent-quota'; then

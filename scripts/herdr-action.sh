@@ -9,6 +9,19 @@
 # Sourced by install.sh and uninstall.sh; not a standalone script.
 
 HERDR_ACTION_PLUGIN_ID="herdr-agent-quota"
+
+# Preference form of an `--agent` selection.
+#
+# A saved enumeration that was complete when written is later read as every
+# currently supported agent, so a new provider does not turn a once-complete
+# install into a partial one. Prefix an explicit subset with `only` so it
+# stays a subset after that upgrade. `all` is already the complete token.
+agents_pref_value() {
+  case "$1" in
+    ""|all|only,*) printf '%s\n' "$1" ;;
+    *) printf 'only,%s\n' "$1" ;;
+  esac
+}
 # Configuration writes touch a handful of small files. A minute is far beyond
 # any legitimate run and still bounds a hung action.
 HERDR_ACTION_TIMEOUT_SECONDS="${HERDR_ACTION_TIMEOUT_SECONDS:-60}"

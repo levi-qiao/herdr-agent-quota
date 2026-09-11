@@ -1,5 +1,6 @@
 #![cfg(unix)]
 
+use herdr_agent_quota::cli::AgentSelection;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
@@ -96,9 +97,8 @@ printf '%s\n' '{"result":{"agents":[]}}'
 
 #[test]
 fn every_supported_working_harness_keeps_the_watcher_alive() {
-    for harness in [
-        "codex", "grok", "claude", "agy", "devin", "pi", "omp", "opencode",
-    ] {
+    for harness in AgentSelection::SUPPORTED {
+        let harness = AgentSelection::harness_name(harness);
         let dir = tempfile::tempdir().unwrap();
         let herdr = dir.path().join("herdr");
         fs::write(&herdr, format!("#!/bin/sh\ntouch \"$TEST_INVENTORY\"\nprintf '%s\\n' '{{\"result\":{{\"agents\":[{{\"pane_id\":\"w1:p1\",\"agent\":\"{harness}\",\"agent_status\":\"working\"}}]}}}}'\n")).unwrap();

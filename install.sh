@@ -181,7 +181,7 @@ write_plugin_pref() {
   printf '%s\n' "$value" > "$directory/$name"
 }
 
-write_plugin_pref agents "$AGENTS"
+write_plugin_pref agents "$(agents_pref_value "$AGENTS")"
 write_plugin_pref watch-interval-seconds "$WATCH_INTERVAL_SECONDS"
 write_plugin_pref sidebar-layout "$SIDEBAR_LAYOUT"
 write_plugin_pref row-gap "$ROW_GAP"

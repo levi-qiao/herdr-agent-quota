@@ -42,6 +42,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A saved agent list that was complete before a new provider was added no
+  longer makes `configure` abort when omp is not installed. Those builds
+  wrote "everything on" as an enumeration (`claude,codex,grok,agy,opencode,pi,omp,devin`
+  before Muse), which was then judged partial against the longer supported
+  list, so a missing omp integration became a hard failure. That exact
+  prefix is still read as every agent. A complete selection is now stored
+  as `all`, and a subset with a leading `only` marker, so turning the
+  newest agent off is not mistaken for the legacy full list.
 - An idle pane now follows its own session's quota as soon as the cache has it.
   A Claude statusLine hook only writes the observation mailbox, so a pane that
   never starts a turn kept publishing whatever it last published: one pane sat

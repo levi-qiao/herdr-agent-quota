@@ -1294,6 +1294,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_supported_harness_has_a_sidebar_style_in_supported_order() {
+        let styles: Vec<Harness> = PROVIDER_STYLES
+            .iter()
+            .map(|(harness, _, _, _)| *harness)
+            .collect();
+        assert_eq!(styles.as_slice(), AgentSelection::SUPPORTED.as_slice());
+    }
+
+    #[test]
     fn extra_native_identity_rows_and_unmarked_legacy_styles_are_preserved() {
         for original in [
             "[ui.sidebar.agents]\nrows = [[\"state_icon\", \"machine\", \"workspace\", \"tab\"], [\"agent\"], [\"agent\"]] # herdr-agent-quota-row\n",
@@ -2141,8 +2150,12 @@ claude = [["state_icon", "agent"]]
             add_quota_row("[ui.sidebar.agents]\nrows = [[\"state_icon\", \"agent\"]]\n").unwrap();
         let removed = remove_quota_row_for(&full, &[Harness::Grok], false).unwrap();
         assert!(!removed.contains("grok ="), "grok survived: {removed}");
-        for kept in ["claude =", "codex =", "agy =", "opencode ="] {
-            assert!(removed.contains(kept), "{kept} was lost: {removed}");
+        for harness in AgentSelection::SUPPORTED {
+            if harness == Harness::Grok {
+                continue;
+            }
+            let kept = format!("{} =", AgentSelection::harness_name(harness));
+            assert!(removed.contains(&kept), "{kept} was lost: {removed}");
         }
         // The shared parts belong to the installation, not to grok.
         assert!(removed.contains("rows = "));

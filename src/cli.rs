@@ -724,6 +724,10 @@ impl SidebarLayout {
 
 impl AgentSelection {
     /// Every agent `configure` supports, in the order they are reported.
+    ///
+    /// New agents are appended, never inserted, so a saved complete list from
+    /// an earlier build is a proper prefix of this array and can still mean
+    /// "everything on" after a provider is added.
     pub const SUPPORTED: [Harness; 9] = [
         Harness::Claude,
         Harness::Codex,
@@ -735,6 +739,17 @@ impl AgentSelection {
         Harness::Devin,
         Harness::Muse,
     ];
+
+    /// Length of the first complete list the settings pane persisted.
+    ///
+    /// Shorter enumerations were always subsets. Prefixes of this length or
+    /// more were "everything on" at write time.
+    pub(crate) const FIRST_PERSISTED_FULL: usize = 6;
+
+    /// Token `as_stored_list` puts in front of a subset so it is not mistaken
+    /// for a legacy complete list. `--agent` never carries it: clap has no
+    /// such value, and an explicit flag is already exact.
+    const EXPLICIT: &'static str = "only";
 
     fn harness(self) -> Option<Harness> {
         match self {
@@ -751,13 +766,28 @@ impl AgentSelection {
         }
     }
 
+    pub fn harness_name(harness: Harness) -> &'static str {
+        match harness {
+            Harness::Claude => "claude",
+            Harness::Codex => "codex",
+            Harness::Grok => "grok",
+            Harness::Agy => "agy",
+            Harness::OpenCode => "opencode",
+            Harness::Pi => "pi",
+            Harness::Omp => "omp",
+            Harness::Devin => "devin",
+            Harness::Muse => "muse",
+        }
+    }
+
     /// Selection for a `configure` run.
     ///
     /// A Herdr plugin action runs a fixed command line in the *server's*
     /// environment, so a variable exported around `herdr plugin action invoke`
     /// never reaches it. The plugin config directory is the channel that does
-    /// work, and it is what `install.sh` writes; the environment is still
-    /// honoured first for a direct CLI run.
+    /// work, and it is what `install.sh` writes. A direct-CLI environment
+    /// override is still honoured first, but it is explicit and therefore
+    /// parsed exactly; only persisted preferences get the legacy-full upgrade.
     ///
     /// Anything unparsable falls through to the next source and finally to
     /// every supported agent, so `--uninstall` alone still removes everything.
@@ -765,23 +795,49 @@ impl AgentSelection {
         if !values.is_empty() {
             return Self::resolve(values);
         }
-        [
-            std::env::var("HERDR_AGENT_QUOTA_AGENTS").ok(),
-            crate::prefs::read(crate::prefs::AGENTS),
-        ]
-        .into_iter()
-        .flatten()
-        .find_map(|raw| Self::parse_list(&raw))
-        .unwrap_or_else(|| Self::SUPPORTED.to_vec())
+        if let Ok(raw) = std::env::var("HERDR_AGENT_QUOTA_AGENTS") {
+            if let Some(agents) = Self::parse_list(&raw, false) {
+                return agents;
+            }
+        }
+        crate::prefs::read(crate::prefs::AGENTS)
+            .and_then(|raw| Self::parse_list(&raw, true))
+            .unwrap_or_else(|| Self::SUPPORTED.to_vec())
     }
 
     /// A comma-separated selection, or `None` when it names nothing valid.
-    fn parse_list(raw: &str) -> Option<Vec<Harness>> {
-        let parsed: Vec<Self> = raw
+    ///
+    /// When `upgrade_legacy_full` is true, an unmarked list that is a proper
+    /// prefix of `SUPPORTED` of length [`Self::FIRST_PERSISTED_FULL`] or more
+    /// was complete when written, so it is read as every agent. That upgrade
+    /// is for persisted preferences only; direct environment overrides are
+    /// explicit selections and stay exact. `only` keeps a newly-stored subset
+    /// from colliding with the legacy persisted form.
+    fn parse_list(raw: &str, upgrade_legacy_full: bool) -> Option<Vec<Harness>> {
+        let mut explicit = false;
+        let mut parsed = Vec::new();
+        for name in raw
             .split(',')
-            .filter_map(|name| Self::parse(name.trim()))
-            .collect();
-        (!parsed.is_empty()).then(|| Self::resolve(&parsed))
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            if name.eq_ignore_ascii_case(Self::EXPLICIT) {
+                explicit = true;
+                continue;
+            }
+            if let Some(value) = Self::parse(name) {
+                parsed.push(value);
+            }
+        }
+        if parsed.is_empty() {
+            return None;
+        }
+        let resolved = Self::resolve(&parsed);
+        if upgrade_legacy_full && !explicit && Self::is_legacy_full(&resolved) {
+            Some(Self::SUPPORTED.to_vec())
+        } else {
+            Some(resolved)
+        }
     }
 
     fn parse(name: &str) -> Option<Self> {
@@ -798,6 +854,48 @@ impl AgentSelection {
             "muse" => Some(Self::Muse),
             _ => None,
         }
+    }
+
+    fn is_complete(agents: &[Harness]) -> bool {
+        agents == Self::SUPPORTED
+    }
+
+    fn is_legacy_full(agents: &[Harness]) -> bool {
+        let n = agents.len();
+        n >= Self::FIRST_PERSISTED_FULL
+            && n < Self::SUPPORTED.len()
+            && agents == &Self::SUPPORTED[..n]
+    }
+
+    /// Preference form: `all` when complete, `only,<names>` when a subset.
+    ///
+    /// `only` is what stops a subset that matches a legacy complete list —
+    /// turning Muse off today writes the pre-Muse full list — from being
+    /// read as every agent the next time a provider is added.
+    pub(crate) fn as_stored_list(agents: &[Harness]) -> String {
+        if Self::is_complete(agents) {
+            return "all".to_string();
+        }
+        format!("{},{}", Self::EXPLICIT, Self::names(agents))
+    }
+
+    /// `--agent` form: `all` when complete, otherwise the names. Never `only`;
+    /// clap has no such value, and a flag is already an exact selection.
+    pub(crate) fn as_cli_list(agents: &[Harness]) -> String {
+        if Self::is_complete(agents) {
+            "all".to_string()
+        } else {
+            Self::names(agents)
+        }
+    }
+
+    pub(crate) fn names(agents: &[Harness]) -> String {
+        agents
+            .iter()
+            .copied()
+            .map(Self::harness_name)
+            .collect::<Vec<_>>()
+            .join(",")
     }
 
     /// Flatten a `--agent` selection into a deduplicated harness list that
@@ -876,6 +974,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_explicit_list_matching_a_legacy_full_prefix_stays_exact() {
+        let raw = "claude,codex,grok,agy,opencode,pi";
+        assert_eq!(
+            AgentSelection::parse_list(raw, false),
+            Some(AgentSelection::SUPPORTED[..AgentSelection::FIRST_PERSISTED_FULL].to_vec())
+        );
+        assert_eq!(
+            AgentSelection::parse_list(raw, true),
+            Some(AgentSelection::SUPPORTED.to_vec())
+        );
+    }
+
     /// The environment cannot reach a Herdr plugin action, so the config-dir
     /// preference is the channel `install.sh` / `uninstall.sh` actually use.
     /// A selection that fails to arrive means `--uninstall --agent grok`
@@ -904,6 +1015,133 @@ mod tests {
                 AgentSelection::SUPPORTED.to_vec()
             );
         });
+    }
+
+    /// A build before Muse wrote "everything on" as the eight names that then
+    /// existed. That list has to keep meaning every agent after Muse is added,
+    /// or `configure` judges it partial and a missing omp install becomes
+    /// fatal.
+    #[test]
+    fn a_saved_complete_list_from_before_a_new_agent_still_selects_everything() {
+        let directory = tempfile::tempdir().unwrap();
+        crate::prefs::testing::with_config_dir(directory.path(), || {
+            crate::prefs::write(
+                crate::prefs::AGENTS,
+                "claude,codex,grok,agy,opencode,pi,omp,devin",
+            )
+            .unwrap();
+            assert_eq!(
+                AgentSelection::from_args_or_env(&[]),
+                AgentSelection::SUPPORTED.to_vec()
+            );
+
+            crate::prefs::write(
+                crate::prefs::AGENTS,
+                " claude, codex, grok, agy, opencode, pi, omp, devin ",
+            )
+            .unwrap();
+            assert_eq!(
+                AgentSelection::from_args_or_env(&[]),
+                AgentSelection::SUPPORTED.to_vec()
+            );
+
+            // The six- and seven-agent complete lists the settings pane wrote
+            // before Devin and omp are the same shape.
+            crate::prefs::write(
+                crate::prefs::AGENTS,
+                "claude,codex,grok,agy,opencode,pi,omp",
+            )
+            .unwrap();
+            assert_eq!(
+                AgentSelection::from_args_or_env(&[]),
+                AgentSelection::SUPPORTED.to_vec()
+            );
+            crate::prefs::write(crate::prefs::AGENTS, "claude,codex,grok,agy,opencode,pi").unwrap();
+            assert_eq!(
+                AgentSelection::from_args_or_env(&[]),
+                AgentSelection::SUPPORTED.to_vec()
+            );
+        });
+    }
+
+    /// Turning Muse off produces the pre-Muse full list. Without a marker that
+    /// selection would be upgraded back to everything on the next repair.
+    #[test]
+    fn an_explicit_subset_matching_a_legacy_full_list_is_not_upgraded() {
+        let directory = tempfile::tempdir().unwrap();
+        crate::prefs::testing::with_config_dir(directory.path(), || {
+            crate::prefs::write(
+                crate::prefs::AGENTS,
+                "only,claude,codex,grok,agy,opencode,pi,omp,devin",
+            )
+            .unwrap();
+            let selected = AgentSelection::from_args_or_env(&[]);
+            assert_eq!(
+                selected,
+                AgentSelection::SUPPORTED[..AgentSelection::SUPPORTED.len() - 1].to_vec()
+            );
+            assert!(!selected.contains(&Harness::Muse));
+
+            crate::prefs::write(crate::prefs::AGENTS, "only,grok").unwrap();
+            assert_eq!(AgentSelection::from_args_or_env(&[]), vec![Harness::Grok]);
+        });
+    }
+
+    #[test]
+    fn a_complete_selection_is_stored_as_all_and_a_subset_as_only() {
+        assert_eq!(
+            AgentSelection::as_stored_list(&AgentSelection::SUPPORTED),
+            "all"
+        );
+        assert_eq!(
+            AgentSelection::as_cli_list(&AgentSelection::SUPPORTED),
+            "all"
+        );
+        assert_eq!(
+            AgentSelection::as_stored_list(&[Harness::Grok, Harness::Claude]),
+            "only,grok,claude"
+        );
+        assert_eq!(
+            AgentSelection::as_cli_list(&[Harness::Grok, Harness::Claude]),
+            "grok,claude"
+        );
+        let pre_muse = &AgentSelection::SUPPORTED[..AgentSelection::SUPPORTED.len() - 1];
+        assert_eq!(
+            AgentSelection::as_stored_list(pre_muse),
+            "only,claude,codex,grok,agy,opencode,pi,omp,devin"
+        );
+        assert_eq!(
+            AgentSelection::as_cli_list(pre_muse),
+            "claude,codex,grok,agy,opencode,pi,omp,devin"
+        );
+    }
+
+    #[test]
+    fn every_supported_agent_round_trips_through_its_stored_name() {
+        for harness in AgentSelection::SUPPORTED {
+            let name = AgentSelection::harness_name(harness);
+            assert_eq!(
+                AgentSelection::parse(name).and_then(AgentSelection::harness),
+                Some(harness)
+            );
+        }
+    }
+
+    /// Inserting a harness in the middle would make a saved complete list
+    /// either fail to upgrade or upgrade the wrong subset.
+    #[test]
+    fn supported_agents_are_appended_so_legacy_full_lists_stay_prefixes() {
+        assert_eq!(
+            &AgentSelection::SUPPORTED[..AgentSelection::FIRST_PERSISTED_FULL],
+            &[
+                Harness::Claude,
+                Harness::Codex,
+                Harness::Grok,
+                Harness::Agy,
+                Harness::OpenCode,
+                Harness::Pi,
+            ]
+        );
     }
 
     #[test]
