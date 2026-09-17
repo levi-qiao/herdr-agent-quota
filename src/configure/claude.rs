@@ -78,6 +78,17 @@ pub fn run_statusline_hook() -> Result<()> {
             pace = pace_segment(&snapshot.windows, now_unix);
             if let Ok(cache) = CacheStore::from_env() {
                 let _ = cache.save_statusline_observation(Provider::Claude, snapshot, &value);
+                // Herdr's own SessionStart integration may be absent, outdated,
+                // or unwired into `settings.json`, leaving `agent_session`
+                // unset for this pane. Self-report the pane -> session mapping
+                // from the same env var Herdr's own hook reads, so the pane can
+                // resolve its session without depending on that integration.
+                if let (Some(pane_id), Some(session_id)) = (
+                    std::env::var("HERDR_PANE_ID").ok(),
+                    value.get("session_id").and_then(Value::as_str),
+                ) {
+                    let _ = cache.save_pane_session(Provider::Claude, &pane_id, session_id);
+                }
             }
         }
     }

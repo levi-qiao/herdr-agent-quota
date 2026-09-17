@@ -153,7 +153,7 @@ pub fn watch(providers: &[Provider], interval_seconds: Option<u64>, defer: bool)
         // A transient Herdr failure should not terminate a live watcher; the
         // one-hour cap below still prevents an orphaned process. The next
         // poll retries the single inventory call.
-        let Ok(mut state) = list_agent_state() else {
+        let Ok(mut state) = list_agent_state(&cache) else {
             if started.elapsed() >= MAX_ACTIVE_TURN_WATCH {
                 break;
             }
@@ -400,7 +400,7 @@ fn run_internal(
     // publish pass lets local Codex/Grok diagnostics target the exact pane
     // sessions without adding another Herdr call or reading any pane output.
     let enabled = AgentSelection::from_args_or_env(&[]);
-    let panes = list_agent_panes().ok().map(|panes| {
+    let panes = list_agent_panes(&cache).ok().map(|panes| {
         panes
             .into_iter()
             .filter(|pane| enabled.contains(&pane.harness))
@@ -446,7 +446,7 @@ pub fn event() -> Result<()> {
     };
 
     let cache = CacheStore::from_env()?;
-    let Some(mut pane) = named_pane(pane_id, harness)? else {
+    let Some(mut pane) = named_pane(&cache, pane_id, harness)? else {
         return Ok(());
     };
 
@@ -645,8 +645,8 @@ fn has_stale_done_icon(pane: &AgentPane) -> bool {
 /// It must still be in the one inventory read and still be running the harness
 /// that named it; a stale or mismatched pane id yields nothing, so the caller
 /// fetches nothing and writes no metadata to any sibling pane.
-fn named_pane(pane_id: &str, harness: Harness) -> Result<Option<AgentPane>> {
-    Ok(find_agent_pane(pane_id)?.filter(|pane| pane.harness == harness))
+fn named_pane(cache: &CacheStore, pane_id: &str, harness: Harness) -> Result<Option<AgentPane>> {
+    Ok(find_agent_pane(pane_id, cache)?.filter(|pane| pane.harness == harness))
 }
 
 fn handle_named_pane(

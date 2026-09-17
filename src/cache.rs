@@ -881,6 +881,50 @@ impl CacheStore {
             .join(format!("{}.observation.json", provider.source()))
     }
 
+    fn pane_sessions_path(&self, provider: Provider) -> PathBuf {
+        self.root
+            .join(format!("{}.pane-sessions.json", provider.source()))
+    }
+
+    /// Pane id to exact session id, self-reported by the statusLine hook on
+    /// every tick. Herdr's own SessionStart integration for Claude can be
+    /// absent, outdated, or unwired into `settings.json` (see `herdr
+    /// integration status`), leaving `agent_session` unset for a pane whose
+    /// statusLine observation is otherwise fresh and correctly keyed. This
+    /// mapping lets a pane resolve its own session without Herdr's help,
+    /// using evidence the hook already has on every tick rather than a
+    /// one-shot external hook. Read failures are treated as an empty map:
+    /// a missing mapping must fall back to "no session", never a guess.
+    pub fn pane_sessions(&self, provider: Provider) -> BTreeMap<String, String> {
+        fs::read(self.pane_sessions_path(provider))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    /// Record this pane's exact session id from the current statusLine tick.
+    /// Bounded the same way as the other statusLine session maps so a long
+    /// history of closed panes cannot grow this file without limit.
+    pub fn save_pane_session(
+        &self,
+        provider: Provider,
+        pane_id: &str,
+        session_id: &str,
+    ) -> Result<()> {
+        self.ensure()?;
+        let mut sessions = self.pane_sessions(provider);
+        sessions.insert(pane_id.to_string(), session_id.to_string());
+        prune_session_map(&mut sessions, &[pane_id.to_string()]);
+        let destination = self.pane_sessions_path(provider);
+        let temporary = self.root.join(format!(
+            ".{}.pane-sessions.{}.tmp",
+            provider.source(),
+            std::process::id()
+        ));
+        let bytes = serde_json::to_vec(&sessions).context("serialize pane session map")?;
+        Self::atomic_replace(&destination, &temporary, bytes)
+    }
+
     fn atomic_replace(destination: &Path, temporary: &Path, bytes: Vec<u8>) -> Result<()> {
         fs::write(temporary, bytes).with_context(|| format!("write {}", temporary.display()))?;
         if let Err(error) = fs::rename(temporary, destination) {

@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A Claude pane whose statusLine observation is fresh and correctly keyed
+  could still show `5h N/A` and a blank context gauge when Herdr's own
+  SessionStart integration for Claude was absent, outdated, or unwired into
+  `settings.json`, leaving `agent_session` unset for that pane. The plugin's
+  own statusLine hook now self-reports each pane's exact session id on every
+  tick (keyed by `HERDR_PANE_ID`, the same env var Herdr's integration
+  reads), so quota and context resolve even when Herdr never learns the
+  session. A session Herdr does report is always kept as-is.
+
 ## [1.6.0] - 2026-09-17
 
 ### Changed

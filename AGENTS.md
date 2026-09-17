@@ -180,6 +180,41 @@ chat `runtime.user_intent.accepted`, with `user_prompt_display` accepted too
 because Muse writes it only for some submits.
 Muse publishes no prompt-cache lifetime, so there is no TTL estimate.
 
+## `crate::herdr` is a wrapper over the real `herdr.rs`
+
+`src/lib.rs` maps `pub mod herdr` to `src/herdr_wrapper.rs` via `#[path =
+...]`, and separately maps a private `mod herdr_base` to `src/herdr.rs`. The
+wrapper glob-imports everything from `herdr_base` and then shadows
+`list_agent_state`/`list_agent_panes`/`find_agent_pane` with its own
+definitions that post-process panes with plugin-local evidence Herdr's own
+inventory does not carry — Agy's pane-id-as-session binding, and Claude's
+self-reported session fallback below. Read `src/herdr.rs` for the inventory
+parsing and publish machinery; read `src/herdr_wrapper.rs` for what gets
+bolted onto a pane's session before anything else sees it.
+
+## Claude panes can self-report their session when Herdr's integration is unwired
+
+Herdr ships its own Claude SessionStart integration
+(`~/.claude/hooks/herdr-agent-state.sh`, installed by `herdr integration
+install claude`), but that hook only fires if `hooks.SessionStart` is wired
+into `settings.json` — `herdr integration status` can show it "current" while
+the wiring is still missing, and a stale/duplicate `herdr server` process (a
+separate, unrelated failure mode) can also leave a pane's `agent_session`
+unset. When that happens, `windows_for_session`/`context_for_session` see no
+session id and correctly render nothing (`session_quota_only` fails closed by
+design, since #60 — never borrow another session's numbers), which looks
+identical to a stale cache from the outside but isn't one.
+
+The plugin does not depend on that external hook: `run_statusline_hook` in
+`src/configure/claude.rs` already reads this pane's exact session id from
+stdin on every tick, and `HERDR_PANE_ID` is in its environment (the same var
+Herdr's own hook reads). It self-reports `pane_id -> session_id` via
+`CacheStore::save_pane_session`, and `herdr_wrapper::attach_claude_pane_session`
+fills a pane's missing `agent_session` from that map — never overriding a
+session Herdr *does* report. Diagnose a Claude pane stuck on `5h N/A` by
+checking whether `herdr agent list` includes `agent_session` for it at all
+before assuming a cache or lookup bug.
+
 ## Cursor's quota is DashboardService, not a browser cookie
 
 Cursor Agent CLI is a separate install from the desktop app. Herdr's kind and
@@ -369,3 +404,10 @@ Reloading the plugin after a rebuild:
 ```
 herdr plugin disable herdr-agent-quota && herdr plugin enable herdr-agent-quota
 ```
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.
