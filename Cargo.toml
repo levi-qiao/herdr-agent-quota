@@ -36,8 +36,8 @@ ureq = { version = "2.12", features = ["json"] }
 # models.db, Devin CLI's sessions.db, and Cursor IDE's state.vscdb
 # (`cursorAuth/accessToken` only).
 rusqlite = { version = "0.32.1", features = ["bundled"] }
-# Codex can archive rollouts as .jsonl.zst. Decode only a bounded prefix for
-# session identity and the first model/context observations.
+# Codex can archive rollouts as .jsonl.zst. Read the first record for identity
+# and stream a bounded recent window for model/context observations.
 zstd = { version = "0.13", default-features = false }
 
 # Only used to put the Codex app-server in its own process group.
