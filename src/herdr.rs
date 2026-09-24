@@ -585,18 +585,50 @@ fn codex_resume_session_id(process: &Value) -> Option<String> {
     while let Some(arg) = args.next().and_then(Value::as_str) {
         match arg {
             "resume" => {
-                let id = args.next()?.as_str()?;
-                return (id.len() == 36
-                    && id.bytes().enumerate().all(|(index, byte)| {
-                        if [8, 13, 18, 23].contains(&index) {
-                            byte == b'-'
-                        } else {
-                            byte.is_ascii_hexdigit()
+                while let Some(candidate) = args.next().and_then(Value::as_str) {
+                    if codex_session_uuid(candidate) {
+                        return Some(candidate.to_string());
+                    }
+                    match candidate {
+                        "--last" | "--all" | "--include-non-interactive" => {}
+                        flag if codex_cli_option_takes_value(flag) => {
+                            args.next()?.as_str()?;
                         }
-                    }))
-                .then(|| id.to_string());
+                        flag if codex_cli_inline_value(flag) => {}
+                        // Unknown post-resume flags fail closed. Treating a
+                        // following UUID as the session could bind a pane to a
+                        // future option's value instead of the resume target.
+                        flag if flag.starts_with('-') => return None,
+                        _ => return None,
+                    }
+                }
+                return None;
             }
-            "-m"
+            flag if codex_cli_option_takes_value(flag) => {
+                args.next()?.as_str()?;
+            }
+            flag if codex_cli_inline_value(flag) || flag.starts_with('-') => {}
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn codex_session_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if [8, 13, 18, 23].contains(&index) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+}
+
+fn codex_cli_option_takes_value(flag: &str) -> bool {
+    matches!(
+        flag,
+        "-m"
             | "--model"
             | "-c"
             | "--config"
@@ -615,14 +647,13 @@ fn codex_resume_session_id(process: &Value) -> Option<String> {
             | "--disable"
             | "--remote"
             | "--remote-auth-token-env"
-            | "--local-provider" => {
-                args.next()?;
-            }
-            flag if flag.starts_with('-') => {}
-            _ => return None,
-        }
-    }
-    None
+            | "--local-provider"
+    )
+}
+
+fn codex_cli_inline_value(flag: &str) -> bool {
+    flag.split_once('=')
+        .is_some_and(|(name, _)| codex_cli_option_takes_value(name))
 }
 
 fn attach_codex_sessions_with(
@@ -2474,6 +2505,43 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn codex_resume_session_id_accepts_exact_uuid_with_supported_flags() {
+        let id = "019f6908-3bc1-7c83-98df-d8ea91694d2c";
+        for argv in [
+            vec!["codex", "resume", id],
+            vec![
+                "/opt/homebrew/bin/codex",
+                "--model",
+                "gpt-5.6-codex",
+                "resume",
+                "--all",
+                id,
+            ],
+            vec!["codex", "resume", "--include-non-interactive", id],
+            vec!["codex", "resume", "--model", "gpt-5.6-codex", id],
+            vec!["codex", "--model=gpt-5.6-codex", "resume", id],
+        ] {
+            assert_eq!(
+                codex_resume_session_id(&json!({"argv": argv})).as_deref(),
+                Some(id)
+            );
+        }
+    }
+
+    #[test]
+    fn codex_resume_session_id_fails_closed_without_an_exact_uuid_target() {
+        let id = "019f6908-3bc1-7c83-98df-d8ea91694d2c";
+        for argv in [
+            vec!["codex", "resume", "--last"],
+            vec!["codex", "resume", "named-session"],
+            vec!["codex", "resume", "not-a-uuid"],
+            vec!["codex", "resume", "--future-option", id],
+        ] {
+            assert_eq!(codex_resume_session_id(&json!({"argv": argv})), None);
+        }
+    }
+
+    #[test]
     fn muse_sessions_fill_only_session_less_muse_panes() {
         let pane = |id: &str, harness: Harness, session: Option<&str>| AgentPane {
             pane_id: id.to_string(),
@@ -2719,6 +2787,89 @@ mod tests {
         assert_eq!(
             nesting.header_icon.get("w5:pA").copied(),
             Some(AgentStatus::Idle)
+        );
+    }
+
+    #[test]
+    fn codex_vendor_child_keeps_its_identity_and_context_without_account_quota() {
+        let pane = AgentPane {
+            pane_id: "w5:pD".to_string(),
+            workspace_id: "w5".to_string(),
+            cwd: String::new(),
+            title: String::new(),
+            harness: Harness::Codex,
+            session: None,
+            session_summary: String::new(),
+            topic: String::new(),
+            tokens: BTreeMap::new(),
+            status: AgentStatus::Idle,
+            focused: false,
+        };
+        let mut desired = BTreeMap::from([
+            ("quota_provider".to_string(), "Codex".to_string()),
+            (
+                "quota_provider_model".to_string(),
+                "Codex/gpt-5.6-codex".to_string(),
+            ),
+            ("quota_model".to_string(), "gpt-5.6-codex".to_string()),
+            ("quota_topic".to_string(), "child work".to_string()),
+            ("quota_context_normal".to_string(), "cx 42%".to_string()),
+            ("quota_5h_normal".to_string(), "5h 80%".to_string()),
+            ("quota_week_normal".to_string(), "7d 70%".to_string()),
+            ("quota_month_normal".to_string(), "30d 60%".to_string()),
+        ]);
+
+        // This mirrors the Codex-child remap in publish_pane_tokens_inner:
+        // head semantics for identity, child semantics for account quota, and
+        // flat semantics for the icon.
+        apply_identity(
+            &mut desired,
+            &PaneIdentity {
+                provider: "Codex".to_string(),
+                model: "gpt-5.6-codex".to_string(),
+            },
+            30,
+            VendorRow::Head,
+        );
+        strip_account_quota_tokens(&mut desired);
+        strip_vendor_child_extras(&mut desired);
+        let heads = BTreeMap::from([("w5".to_string(), "w5:p1".to_string())]);
+        apply_group_and_icon(
+            &mut desired,
+            &pane,
+            &heads,
+            &BTreeMap::new(),
+            VendorRow::Flat,
+            None,
+        );
+
+        assert!(desired.contains_key("quota_icon"), "{desired:?}");
+        assert_eq!(
+            desired.get("quota_provider").map(String::as_str),
+            Some("Codex")
+        );
+        assert_eq!(
+            desired.get("quota_provider_model").map(String::as_str),
+            Some("Codex")
+        );
+        assert_eq!(
+            desired.get("quota_model").map(String::as_str),
+            Some("gpt-5.6-codex")
+        );
+        assert_eq!(
+            desired.get("quota_context_normal").map(String::as_str),
+            Some("cx 42%")
+        );
+        assert_eq!(
+            desired.get("quota_topic").map(String::as_str),
+            Some("child work")
+        );
+        for name in ACCOUNT_QUOTA_TOKEN_NAMES {
+            assert!(!desired.contains_key(name), "{name}: {desired:?}");
+        }
+        assert!(
+            desired.keys().all(|name| !name.starts_with("quota_share_")),
+            "{desired:?}"
         );
     }
 
