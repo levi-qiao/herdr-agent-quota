@@ -1048,8 +1048,20 @@ fn publish_pane_tokens_inner(
             PaneQuotaUpdate::Preserve => pane.tokens.clone(),
         };
         let role = vendor_row_for(wide, &nesting, &pane.pane_id);
+        // A Codex helper is a separately steerable seat even when it shares
+        // account quota with the workspace head. Keep its own identity line.
+        let codex_child = role == VendorRow::Child && pane.harness == Harness::Codex;
         if let Some(identity) = &pane_tokens.identity {
-            apply_identity(&mut desired, identity, row.shape.content_width, role);
+            apply_identity(
+                &mut desired,
+                identity,
+                row.shape.content_width,
+                if codex_child { VendorRow::Head } else { role },
+            );
+        } else if codex_child {
+            unindent_token(&mut desired, "quota_model");
+            desired.insert("quota_provider".to_string(), "Codex".to_string());
+            apply_nested_head_from_tokens(&mut desired);
         } else if role == VendorRow::Child {
             apply_nested_child_from_tokens(&mut desired);
         } else if role == VendorRow::Head {
@@ -1086,7 +1098,7 @@ fn publish_pane_tokens_inner(
             pane,
             &group_heads,
             &workspace_labels,
-            role,
+            if codex_child { VendorRow::Flat } else { role },
             Some(vendor_icon_status(&nesting, pane, role)),
         );
         apply_pack_gap(

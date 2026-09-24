@@ -220,7 +220,7 @@ turn failures into zero usage.
 
 | Symptom | Check |
 | --- | --- |
-| Brand icons are boxes or `?` | The icon font is missing or this terminal has no U+E1A0–U+E1B6 map — see [Ask an agent to finish setup](#ask-an-agent-to-finish-setup). Reload the terminal after `configure`. A yellow `?` on a build older than 1.6.1 was the working-state ZWNJ bug; upgrade. Muse uses the text mark `◈` on purpose. Nested extra tabs of the same vendor have no icon by design. |
+| Brand icons are boxes or `?` | The icon font is missing or this terminal has no U+E1A0–U+E1B6 map — see [Ask an agent to finish setup](#ask-an-agent-to-finish-setup). Reload the terminal after `configure`. A yellow `?` on a build older than 1.6.1 was the working-state ZWNJ bug; upgrade. Muse uses the text mark `◈` on purpose. Nested extra tabs of vendors other than Codex have no icon by design. |
 | Session data is missing | Run `herdr integration status`; load missing integrations before restarting the affected agent |
 | Claude/Agy quota is missing | Send a turn so the session's StatusLine produces an observation |
 | OMP quota is missing | Check `omp usage --json --redact --provider <id>` |
