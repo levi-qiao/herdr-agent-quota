@@ -628,8 +628,7 @@ fn codex_session_uuid(value: &str) -> bool {
 fn codex_cli_option_takes_value(flag: &str) -> bool {
     matches!(
         flag,
-        "-m"
-            | "--model"
+        "-m" | "--model"
             | "-c"
             | "--config"
             | "-p"
