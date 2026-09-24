@@ -14,7 +14,7 @@
 use crate::cache::CacheStore;
 use crate::cli::{
     AgentOrder, AgentSelection, FieldSet, LowQuotaAlert, PercentStyle, SidebarField, SidebarLayout,
-    SidebarRowGap,
+    SidebarPacing, SidebarRowGap,
 };
 use crate::model::Harness;
 use crate::prefs;
@@ -41,6 +41,7 @@ enum Row {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Choice {
     Percent,
+    Pacing,
     Layout,
     RowGap,
     Interval,
@@ -52,6 +53,7 @@ impl Choice {
     fn label(self) -> &'static str {
         match self {
             Self::Percent => "Percentages",
+            Self::Pacing => "Sidebar pacing",
             Self::Layout => "Sidebar layout",
             Self::RowGap => "Row gap",
             Self::Interval => "Watch interval",
@@ -65,6 +67,7 @@ fn rows() -> Vec<Row> {
     let mut rows = vec![
         Row::Header("Display"),
         Row::Choice(Choice::Percent),
+        Row::Choice(Choice::Pacing),
         Row::Choice(Choice::Layout),
         Row::Choice(Choice::RowGap),
         Row::Choice(Choice::Interval),
@@ -82,6 +85,7 @@ fn rows() -> Vec<Row> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
     percent: PercentStyle,
+    pacing: SidebarPacing,
     layout: SidebarLayout,
     gap: SidebarRowGap,
     interval_seconds: u64,
@@ -104,6 +108,7 @@ impl Settings {
         }
         Self {
             percent: crate::configure::resolved_percent_style(None, cache),
+            pacing: crate::configure::resolved_sidebar_pacing(None, cache),
             layout: crate::configure::resolved_sidebar_layout(None, cache),
             gap: crate::configure::resolved_row_gap(None, cache),
             interval_seconds: cache
@@ -119,6 +124,7 @@ impl Settings {
     fn choice_value(self, choice: Choice) -> String {
         match choice {
             Choice::Percent => self.percent.as_str().to_string(),
+            Choice::Pacing => self.pacing.as_str().to_string(),
             Choice::Layout => self.layout.as_str().to_string(),
             Choice::RowGap => self.gap.to_string(),
             Choice::Interval => format_interval(self.interval_seconds),
@@ -139,6 +145,10 @@ impl Settings {
             Choice::Percent => match self.percent {
                 PercentStyle::Remaining => "how much quota is left",
                 PercentStyle::Used => "how much quota is spent",
+            },
+            Choice::Pacing => match self.pacing {
+                SidebarPacing::Off => "show quota percentages and gauges",
+                SidebarPacing::On => "show signed pace on 5h and 7d rows",
             },
             Choice::Layout => match self.layout {
                 SidebarLayout::Packed => "cache·ttl and 5h·7d share a row",
@@ -193,6 +203,12 @@ impl Settings {
                 self.percent = match self.percent {
                     PercentStyle::Remaining => PercentStyle::Used,
                     PercentStyle::Used => PercentStyle::Remaining,
+                }
+            }
+            Row::Choice(Choice::Pacing) => {
+                self.pacing = match self.pacing {
+                    SidebarPacing::Off => SidebarPacing::On,
+                    SidebarPacing::On => SidebarPacing::Off,
                 }
             }
             Row::Choice(Choice::Layout) => {
@@ -259,6 +275,8 @@ impl Settings {
             AgentSelection::as_cli_list(&self.agents()),
             "--quota-percent".to_string(),
             self.percent.as_str().to_string(),
+            "--sidebar-pacing".to_string(),
+            self.pacing.as_str().to_string(),
             "--sidebar-layout".to_string(),
             self.layout.as_str().to_string(),
             "--row-gap".to_string(),
@@ -594,6 +612,7 @@ mod tests {
     fn settings() -> Settings {
         Settings {
             percent: PercentStyle::Remaining,
+            pacing: SidebarPacing::Off,
             layout: SidebarLayout::Gauges,
             gap: SidebarRowGap::SEPARATED,
             interval_seconds: 60,
@@ -622,6 +641,11 @@ mod tests {
         draft.cycle(Row::Choice(Choice::Percent), 1);
         assert_eq!(draft.percent, PercentStyle::Remaining);
 
+        draft.cycle(Row::Choice(Choice::Pacing), 1);
+        assert_eq!(draft.pacing, SidebarPacing::On);
+        draft.cycle(Row::Choice(Choice::Pacing), -1);
+        assert_eq!(draft.pacing, SidebarPacing::Off);
+
         draft.cycle(Row::Choice(Choice::Layout), 1);
         assert_eq!(draft.layout, SidebarLayout::Packed);
         draft.cycle(Row::Choice(Choice::RowGap), 1);
@@ -642,7 +666,11 @@ mod tests {
 
         // The gauges hint is the longest of the three, so check it against the
         // same width budget the frame test holds the other layouts to.
-        let frame = render(&draft, settings(), 2, 24, None);
+        let selected = rows()
+            .iter()
+            .position(|row| *row == Row::Choice(Choice::Layout))
+            .unwrap();
+        let frame = render(&draft, settings(), selected, 24, None);
         assert!(frame.contains("gauges"), "{frame}");
         for line in frame.trim_end_matches("\r\n").split("\r\n") {
             assert!(line.chars().count() <= 70, "too wide: {line}");
@@ -701,6 +729,8 @@ mod tests {
                 "claude,codex,grok,agy,opencode,omp,devin,muse,cursor",
                 "--quota-percent",
                 "used",
+                "--sidebar-pacing",
+                "off",
                 "--sidebar-layout",
                 "gauges",
                 "--row-gap",
@@ -827,7 +857,11 @@ mod tests {
         let applied = settings();
         let mut draft = applied;
         draft.cycle(Row::Choice(Choice::Layout), 1);
-        let frame = render(&draft, applied, 2, 24, Some("Nothing to apply."));
+        let selected = rows()
+            .iter()
+            .position(|row| *row == Row::Choice(Choice::Layout))
+            .unwrap();
+        let frame = render(&draft, applied, selected, 24, Some("Nothing to apply."));
         assert!(frame.contains("> * Sidebar layout"), "{frame}");
         assert!(frame.contains("packed"), "{frame}");
         assert!(!frame.contains("Agent quota settings"), "{frame}");

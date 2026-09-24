@@ -10,7 +10,7 @@ mod statusline;
 use crate::cache::CacheStore;
 use crate::cli::{
     AgentOrder, AgentSelection, BrandColors, ConfigureOptions, FieldSet, LowQuotaAlert,
-    PercentStyle, SidebarLayout, SidebarRowGap,
+    PercentStyle, SidebarLayout, SidebarPacing, SidebarRowGap,
 };
 use crate::model::Harness;
 use crate::prefs;
@@ -79,6 +79,7 @@ pub fn run(
             cache.clear_sidebar_layout()?;
             cache.clear_row_gap()?;
             cache.clear_percent_style()?;
+            cache.clear_sidebar_pacing()?;
             cache.clear_fields()?;
             cache.clear_brand_colors()?;
             cache.clear_agent_order()?;
@@ -120,6 +121,10 @@ pub fn run(
         cache.set_percent_style(percent)?;
         prefs::write(prefs::QUOTA_PERCENT, percent.as_str())?;
         println!("Quota percentages show {} quota.", percent.suffix());
+        let pacing = resolved_sidebar_pacing(options.sidebar_pacing, Some(&cache));
+        cache.set_sidebar_pacing(pacing)?;
+        prefs::write(prefs::SIDEBAR_PACING, pacing.as_str())?;
+        println!("Sidebar pacing: {}.", pacing.as_str());
         let fields = resolved_fields(options.fields, Some(&cache));
         cache.set_fields(fields)?;
         prefs::write(prefs::FIELDS, &fields.as_list())?;
@@ -164,12 +169,14 @@ pub fn run(
         let layout = resolved_sidebar_layout(options.sidebar_layout, cache.as_ref());
         let gap = resolved_row_gap(options.row_gap, cache.as_ref());
         let percent = resolved_percent_style(options.quota_percent, cache.as_ref());
+        let pacing = resolved_sidebar_pacing(options.sidebar_pacing, cache.as_ref());
         let fields = resolved_fields(options.fields, cache.as_ref());
         let brand = resolved_brand_colors(options.brand_colors, cache.as_ref());
         let order = resolved_agent_order(options.agent_order, cache.as_ref());
         let alert = resolved_low_quota_alert(options.low_quota_alert, cache.as_ref());
         herdr::check(agents, layout, gap, fields, brand)?;
         println!("Quota percentages show {} quota.", percent.suffix());
+        println!("Sidebar pacing: {}.", pacing.as_str());
         println!("Agent panel order: {}.", order.as_str());
         println!("Low quota alert: {alert}.");
         if agents.contains(&Harness::Claude) {
@@ -208,6 +215,18 @@ pub(crate) fn resolved_percent_style(
     PercentStyle::from_arg_or_env(explicit)
         .or_else(|| prefs::read(prefs::QUOTA_PERCENT).and_then(|value| PercentStyle::parse(&value)))
         .or_else(|| cache.and_then(CacheStore::percent_style))
+        .unwrap_or_default()
+}
+
+pub(crate) fn resolved_sidebar_pacing(
+    explicit: Option<SidebarPacing>,
+    cache: Option<&CacheStore>,
+) -> SidebarPacing {
+    SidebarPacing::from_arg_or_env(explicit)
+        .or_else(|| {
+            prefs::read(prefs::SIDEBAR_PACING).and_then(|value| SidebarPacing::parse(&value))
+        })
+        .or_else(|| cache.and_then(CacheStore::sidebar_pacing))
         .unwrap_or_default()
 }
 

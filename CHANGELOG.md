@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Optional sidebar pacing for recurring quota windows. Enable it in the
+  settings pane or with `--sidebar-pacing on` to render values such as
+  `5h -6% 45 min`; the default remains the existing quota/gauge display.
+
 ### Changed
 
 - The GitHub repository and Herdr plugin id are now

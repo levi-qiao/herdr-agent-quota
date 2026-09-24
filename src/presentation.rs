@@ -1,4 +1,4 @@
-use crate::cli::{FieldSet, PercentStyle, SidebarField, SidebarLayout};
+use crate::cli::{FieldSet, PercentStyle, SidebarField, SidebarLayout, SidebarPacing};
 use crate::model::{
     format_percent, live_windows, printed_percent, window_in, Provider, ProviderSnapshot, ResetAt,
     Severity, UsageWindow, WindowKind,
@@ -78,6 +78,7 @@ pub struct RowStyle {
     pub percent: PercentStyle,
     pub shape: SidebarShape,
     pub fields: FieldSet,
+    pub pacing: SidebarPacing,
 }
 
 impl RowStyle {
@@ -86,6 +87,7 @@ impl RowStyle {
             percent,
             shape,
             fields: FieldSet::all(),
+            pacing: SidebarPacing::default(),
         }
     }
 }
@@ -230,6 +232,25 @@ impl MetadataTokens {
         shape: SidebarShape,
         fields: FieldSet,
     ) -> Self {
+        Self::from_snapshot_for_pane_with_row(
+            snapshot,
+            now_unix,
+            session_id,
+            RowStyle {
+                percent: style,
+                shape,
+                fields,
+                pacing: SidebarPacing::default(),
+            },
+        )
+    }
+
+    pub fn from_snapshot_for_pane_with_row(
+        snapshot: &ProviderSnapshot,
+        now_unix: u64,
+        session_id: Option<&str>,
+        row: RowStyle,
+    ) -> Self {
         let quota_model = match session_id {
             Some(session_id) => snapshot.model_for_session(Some(session_id)),
             None => snapshot.model.as_deref(),
@@ -244,11 +265,7 @@ impl MetadataTokens {
             quota_model,
             context,
             windows,
-            RowStyle {
-                percent: style,
-                shape,
-                fields,
-            },
+            row,
         )
     }
 
@@ -264,6 +281,7 @@ impl MetadataTokens {
         let style = row.percent;
         let shape = row.shape;
         let fields = row.fields;
+        let pacing = row.pacing;
         let live = live_windows(windows, now_unix);
         let windows = live.as_slice();
         let quota_provider = snapshot.provider.display_name().to_string();
@@ -303,7 +321,7 @@ impl MetadataTokens {
             quota_5h: five_hour
                 .map(|window| {
                     five_hour_stale.map_or_else(
-                        || compact_window_parts(window, now_unix, style, shape).rendered(),
+                        || sidebar_window_parts(window, now_unix, style, shape, pacing).rendered(),
                         |age| stale_window(window, age),
                     )
                 })
@@ -311,7 +329,7 @@ impl MetadataTokens {
             quota_week: weekly
                 .map(|window| {
                     weekly_stale.map_or_else(
-                        || compact_window_parts(window, now_unix, style, shape).rendered(),
+                        || sidebar_window_parts(window, now_unix, style, shape, pacing).rendered(),
                         |age| stale_window(window, age),
                     )
                 })
@@ -704,6 +722,29 @@ fn compact_window_parts(
     }
 }
 
+/// Replace recurring quota text with a signed pace only when the user opted
+/// in and the provider supplied enough clock information. Severity, sorting,
+/// and alerts continue to use remaining quota; this changes display text only.
+fn sidebar_window_parts(
+    window: &UsageWindow,
+    now_unix: u64,
+    style: PercentStyle,
+    shape: SidebarShape,
+    pacing: SidebarPacing,
+) -> WindowParts {
+    if pacing.is_on() && matches!(window.kind, WindowKind::FiveHour | WindowKind::Weekly) {
+        if let Some(pace) = window_pace(window, now_unix) {
+            return WindowParts {
+                label: window.display_label().to_string(),
+                percent: format_signed_pace(pace.delta),
+                eta: format_pace_remaining(pace.remaining_seconds),
+                meter: None,
+            };
+        }
+    }
+    compact_window_parts(window, now_unix, style, shape)
+}
+
 /// `29d23h` → `29d`, `23h59m` → `23h`. A value with no unit suffix is kept
 /// or cleared; `due` is never rewritten into `d`.
 fn fit_eta(eta: String, available: usize) -> String {
@@ -759,6 +800,65 @@ fn format_ttl(seconds: u64) -> String {
     format_duration(seconds)
 }
 
+fn format_pace_remaining(seconds: u64) -> String {
+    let minutes = (seconds / 60).max(1);
+    if minutes >= 24 * 60 {
+        let days = minutes / (24 * 60);
+        let hours = (minutes % (24 * 60)) / 60;
+        return if hours == 0 {
+            format!("{days}d")
+        } else {
+            format!("{days}d{hours}h")
+        };
+    }
+    if minutes >= 60 {
+        let hours = minutes / 60;
+        let minutes = minutes % 60;
+        return if minutes == 0 {
+            format!("{hours}h")
+        } else {
+            format!("{hours}h {minutes} min")
+        };
+    }
+    format!("{minutes} min")
+}
+
+struct WindowPace {
+    /// Remaining quota minus remaining time, in percentage points.
+    delta: f64,
+    remaining_seconds: u64,
+}
+
+fn window_pace(window: &UsageWindow, now_unix: u64) -> Option<WindowPace> {
+    const MIN_ELAPSED_FRACTION: f64 = 0.05;
+    let remaining_seconds = window
+        .resets_at?
+        .unix_seconds()
+        .checked_sub(now_unix)
+        .filter(|remaining| *remaining > 0)?;
+    let duration = window
+        .duration_seconds
+        .unwrap_or_else(|| window.kind.duration_seconds());
+    let elapsed_seconds = duration.checked_sub(remaining_seconds)?;
+    if (elapsed_seconds as f64) < MIN_ELAPSED_FRACTION * duration as f64 {
+        return None;
+    }
+    let elapsed_percent = elapsed_seconds as f64 * 100.0 / duration as f64;
+    Some(WindowPace {
+        delta: elapsed_percent - window.used_percent,
+        remaining_seconds,
+    })
+}
+
+fn format_signed_pace(delta: f64) -> String {
+    let rounded = delta.round() as i64;
+    if rounded > 0 {
+        format!("+{rounded}%")
+    } else {
+        format!("{rounded}%")
+    }
+}
+
 /// Spending pace for the Claude Code status line: quota consumed versus how
 /// much of the window's clock has run, in percentage points.
 ///
@@ -777,24 +877,12 @@ fn format_ttl(seconds: u64) -> String {
 /// confident wrong arrow is worse than none.
 pub fn pace_segment(windows: &[UsageWindow], now_unix: u64) -> Option<String> {
     const TOLERANCE_POINTS: f64 = 5.0;
-    const MIN_ELAPSED_FRACTION: f64 = 0.05;
     let window = windows
         .iter()
         .filter(|window| matches!(window.kind, WindowKind::FiveHour | WindowKind::Weekly))
         // `min_by` keeps the first of equals, and 5h is parsed first.
         .min_by(|a, b| a.remaining_percent.total_cmp(&b.remaining_percent))?;
-    let remaining = window
-        .resets_at?
-        .unix_seconds()
-        .checked_sub(now_unix)
-        .filter(|remaining| *remaining > 0)?;
-    let duration = window.kind.duration_seconds();
-    let elapsed_seconds = duration.checked_sub(remaining)?;
-    if (elapsed_seconds as f64) < MIN_ELAPSED_FRACTION * duration as f64 {
-        return None;
-    }
-    let elapsed = elapsed_seconds as f64 * 100.0 / duration as f64;
-    let delta = window.used_percent - elapsed;
+    let delta = -window_pace(window, now_unix)?.delta;
     let pace = if delta.abs() <= TOLERANCE_POINTS {
         "=".to_string()
     } else if delta > 0.0 {
@@ -870,6 +958,21 @@ mod tests {
         assert_eq!(stale.quota_5h, "5h stale 5m");
         assert_eq!(stale.quota_5h_severity, Some(Severity::Unknown));
         assert_eq!(stale.quota_headroom, None);
+
+        let paced_stale = MetadataTokens::from_snapshot_for_pane_with_row(
+            &snapshot,
+            400,
+            Some("session-a"),
+            RowStyle {
+                percent: PercentStyle::Remaining,
+                shape: SidebarShape::default(),
+                fields: FieldSet::all(),
+                pacing: SidebarPacing::On,
+            },
+        );
+        assert_eq!(paced_stale.quota_5h, "5h stale 5m");
+        assert_eq!(paced_stale.quota_5h_severity, Some(Severity::Unknown));
+        assert_eq!(paced_stale.quota_headroom, None);
 
         let fresh = MetadataTokens::from_snapshot_for_pane(
             &snapshot,
@@ -1952,6 +2055,70 @@ mod tests {
     /// change moves one fixture rather than the suite.
     fn gauges(width: usize) -> SidebarShape {
         SidebarShape::new(SidebarLayout::Gauges, width)
+    }
+
+    fn paced(snapshot: &ProviderSnapshot, now_unix: u64) -> MetadataTokens {
+        MetadataTokens::from_snapshot_for_pane_with_row(
+            snapshot,
+            now_unix,
+            None,
+            RowStyle {
+                percent: PercentStyle::Remaining,
+                shape: gauges(26),
+                fields: FieldSet::all(),
+                pacing: SidebarPacing::On,
+            },
+        )
+    }
+
+    #[test]
+    fn sidebar_pacing_is_opt_in_and_reports_signed_delta_with_time_left() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![
+                window(WindowKind::FiveHour, 91.0, 45 * 60),
+                window(WindowKind::Weekly, 20.0, 6 * 24 * 60 * 60),
+            ],
+            0,
+        );
+        let quota = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            gauges(26),
+        );
+        assert!(quota.quota_5h.contains("9%"), "{}", quota.quota_5h);
+
+        let pace = paced(&snapshot, 0);
+        assert_eq!(pace.quota_5h, "5h -6% 45 min");
+        assert_eq!(pace.quota_week, "7d -6% 6d");
+        assert_eq!(pace.quota_5h_severity, quota.quota_5h_severity);
+    }
+
+    #[test]
+    fn sidebar_pacing_falls_back_to_quota_without_a_usable_clock() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![UsageWindow::new(WindowKind::FiveHour, 40.0, None).unwrap()],
+            0,
+        );
+        let pace = paced(&snapshot, 0);
+        assert!(pace.quota_5h.contains("60%"), "{}", pace.quota_5h);
+        assert!(!pace.quota_5h.contains('+'));
+    }
+
+    #[test]
+    fn sidebar_pacing_uses_a_provider_normalized_duration_and_compact_days() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Omp,
+            vec![
+                window(WindowKind::FiveHour, 20.0, 3 * 24 * 60 * 60 + 2 * 60 * 60)
+                    .with_source_window("4d", Some(4 * 24 * 60 * 60)),
+            ],
+            0,
+        );
+        assert_eq!(paced(&snapshot, 0).quota_5h, "4d +3% 3d2h");
     }
 
     /// Six cells, the default 26-column sidebar after Herdr chrome. The bar

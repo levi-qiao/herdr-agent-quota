@@ -3641,6 +3641,7 @@ mod tests {
                 fields: FieldSet::all(),
                 percent: PercentStyle::Remaining,
                 shape: SidebarShape::new(SidebarLayout::Gauges, 26),
+                pacing: Default::default(),
             },
         );
         assert_eq!(
@@ -3656,6 +3657,7 @@ mod tests {
                 fields: FieldSet::all(),
                 percent: PercentStyle::Remaining,
                 shape: SidebarShape::new(SidebarLayout::Gauges, 18),
+                pacing: Default::default(),
             },
         );
         assert_eq!(
@@ -3674,6 +3676,7 @@ mod tests {
                 fields: FieldSet::parse("cache").unwrap(),
                 percent: PercentStyle::Remaining,
                 shape: SidebarShape::new(SidebarLayout::Gauges, 26),
+                pacing: Default::default(),
             },
         );
         assert_eq!(
@@ -3712,6 +3715,7 @@ mod tests {
                 fields: FieldSet::all(),
                 percent: PercentStyle::Remaining,
                 shape: SidebarShape::new(SidebarLayout::Gauges, 36),
+                pacing: Default::default(),
             },
         );
         assert_eq!(

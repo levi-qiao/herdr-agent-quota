@@ -31,7 +31,8 @@ separates different agents; nested extra tabs of the same vendor stay flush.
 Claude and Agy stay per-pane.
 Agent order defaults to Space grouping with least quota left first inside each space.
 Low-quota notifications stay off until you set a threshold. Switch layout,
-fields, and percentages from the settings pane (`prefix+shift+q`).
+fields, percentages, and optional pacing from the settings pane
+(`prefix+shift+q`).
 
 ## Install and upgrade
 
@@ -163,6 +164,7 @@ herdr plugin pane open --plugin herdr-agent-usage --entrypoint settings --focus
 | Setting | Options |
 | --- | --- |
 | Percentages | Remaining or used; colors always indicate remaining headroom |
+| Sidebar pacing | Off (default) keeps quota percentages and gauges; on shows signed pace on 5h/7d rows |
 | Layout | `gauges` (default) adds a meter beside each quota number; `packed` groups related fields; `stacked` gives each field a row |
 | Row gap | Zero or one blank line between agents |
 | Watch interval | 30 seconds–1 hour; default 60 seconds |
@@ -173,6 +175,19 @@ herdr plugin pane open --plugin herdr-agent-usage --entrypoint settings --focus
 
 Use arrows or Space to edit, `a` to apply, and `q` to close.
 Installer options are also available through `./install.sh --help`.
+
+Enable pacing during installation with:
+
+```sh
+./install.sh --sidebar-pacing on
+```
+
+Paced rows read like `5h -6% 45 min`: window, signed percentage-point
+headroom versus the remaining clock, and time left. Negative means usage is
+ahead of pace; positive means there is headroom. `3d2h` is one compact time
+value. Context and monthly rows keep their configured quota presentation.
+When a provider omits usable reset information, that row falls back to its
+normal quota percentage instead of guessing.
 
 ## Data sources and limits
 

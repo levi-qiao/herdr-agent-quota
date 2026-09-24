@@ -294,14 +294,7 @@ fn cached_quota_is_stale(cache: &CacheStore, pane: &AgentPane, now: u64, row: Ro
     if snapshot.displayed_quota_has_expired(session_id, now) {
         return true;
     }
-    let values = MetadataTokens::from_snapshot_for_pane_with_fields(
-        &snapshot,
-        now,
-        session_id,
-        row.percent,
-        row.shape,
-        row.fields,
-    );
+    let values = MetadataTokens::from_snapshot_for_pane_with_row(&snapshot, now, session_id, row);
     crate::herdr::quota_rows_have_drifted(&pane.tokens, &values, row.shape)
 }
 
@@ -738,6 +731,7 @@ fn sidebar_shape(cache: &CacheStore) -> SidebarShape {
 fn publish_row(cache: &CacheStore) -> RowStyle {
     RowStyle {
         fields: cache.fields().unwrap_or_default(),
+        pacing: cache.sidebar_pacing().unwrap_or_default(),
         ..RowStyle::new(
             cache.percent_style().unwrap_or_default(),
             sidebar_shape(cache),
@@ -1732,14 +1726,7 @@ fn tokens_for_provider(
     row: RowStyle,
 ) -> Option<MetadataTokens> {
     snapshot.map(|snapshot| {
-        MetadataTokens::from_snapshot_for_pane_with_fields(
-            snapshot,
-            now_unix,
-            session_id,
-            row.percent,
-            row.shape,
-            row.fields,
-        )
+        MetadataTokens::from_snapshot_for_pane_with_row(snapshot, now_unix, session_id, row)
     })
 }
 
@@ -2655,6 +2642,16 @@ mod tests {
         assert_eq!(cache.sidebar_layout(), Some(SidebarLayout::Stacked));
         assert_eq!(unset, stacked);
         assert_eq!(stacked.unwrap().quota_5h, "5h 42% 4h07m");
+    }
+
+    #[test]
+    fn publish_row_reads_the_persisted_sidebar_pacing_choice() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path());
+        cache
+            .set_sidebar_pacing(crate::cli::SidebarPacing::On)
+            .unwrap();
+        assert_eq!(publish_row(&cache).pacing, crate::cli::SidebarPacing::On);
     }
 
     #[test]

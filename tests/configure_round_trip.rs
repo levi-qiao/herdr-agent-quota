@@ -3058,6 +3058,50 @@ fn stacked_sidebar_layout_is_persisted_across_a_repair() {
 }
 
 #[test]
+fn sidebar_pacing_is_opt_in_and_persisted_across_a_repair() {
+    let root = tempdir().unwrap();
+    let homes = AgentHomes::new(root.path());
+
+    assert!(homes.configure(&["--apply"]).status.success());
+    assert_eq!(
+        fs::read_to_string(homes.state.join("sidebar-pacing")).unwrap(),
+        "off"
+    );
+
+    assert!(homes
+        .configure(&["--apply", "--sidebar-pacing", "on"])
+        .status
+        .success());
+    assert_eq!(
+        fs::read_to_string(homes.state.join("sidebar-pacing")).unwrap(),
+        "on"
+    );
+
+    assert!(homes.configure(&["--apply"]).status.success());
+    assert_eq!(
+        fs::read_to_string(homes.state.join("sidebar-pacing")).unwrap(),
+        "on"
+    );
+}
+
+#[test]
+fn sidebar_pacing_can_be_selected_through_the_installer_environment() {
+    let root = tempdir().unwrap();
+    let homes = AgentHomes::new(root.path());
+    let output =
+        homes.configure_with_env(&["--apply"], &[("HERDR_AGENT_QUOTA_SIDEBAR_PACING", "on")]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(homes.state.join("sidebar-pacing")).unwrap(),
+        "on"
+    );
+}
+
+#[test]
 fn an_installer_can_select_stacked_layout_through_the_environment() {
     let root = tempdir().unwrap();
     let homes = AgentHomes::new(root.path());
