@@ -528,11 +528,101 @@ fn attach_muse_sessions(panes: &mut [AgentPane]) {
 /// hooks while leaving Herdr's foreground cwd intact, so use the rollout's
 /// exact session_meta cwd only when one missing pane and one rollout agree.
 fn attach_codex_sessions(panes: &mut [AgentPane]) {
+    if !crate::cli::AgentSelection::from_args_or_env(&[]).contains(&Harness::Codex) {
+        return;
+    }
+    let mut started = BTreeMap::new();
+    for pane in panes
+        .iter_mut()
+        .filter(|pane| pane.harness == Harness::Codex && pane.session.is_none())
+    {
+        let Some(process) = codex_foreground_process(&pane.pane_id) else {
+            continue;
+        };
+        if let Some(session_id) = codex_resume_session_id(&process) {
+            pane.session = Some(AgentSession {
+                kind: Some("id".to_string()),
+                value: session_id,
+            });
+        } else if let Some(time) = codex_process_started_at(&process) {
+            started.insert(pane.pane_id.clone(), time);
+        }
+    }
     attach_codex_sessions_with(
         panes,
-        codex_process_started_at,
+        |pane_id| started.get(pane_id).copied(),
         crate::providers::codex::session_ids_for_panes,
     );
+}
+
+fn codex_foreground_process(pane_id: &str) -> Option<Value> {
+    let executable = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
+    let output = Command::new(executable)
+        .args(["pane", "process-info", "--pane", pane_id])
+        .output()
+        .ok()?;
+    let value: Value = serde_json::from_slice(&output.stdout).ok()?;
+    value
+        .pointer("/result/process_info/foreground_processes")?
+        .as_array()?
+        .iter()
+        .find(|process| {
+            process
+                .get("argv")
+                .and_then(Value::as_array)
+                .and_then(|argv| argv.first())
+                .and_then(Value::as_str)
+                .is_some_and(|argv0| argv0 == "codex" || argv0.ends_with("/codex"))
+        })
+        .cloned()
+}
+
+/// A restored pane exposes its exact session in `codex resume <id>` even when
+/// Herdr's session hook has not reported it after a reboot.
+fn codex_resume_session_id(process: &Value) -> Option<String> {
+    let argv = process.get("argv")?.as_array()?;
+    let mut args = argv.iter().skip(1);
+    while let Some(arg) = args.next().and_then(Value::as_str) {
+        match arg {
+            "resume" => {
+                let id = args.next()?.as_str()?;
+                return (id.len() == 36
+                    && id.bytes().enumerate().all(|(index, byte)| {
+                        if [8, 13, 18, 23].contains(&index) {
+                            byte == b'-'
+                        } else {
+                            byte.is_ascii_hexdigit()
+                        }
+                    }))
+                .then(|| id.to_string());
+            }
+            "-m"
+            | "--model"
+            | "-c"
+            | "--config"
+            | "-p"
+            | "--profile"
+            | "-s"
+            | "--sandbox"
+            | "-a"
+            | "--ask-for-approval"
+            | "-C"
+            | "--cd"
+            | "-i"
+            | "--image"
+            | "--add-dir"
+            | "--enable"
+            | "--disable"
+            | "--remote"
+            | "--remote-auth-token-env"
+            | "--local-provider" => {
+                args.next()?;
+            }
+            flag if flag.starts_with('-') => {}
+            _ => return None,
+        }
+    }
+    None
 }
 
 fn attach_codex_sessions_with(
@@ -575,25 +665,7 @@ fn attach_codex_sessions_with(
     }
 }
 
-fn codex_process_started_at(pane_id: &str) -> Option<u64> {
-    let executable = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
-    let output = Command::new(executable)
-        .args(["pane", "process-info", "--pane", pane_id])
-        .output()
-        .ok()?;
-    let value: Value = serde_json::from_slice(&output.stdout).ok()?;
-    let process = value
-        .pointer("/result/process_info/foreground_processes")?
-        .as_array()?
-        .iter()
-        .find(|process| {
-            process
-                .get("argv")
-                .and_then(Value::as_array)
-                .and_then(|argv| argv.first())
-                .and_then(Value::as_str)
-                .is_some_and(|argv0| argv0 == "codex" || argv0.ends_with("/codex"))
-        })?;
+fn codex_process_started_at(process: &Value) -> Option<u64> {
     let pid = process.get("pid")?.as_u64()?.to_string();
     let elapsed = Command::new("ps")
         .args(["-p", &pid, "-o", "etime="])
@@ -1048,8 +1120,20 @@ fn publish_pane_tokens_inner(
             PaneQuotaUpdate::Preserve => pane.tokens.clone(),
         };
         let role = vendor_row_for(wide, &nesting, &pane.pane_id);
+        // A Codex helper is a separately steerable seat even when it shares
+        // account quota with the workspace head. Keep its own identity line.
+        let codex_child = role == VendorRow::Child && pane.harness == Harness::Codex;
         if let Some(identity) = &pane_tokens.identity {
-            apply_identity(&mut desired, identity, row.shape.content_width, role);
+            apply_identity(
+                &mut desired,
+                identity,
+                row.shape.content_width,
+                if codex_child { VendorRow::Head } else { role },
+            );
+        } else if codex_child {
+            unindent_token(&mut desired, "quota_model");
+            desired.insert("quota_provider".to_string(), "Codex".to_string());
+            apply_nested_head_from_tokens(&mut desired);
         } else if role == VendorRow::Child {
             apply_nested_child_from_tokens(&mut desired);
         } else if role == VendorRow::Head {
@@ -1086,7 +1170,7 @@ fn publish_pane_tokens_inner(
             pane,
             &group_heads,
             &workspace_labels,
-            role,
+            if codex_child { VendorRow::Flat } else { role },
             Some(vendor_icon_status(&nesting, pane, role)),
         );
         apply_pack_gap(
