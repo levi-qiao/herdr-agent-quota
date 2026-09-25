@@ -14,7 +14,7 @@
 use crate::cache::CacheStore;
 use crate::cli::{
     AgentOrder, AgentSelection, FieldSet, LowQuotaAlert, PercentStyle, SidebarField, SidebarLayout,
-    SidebarPacing, SidebarRowGap,
+    SidebarPacing, SidebarRowGap, StatuslinePace,
 };
 use crate::model::Harness;
 use crate::prefs;
@@ -42,6 +42,7 @@ enum Row {
 enum Choice {
     Percent,
     Pacing,
+    StatuslinePace,
     Layout,
     RowGap,
     Interval,
@@ -54,6 +55,7 @@ impl Choice {
         match self {
             Self::Percent => "Percentages",
             Self::Pacing => "Sidebar pacing",
+            Self::StatuslinePace => "StatusLine pace",
             Self::Layout => "Sidebar layout",
             Self::RowGap => "Row gap",
             Self::Interval => "Watch interval",
@@ -68,6 +70,7 @@ fn rows() -> Vec<Row> {
         Row::Header("Display"),
         Row::Choice(Choice::Percent),
         Row::Choice(Choice::Pacing),
+        Row::Choice(Choice::StatuslinePace),
         Row::Choice(Choice::Layout),
         Row::Choice(Choice::RowGap),
         Row::Choice(Choice::Interval),
@@ -86,6 +89,7 @@ fn rows() -> Vec<Row> {
 pub struct Settings {
     percent: PercentStyle,
     pacing: SidebarPacing,
+    statusline_pace: StatuslinePace,
     layout: SidebarLayout,
     gap: SidebarRowGap,
     interval_seconds: u64,
@@ -109,6 +113,7 @@ impl Settings {
         Self {
             percent: crate::configure::resolved_percent_style(None, cache),
             pacing: crate::configure::resolved_sidebar_pacing(None, cache),
+            statusline_pace: crate::configure::resolved_statusline_pace(None, cache),
             layout: crate::configure::resolved_sidebar_layout(None, cache),
             gap: crate::configure::resolved_row_gap(None, cache),
             interval_seconds: cache
@@ -125,6 +130,7 @@ impl Settings {
         match choice {
             Choice::Percent => self.percent.as_str().to_string(),
             Choice::Pacing => self.pacing.as_str().to_string(),
+            Choice::StatuslinePace => self.statusline_pace.as_str().to_string(),
             Choice::Layout => self.layout.as_str().to_string(),
             Choice::RowGap => self.gap.to_string(),
             Choice::Interval => format_interval(self.interval_seconds),
@@ -149,6 +155,10 @@ impl Settings {
             Choice::Pacing => match self.pacing {
                 SidebarPacing::Off => "show quota percentages and gauges",
                 SidebarPacing::On => "show signed pace on 5h and 7d rows",
+            },
+            Choice::StatuslinePace => match self.statusline_pace {
+                StatuslinePace::Off => "leave Claude statusLine unchanged",
+                StatuslinePace::On => "append binding-window pace",
             },
             Choice::Layout => match self.layout {
                 SidebarLayout::Packed => "cache·ttl and 5h·7d share a row",
@@ -209,6 +219,12 @@ impl Settings {
                 self.pacing = match self.pacing {
                     SidebarPacing::Off => SidebarPacing::On,
                     SidebarPacing::On => SidebarPacing::Off,
+                }
+            }
+            Row::Choice(Choice::StatuslinePace) => {
+                self.statusline_pace = match self.statusline_pace {
+                    StatuslinePace::Off => StatuslinePace::On,
+                    StatuslinePace::On => StatuslinePace::Off,
                 }
             }
             Row::Choice(Choice::Layout) => {
@@ -277,6 +293,8 @@ impl Settings {
             self.percent.as_str().to_string(),
             "--sidebar-pacing".to_string(),
             self.pacing.as_str().to_string(),
+            "--statusline-pace".to_string(),
+            self.statusline_pace.as_str().to_string(),
             "--sidebar-layout".to_string(),
             self.layout.as_str().to_string(),
             "--row-gap".to_string(),
@@ -613,6 +631,7 @@ mod tests {
         Settings {
             percent: PercentStyle::Remaining,
             pacing: SidebarPacing::Off,
+            statusline_pace: StatuslinePace::Off,
             layout: SidebarLayout::Gauges,
             gap: SidebarRowGap::SEPARATED,
             interval_seconds: 60,
@@ -645,6 +664,11 @@ mod tests {
         assert_eq!(draft.pacing, SidebarPacing::On);
         draft.cycle(Row::Choice(Choice::Pacing), -1);
         assert_eq!(draft.pacing, SidebarPacing::Off);
+
+        draft.cycle(Row::Choice(Choice::StatuslinePace), 1);
+        assert_eq!(draft.statusline_pace, StatuslinePace::On);
+        draft.cycle(Row::Choice(Choice::StatuslinePace), -1);
+        assert_eq!(draft.statusline_pace, StatuslinePace::Off);
 
         draft.cycle(Row::Choice(Choice::Layout), 1);
         assert_eq!(draft.layout, SidebarLayout::Packed);
@@ -730,6 +754,8 @@ mod tests {
                 "--quota-percent",
                 "used",
                 "--sidebar-pacing",
+                "off",
+                "--statusline-pace",
                 "off",
                 "--sidebar-layout",
                 "gauges",

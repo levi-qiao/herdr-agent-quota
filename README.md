@@ -165,6 +165,7 @@ herdr plugin pane open --plugin herdr-agent-usage --entrypoint settings --focus
 | --- | --- |
 | Percentages | Remaining or used; colors always indicate remaining headroom |
 | Sidebar pacing | Off (default) keeps quota percentages and gauges; on shows signed pace on 5h/7d rows |
+| StatusLine pace | On (default) preserves the existing binding-window pace segment; off leaves Claude's statusLine output unchanged |
 | Layout | `gauges` (default) adds a meter beside each quota number; `packed` groups related fields; `stacked` gives each field a row |
 | Row gap | Zero or one blank line between agents |
 | Watch interval | 30 seconds–1 hour; default 60 seconds |
@@ -176,13 +177,14 @@ herdr plugin pane open --plugin herdr-agent-usage --entrypoint settings --focus
 Use arrows or Space to edit, `a` to apply, and `q` to close.
 Installer options are also available through `./install.sh --help`.
 
-Enable pacing during installation with:
+Enable sidebar pacing, or opt out of the separate Claude statusLine pace, during installation with:
 
 ```sh
 ./install.sh --sidebar-pacing on
+./install.sh --statusline-pace off
 ```
 
-Paced rows read like `5h -6% 45 min`: window, signed percentage-point
+Paced sidebar rows read like `5h -6% 45 min`: window, signed percentage-point
 headroom versus the remaining clock, and time left. Negative means usage is
 ahead of pace; positive means there is headroom. `3d2h` is one compact time
 value. Context and monthly rows keep their configured quota presentation.
@@ -204,8 +206,9 @@ normal quota percentage instead of guessing.
 | Pi | Canonical Codex quota | Only when the recorded account matches |
 | OMP | `omp usage --json --provider <id>` | Reported account matching the session's credential pin |
 
-The Claude Code status line keeps the user's own statusLine output and appends
-a spending pace for the binding window, for example `⏱ 5h ↓12%`: quota used
+The Claude Code status line always keeps the user's own statusLine output.
+With **StatusLine pace** enabled (it stays on by default for compatibility), the wrapper appends a
+spending pace for the binding window, for example `⏱ 5h ↓12%`: quota used
 minus the share of the window's clock already run, in points. `↓` means slow
 down, `↑` means there is headroom, `=` is within five points. The window with
 the least remaining quota is paced and named; if that window cannot be paced,

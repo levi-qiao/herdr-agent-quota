@@ -22,19 +22,21 @@ pub const SIDEBAR_LAYOUT: &str = "sidebar-layout";
 pub const ROW_GAP: &str = "row-gap";
 pub const QUOTA_PERCENT: &str = "quota-percent";
 pub const SIDEBAR_PACING: &str = "sidebar-pacing";
+pub const STATUSLINE_PACE: &str = "statusline-pace";
 pub const FIELDS: &str = "fields";
 pub const BRAND_COLORS: &str = "brand-colors";
 pub const AGENT_ORDER: &str = "agent-order";
 pub const LOW_QUOTA_ALERT: &str = "low-quota-alert";
 
 /// Every preference a full uninstall must forget.
-pub const ALL: [&str; 10] = [
+pub const ALL: [&str; 11] = [
     AGENTS,
     WATCH_INTERVAL_SECONDS,
     SIDEBAR_LAYOUT,
     ROW_GAP,
     QUOTA_PERCENT,
     SIDEBAR_PACING,
+    STATUSLINE_PACE,
     FIELDS,
     BRAND_COLORS,
     AGENT_ORDER,
