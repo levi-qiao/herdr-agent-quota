@@ -1192,9 +1192,7 @@ fn publish_pane_tokens_inner(
                 }
             }
         }
-        if row.shape.layout == crate::cli::SidebarLayout::Gauges && role == VendorRow::Flat {
-            desired.remove("quota_model");
-        }
+        strip_flat_gauge_model_if_unused(&mut desired, row, role);
         apply_group_and_icon(
             &mut desired,
             pane,
@@ -1776,6 +1774,25 @@ const GROUP_MEMBER_INDENT: &str = "\u{200b}  ";
 /// Always reported together so a lagging inventory cannot leave a stale
 /// colour twin on screen after working→done or done→idle.
 const ICON_TOKEN_NAMES: [&str; 3] = ["quota_icon", "quota_icon_working", "quota_icon_done"];
+
+/// Flat Gauges normally render the packed `$quota_provider_model` identity,
+/// so the standalone model token is redundant and can stay out of the report
+/// budget. When the provider field is hidden, configure deliberately degrades
+/// that identity row to `$quota_model`; keep it only for that exact shape.
+fn strip_flat_gauge_model_if_unused(
+    desired: &mut BTreeMap<String, String>,
+    row: RowStyle,
+    role: VendorRow,
+) {
+    if row.shape.layout != crate::cli::SidebarLayout::Gauges || role != VendorRow::Flat {
+        return;
+    }
+    let model_only_identity = row.fields.contains(crate::cli::SidebarField::Model)
+        && !row.fields.contains(crate::cli::SidebarField::Provider);
+    if !model_only_identity {
+        desired.remove("quota_model");
+    }
+}
 
 /// Vendor mark always; group header only on the Space head pane.
 ///
@@ -2497,7 +2514,7 @@ fn is_help_command_row(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::{FieldSet, PercentStyle, SidebarLayout};
+    use crate::cli::{FieldSet, PercentStyle, SidebarField, SidebarLayout};
     use crate::model::{
         CacheUsage, ContextUsage, ProviderSnapshot, ResetAt, UsageWindow, WindowKind,
     };
@@ -2869,6 +2886,37 @@ mod tests {
         assert!(
             desired.keys().all(|name| !name.starts_with("quota_share_")),
             "{desired:?}"
+        );
+    }
+
+    #[test]
+    fn flat_gauges_keep_model_when_provider_field_is_hidden() {
+        let model = ("quota_model".to_string(), "Opus 5.5".to_string());
+        let row = RowStyle {
+            percent: PercentStyle::Remaining,
+            shape: SidebarShape::new(SidebarLayout::Gauges, 36),
+            fields: FieldSet::all().toggled(SidebarField::Provider),
+            pacing: Default::default(),
+        };
+        let mut desired = BTreeMap::from([model.clone()]);
+        strip_flat_gauge_model_if_unused(&mut desired, row, VendorRow::Flat);
+        assert_eq!(
+            desired.get("quota_model").map(String::as_str),
+            Some("Opus 5.5")
+        );
+
+        let mut default_fields = BTreeMap::from([model]);
+        strip_flat_gauge_model_if_unused(
+            &mut default_fields,
+            RowStyle {
+                fields: FieldSet::all(),
+                ..row
+            },
+            VendorRow::Flat,
+        );
+        assert!(
+            !default_fields.contains_key("quota_model"),
+            "packed provider/model identity should still save the redundant token"
         );
     }
 
