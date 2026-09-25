@@ -276,7 +276,7 @@ impl AgentPane {
 
     /// Status the brand icon should mirror.
     ///
-    /// Working is yellow, unseen completion is teal, acknowledged is white.
+    /// Working is yellow, unseen completion is teal, blocked is red, acknowledged is white.
     /// Callers fold the plugin unseen-set into `status` before publish. Do
     /// not treat a leftover `$quota_icon_done` token as unseen: a concurrent
     /// inventory read after mark-seen still carries that token and would
@@ -306,10 +306,12 @@ impl AgentPane {
             .unwrap_or("");
         let working = value.contains(crate::icons::WORKING_TAG);
         let done = value.contains(crate::icons::DONE_TAG);
+        let blocked = value.contains(crate::icons::BLOCKED_TAG);
         match self.icon_status() {
-            AgentStatus::Working => !working || done,
-            AgentStatus::Done => !done,
-            _ => working || done || value.is_empty(),
+            AgentStatus::Working => !working || done || blocked,
+            AgentStatus::Done => !done || working || blocked,
+            AgentStatus::Blocked => !blocked || working || done,
+            _ => working || done || blocked || value.is_empty(),
         }
     }
 }
@@ -1797,7 +1799,7 @@ fn strip_flat_gauge_model_if_unused(
 /// Vendor mark always; group header only on the Space head pane.
 ///
 /// `$quota_icon` always carries the glyph so it stays the first identity
-/// token. Working/done colour is an invisible suffix matched by Herdr
+/// token. Working/done/blocked colour is an invisible suffix matched by Herdr
 /// `rules`; publishing a later twin on a Space head hang-indents the mark
 /// one cell to the right. Members prefix the logo with
 /// [`GROUP_MEMBER_INDENT`]. Heads publish the bare glyph — Herdr already
@@ -1835,6 +1837,7 @@ fn apply_group_and_icon(
         match icon_status.unwrap_or_else(|| pane.icon_status()) {
             AgentStatus::Working => mark.push_str(crate::icons::WORKING_TAG),
             AgentStatus::Done => mark.push_str(crate::icons::DONE_TAG),
+            AgentStatus::Blocked => mark.push_str(crate::icons::BLOCKED_TAG),
             _ => {}
         }
         desired.insert("quota_icon".to_string(), mark);
@@ -3286,6 +3289,34 @@ mod tests {
         assert!(!done_desired.contains_key("quota_icon_done"));
         assert!(!done_desired.contains_key("quota_icon_working"));
 
+        let mut blocked = sibling.clone();
+        blocked.status = AgentStatus::Blocked;
+        assert!(
+            blocked.icon_needs_update(),
+            "a bare brand icon must be republished when the pane becomes blocked"
+        );
+        let mut blocked_desired = BTreeMap::new();
+        apply_group_and_icon(
+            &mut blocked_desired,
+            &blocked,
+            &heads,
+            &labels,
+            VendorRow::Flat,
+            None,
+        );
+        assert!(
+            blocked_desired
+                .get("quota_icon")
+                .is_some_and(|icon| icon.contains(crate::icons::BLOCKED_TAG)),
+            "blocked panes tag the brand icon: {:?}",
+            blocked_desired.get("quota_icon")
+        );
+        blocked.tokens = blocked_desired.clone();
+        assert!(
+            !blocked.icon_needs_update(),
+            "a correctly tagged blocked icon must not churn metadata"
+        );
+
         let mut head_done = head.clone();
         head_done.status = AgentStatus::Done;
         let mut head_done_desired = BTreeMap::new();
@@ -3368,7 +3399,9 @@ mod tests {
         );
         assert!(
             stale_desired.get("quota_icon").is_some_and(|icon| {
-                !icon.contains(crate::icons::DONE_TAG) && !icon.contains(crate::icons::WORKING_TAG)
+                !icon.contains(crate::icons::DONE_TAG)
+                    && !icon.contains(crate::icons::WORKING_TAG)
+                    && !icon.contains(crate::icons::BLOCKED_TAG)
             }),
             "idle + leftover done token must not restore teal"
         );

@@ -26,6 +26,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Blocked agent panes now tag and color the brand icon instead of looking idle,
+  restoring an at-a-glance signal for panes waiting on user input.
 - Gauges panes keep the model token when the provider field is hidden, so
   model-only identity rows render the model instead of only the brand icon.
 - Claude session-local quota no longer presents an idle pane's old percentage as
