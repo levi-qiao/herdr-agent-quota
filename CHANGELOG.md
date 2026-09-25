@@ -26,6 +26,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Gauges panes keep the model token when the provider field is hidden, so
+  model-only identity rows render the model instead of only the brand icon.
 - Claude session-local quota no longer presents an idle pane's old percentage as
   current. The statusLine cache tracks per-window freshness from documented
   API-derived fields, timer-only redraws keep the original observation age,
