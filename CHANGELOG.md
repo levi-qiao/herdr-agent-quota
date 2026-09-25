@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Claude statusLine pacing can now be turned off with
+  `--statusline-pace off` or from the settings pane. It stays on by default
+  for upgrade compatibility; quota observations are still collected for the
+  sidebar while pace output is off.
 - Optional sidebar pacing for recurring quota windows. Enable it in the
   settings pane or with `--sidebar-pacing on` to render values such as
   `5h -6% 45 min`; the default remains the existing quota/gauge display.
