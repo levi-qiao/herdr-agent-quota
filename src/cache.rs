@@ -1,6 +1,6 @@
 use crate::cli::{
     AgentOrder, BrandColors, FieldSet, LowQuotaAlert, PercentStyle, SidebarLayout, SidebarPacing,
-    SidebarRowGap,
+    SidebarRowGap, StatuslinePace,
 };
 use crate::identity::PLUGIN_ID;
 use crate::model::{
@@ -25,6 +25,7 @@ const SIDEBAR_LAYOUT_FILE: &str = "sidebar-layout";
 const ROW_GAP_FILE: &str = "row-gap";
 const QUOTA_PERCENT_FILE: &str = "quota-percent";
 const SIDEBAR_PACING_FILE: &str = "sidebar-pacing";
+const STATUSLINE_PACE_FILE: &str = "statusline-pace";
 const FIELDS_FILE: &str = "fields";
 const BRAND_COLORS_FILE: &str = "brand-colors";
 const AGENT_ORDER_FILE: &str = "agent-order";
@@ -682,6 +683,32 @@ impl CacheStore {
         }
     }
 
+    /// Whether the Claude statusLine wrapper appends its quota pace segment.
+    ///
+    /// Claude Code launches the wrapper itself, outside Herdr's plugin runtime,
+    /// so only the state directory embedded in the wrapper command is guaranteed
+    /// to be available there. Configure mirrors the user preference here.
+    pub fn statusline_pace(&self) -> Option<StatuslinePace> {
+        fs::read_to_string(self.statusline_pace_path())
+            .ok()
+            .as_deref()
+            .and_then(StatuslinePace::parse)
+    }
+
+    pub fn set_statusline_pace(&self, pacing: StatuslinePace) -> Result<()> {
+        self.ensure()?;
+        fs::write(self.statusline_pace_path(), pacing.as_str())
+            .context("write Claude statusLine pace")
+    }
+
+    pub fn clear_statusline_pace(&self) -> Result<()> {
+        match fs::remove_file(self.statusline_pace_path()) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).context("remove Claude statusLine pace"),
+        }
+    }
+
     /// The sidebar settings that shaped the rows currently on disk.
     ///
     /// Uninstall needs them to recognise its own work, and the settings pane
@@ -985,6 +1012,10 @@ impl CacheStore {
 
     fn sidebar_pacing_path(&self) -> PathBuf {
         self.root.join(SIDEBAR_PACING_FILE)
+    }
+
+    fn statusline_pace_path(&self) -> PathBuf {
+        self.root.join(STATUSLINE_PACE_FILE)
     }
 
     fn fields_path(&self) -> PathBuf {
