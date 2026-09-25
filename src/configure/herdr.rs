@@ -88,12 +88,13 @@ const CONFIG_PRESENCE_FILE: &str = "herdr-config.original.present";
 // (0.8.2 added them); intended selected fill is #42474f when those keys exist.
 const QUOTA_SAFE_COLOR: &str = "#82d978";
 const QUOTA_WARNING_COLOR: &str = "#e4b957";
-/// Idle logo ink. Working / done colours match Herdr's default dark
+/// Idle logo ink. Working / done / blocked colours match Herdr's default dark
 /// `state_icon` palette so the brand glyph replaces the ring without a second
 /// circle on the row.
 const IDLE_ICON_COLOR: &str = "#e9e9f0";
 const WORKING_ICON_COLOR: &str = "#f9e2af";
 const DONE_ICON_COLOR: &str = "#94e2d5";
+const BLOCKED_ICON_COLOR: &str = "#f38ba8";
 const QUOTA_DANGER_COLOR: &str = "#f16f7e";
 // The same three bands, muted, for the meter rows only. `packed` and
 // `stacked` tint one short token, where a full-strength hue is legible; a
@@ -1097,6 +1098,10 @@ fn identity_icon_token() -> Value {
     rules.push(contains_fg_rule(
         crate::icons::WORKING_TAG,
         WORKING_ICON_COLOR,
+    ));
+    rules.push(contains_fg_rule(
+        crate::icons::BLOCKED_TAG,
+        BLOCKED_ICON_COLOR,
     ));
     value.insert("rules", Value::Array(rules));
     Value::InlineTable(value)
@@ -2203,10 +2208,20 @@ rows = [["state_icon", "agent"]]
                     BrandColors::On,
                 )
                 .unwrap();
+                let blocked_rule = format!(
+                    ", {{ contains = \"{}\", fg = \"{}\" }}",
+                    crate::icons::BLOCKED_TAG,
+                    BLOCKED_ICON_COLOR
+                );
+                assert!(
+                    updated.contains(&blocked_rule),
+                    "{layout:?} is missing the blocked icon rule:\n{updated}"
+                );
+                let stable = updated.replace(&blocked_rule, "");
                 assert_eq!(
-                    format!("{:x}", Sha256::digest(updated.as_bytes())),
+                    format!("{:x}", Sha256::digest(stable.as_bytes())),
                     digest,
-                    "{layout:?} output changed:\n{updated}"
+                    "{layout:?} output changed outside the blocked icon rule:\n{updated}"
                 );
             }
         }
@@ -2386,7 +2401,7 @@ rows = [["state_icon", "agent"]]
             Some(IDLE_ICON_COLOR)
         );
         let rules = idle.get("rules").and_then(Value::as_array).unwrap();
-        assert_eq!(rules.len(), 2);
+        assert_eq!(rules.len(), 3);
         let done = rules.get(0).unwrap().as_inline_table().unwrap();
         assert_eq!(
             done.get("contains").and_then(Value::as_str),
@@ -2404,6 +2419,15 @@ rows = [["state_icon", "agent"]]
         assert_eq!(
             working.get("fg").and_then(Value::as_str),
             Some(WORKING_ICON_COLOR)
+        );
+        let blocked = rules.get(2).unwrap().as_inline_table().unwrap();
+        assert_eq!(
+            blocked.get("contains").and_then(Value::as_str),
+            Some(crate::icons::BLOCKED_TAG)
+        );
+        assert_eq!(
+            blocked.get("fg").and_then(Value::as_str),
+            Some(BLOCKED_ICON_COLOR)
         );
     }
 
