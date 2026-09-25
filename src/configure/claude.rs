@@ -79,23 +79,24 @@ pub fn uninstall_at(settings: &Path, state: &Path) -> Result<()> {
 pub fn run_statusline_hook() -> Result<()> {
     let mut input = Vec::new();
     std::io::stdin().read_to_end(&mut input)?;
+    let cache = CacheStore::from_env()?;
+    let pace_enabled = super::resolved_statusline_pace(None, Some(&cache)).is_on();
     let mut pace = None;
     if let Ok(value) = serde_json::from_slice::<Value>(&input) {
         let now_unix = CacheStore::now_unix();
         if let Ok(snapshot) = parse_statusline(&value, now_unix) {
-            pace = pace_segment(&snapshot.windows, now_unix);
-            if let Ok(cache) = CacheStore::from_env() {
-                let generation = api_generation(&value);
-                let _ = cache.save_statusline_observation_with_api_generation(
-                    Provider::Claude,
-                    snapshot,
-                    &value,
-                    generation.as_deref(),
-                );
+            if pace_enabled {
+                pace = pace_segment(&snapshot.windows, now_unix);
             }
+            let generation = api_generation(&value);
+            let _ = cache.save_statusline_observation_with_api_generation(
+                Provider::Claude,
+                snapshot,
+                &value,
+                generation.as_deref(),
+            );
         }
     }
-    let cache = CacheStore::from_env()?;
     let Some(output) = CONFIG.run_previous(cache.root(), &input)? else {
         if let Some(pace) = pace {
             println!("{pace}");
