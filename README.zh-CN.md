@@ -152,6 +152,8 @@ herdr plugin pane open --plugin herdr-agent-usage --entrypoint settings --focus
 | 设置 | 可选项 |
 | --- | --- |
 | Percentages | 剩余或已用比例；颜色始终表示剩余额度 |
+| Sidebar pacing | 关闭（默认）保留额度百分比和进度条；开启后在 5h/7d 行显示节奏 |
+| StatusLine pace | 开启（默认）保留现有的额度节奏输出；关闭后不改 Claude 自己的 statusLine 输出 |
 | Layout | `gauges`（默认）在每个额度数字旁加进度条；`packed` 合并相关字段；`stacked` 将字段分行显示 |
 | Row gap | Agent 之间保留零行或一行空白 |
 | Watch interval | 30 秒–1 小时，默认 60 秒 |
@@ -161,6 +163,7 @@ herdr plugin pane open --plugin herdr-agent-usage --entrypoint settings --focus
 | Agents | Claude、Codex、Grok、Agy、OpenCode、Pi、OMP、Devin、Muse、Cursor |
 
 方向键或空格修改，`a` 应用，`q` 关闭。脚本配置选项见 `./install.sh --help`。
+Claude 状态栏节奏是独立开关，默认开启以保持升级前行为；可用 `./install.sh --statusline-pace off` 关闭，关闭时仍会正常采集额度观测并供侧栏使用。
 
 ## 数据来源与边界
 
@@ -177,8 +180,9 @@ herdr plugin pane open --plugin herdr-agent-usage --entrypoint settings --focus
 | Pi | 规范 Codex collector 的额度 | 仅在记录的账号一致时复用 |
 | OMP | `omp usage --json --provider <id>` | usage 账号与会话 credential pin 一致 |
 
-Claude Code 状态栏保留用户自己的 statusLine 输出，并在末尾追加当前生效额度窗口的
-消耗节奏，例如 `⏱ 5h ↓12%`：已用额度减去窗口已过去的时间比例，单位为百分点。
+Claude Code 状态栏始终保留用户自己的 statusLine 输出。**StatusLine pace** 默认开启以保持现有行为；
+关闭后不再追加节奏。开启时会在末尾追加当前生效额度窗口的消耗节奏，例如 `⏱ 5h ↓12%`：
+已用额度减去窗口已过去的时间比例，单位为百分点。
 `↓` 表示应放慢，`↑` 表示还有余量，`=` 表示相差五个点以内。以剩余额度最少的窗口为
 准并标明窗口（`5h`/`7d`）；该窗口无法计算节奏时不显示，也不改用较宽松的窗口：
 没有重置时间、窗口已过期、重置时间距离现在超过窗口长度，或窗口刚开始的前 5%。
