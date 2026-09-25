@@ -8,7 +8,7 @@
 
 use crate::model::Harness;
 
-/// Invisible suffix on `$quota_icon` so working/done colour can live on the
+/// Invisible suffix on `$quota_icon` so working/done/blocked colour can live on the
 /// first identity token. A later twin (`$quota_icon_done`) on a Space-head
 /// row hang-indents one cell to the right because the leading empty slots
 /// still eat the group indent.
@@ -18,6 +18,7 @@ use crate::model::Harness;
 /// icon font has no ZWNJ, and the cell renders as a yellow `?`.
 pub const WORKING_TAG: &str = "\u{2061}";
 pub const DONE_TAG: &str = "\u{2060}";
+pub const BLOCKED_TAG: &str = "\u{2062}";
 
 /// One-cell mark for a harness.
 pub fn for_harness(harness: Harness) -> &'static str {
@@ -66,8 +67,13 @@ mod tests {
             "ZWNJ extends U+E1AB and the icon font draws a replacement ?"
         );
         assert_ne!(WORKING_TAG, DONE_TAG);
-        let marked = format!("{}{WORKING_TAG}", for_harness(Harness::Cursor));
-        assert!(marked.starts_with('\u{e1ab}'));
-        assert_eq!(marked.chars().count(), 2);
+        assert_ne!(WORKING_TAG, BLOCKED_TAG);
+        assert_ne!(DONE_TAG, BLOCKED_TAG);
+        for tag in [WORKING_TAG, DONE_TAG, BLOCKED_TAG] {
+            assert_ne!(tag, "\u{200c}");
+            let marked = format!("{}{tag}", for_harness(Harness::Cursor));
+            assert!(marked.starts_with('\u{e1ab}'));
+            assert_eq!(marked.chars().count(), 2);
+        }
     }
 }
