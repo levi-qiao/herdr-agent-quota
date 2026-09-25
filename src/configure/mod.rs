@@ -10,7 +10,7 @@ mod statusline;
 use crate::cache::CacheStore;
 use crate::cli::{
     AgentOrder, AgentSelection, BrandColors, ConfigureOptions, FieldSet, LowQuotaAlert,
-    PercentStyle, SidebarLayout, SidebarPacing, SidebarRowGap,
+    PercentStyle, SidebarLayout, SidebarPacing, SidebarRowGap, StatuslinePace,
 };
 use crate::model::Harness;
 use crate::prefs;
@@ -80,6 +80,7 @@ pub fn run(
             cache.clear_row_gap()?;
             cache.clear_percent_style()?;
             cache.clear_sidebar_pacing()?;
+            cache.clear_statusline_pace()?;
             cache.clear_fields()?;
             cache.clear_brand_colors()?;
             cache.clear_agent_order()?;
@@ -125,6 +126,10 @@ pub fn run(
         cache.set_sidebar_pacing(pacing)?;
         prefs::write(prefs::SIDEBAR_PACING, pacing.as_str())?;
         println!("Sidebar pacing: {}.", pacing.as_str());
+        let statusline_pace = resolved_statusline_pace(options.statusline_pace, Some(&cache));
+        cache.set_statusline_pace(statusline_pace)?;
+        prefs::write(prefs::STATUSLINE_PACE, statusline_pace.as_str())?;
+        println!("Claude statusLine pace: {}.", statusline_pace.as_str());
         let fields = resolved_fields(options.fields, Some(&cache));
         cache.set_fields(fields)?;
         prefs::write(prefs::FIELDS, &fields.as_list())?;
@@ -170,6 +175,7 @@ pub fn run(
         let gap = resolved_row_gap(options.row_gap, cache.as_ref());
         let percent = resolved_percent_style(options.quota_percent, cache.as_ref());
         let pacing = resolved_sidebar_pacing(options.sidebar_pacing, cache.as_ref());
+        let statusline_pace = resolved_statusline_pace(options.statusline_pace, cache.as_ref());
         let fields = resolved_fields(options.fields, cache.as_ref());
         let brand = resolved_brand_colors(options.brand_colors, cache.as_ref());
         let order = resolved_agent_order(options.agent_order, cache.as_ref());
@@ -177,6 +183,7 @@ pub fn run(
         herdr::check(agents, layout, gap, fields, brand)?;
         println!("Quota percentages show {} quota.", percent.suffix());
         println!("Sidebar pacing: {}.", pacing.as_str());
+        println!("Claude statusLine pace: {}.", statusline_pace.as_str());
         println!("Agent panel order: {}.", order.as_str());
         println!("Low quota alert: {alert}.");
         if agents.contains(&Harness::Claude) {
@@ -227,6 +234,18 @@ pub(crate) fn resolved_sidebar_pacing(
             prefs::read(prefs::SIDEBAR_PACING).and_then(|value| SidebarPacing::parse(&value))
         })
         .or_else(|| cache.and_then(CacheStore::sidebar_pacing))
+        .unwrap_or_default()
+}
+
+pub(crate) fn resolved_statusline_pace(
+    explicit: Option<StatuslinePace>,
+    cache: Option<&CacheStore>,
+) -> StatuslinePace {
+    StatuslinePace::from_arg_or_env(explicit)
+        .or_else(|| {
+            prefs::read(prefs::STATUSLINE_PACE).and_then(|value| StatuslinePace::parse(&value))
+        })
+        .or_else(|| cache.and_then(CacheStore::statusline_pace))
         .unwrap_or_default()
 }
 
