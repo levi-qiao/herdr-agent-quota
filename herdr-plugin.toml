@@ -1,6 +1,6 @@
 id = "herdr-agent-usage"
 name = "Herdr Agent Usage"
-version = "1.6.2"
+version = "1.6.3"
 min_herdr_version = "0.9.0"
 description = "Credential-scoped AI quota and context for Claude, Codex, Grok, Agy, OpenCode, Pi, omp, Devin, Muse, and Cursor."
 platforms = ["macos", "linux"]
