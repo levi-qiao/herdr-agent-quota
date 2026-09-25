@@ -2916,7 +2916,7 @@ mod tests {
         );
         assert!(
             !default_fields.contains_key("quota_model"),
-            "packed provider/model identity should still save the redundant token"
+            "packed provider/model identity should still omit the redundant token"
         );
     }
 
