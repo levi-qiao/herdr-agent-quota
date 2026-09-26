@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- OpenCode Go quota now reads the console subscription meters behind the
+  OpenCode console login — the same numbers the console page shows. The
+  per-key `/zen/go/v1/usage` counters remain the fallback for stores without a
+  console login; a key that no longer serves an install's traffic freezes at
+  its last reading and can disagree with the console. A pane with no session
+  yet shows the account meters until its first turn resolves a backend.
+
 ## [1.6.3] - 2026-09-26
 
 ### Added

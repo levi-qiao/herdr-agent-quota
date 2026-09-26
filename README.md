@@ -202,9 +202,13 @@ normal quota percentage instead of guessing.
 | Cursor | CLI DashboardService usage; at, api, and 30d | Current CLI `auth.json`, else the macOS Keychain login from `cursor-agent login`, else `$CURSOR_STATE_DB` (`state.vscdb` access token) when the CLI has no login; model from local session files; topic from the generated session title; `cx` from `store.db` `token_details` (the CLI footer percent); cache from CLI hooks |
 | Claude Code | StatusLine; 5h and 7d | Exact session observation |
 | Agy / Antigravity | StatusLine; 5h, 7d, and api (third-party pool on Gemini) | Exact session and identifiable model pool |
-| OpenCode | OpenCode Go usage endpoint | Go credential; confirmed PAYG routes have no subscription quota |
+| OpenCode | OpenCode console Go meters; per-key usage endpoint as fallback | Console login stored by OpenCode (its `credential` table); fallback is the Go API key |
 | Pi | Canonical Codex quota | Only when the recorded account matches |
 | OMP | `omp usage --json --provider <id>` | Reported account matching the session's credential pin |
+
+An OpenCode pane that has not started a session yet shows the account's Go
+meters when a console login exists; the first resolved session replaces them
+with that pane's own backend, or clears them when it is not Go.
 
 The Claude Code status line always keeps the user's own statusLine output.
 With **StatusLine pace** enabled (it stays on by default for compatibility), the wrapper appends a
@@ -241,6 +245,7 @@ turn failures into zero usage.
 | Brand icons are boxes or `?` | The icon font is missing or this terminal has no U+E1A0–U+E1B6 map — see [Ask an agent to finish setup](#ask-an-agent-to-finish-setup). Reload the terminal after `configure`. A yellow `?` on a build older than 1.6.1 was the working-state ZWNJ bug; upgrade. Muse uses the text mark `◈` on purpose. Nested extra tabs of vendors other than Codex have no icon by design. |
 | Session data is missing | Run `herdr integration status`; load missing integrations before restarting the affected agent |
 | Claude/Agy quota is missing | Send a turn so the session's StatusLine produces an observation |
+| OpenCode Go quota looks frozen | The console login is the source; without it the per-key endpoint is used, and a key that stopped serving traffic keeps its last reading. Sign in with `/connect` so a console login exists, then refresh |
 | OMP quota is missing | Check `omp usage --json --redact --provider <id>` |
 | Devin quota is missing | Check the CLI login and `DEVIN_CREDENTIALS_FILE` if customized |
 | Muse quota is missing | Run `muse login` (API-key logins have no subscription quota); check `MUSE_AUTH_PATH` if customized. On macOS, a `storage: "keychain"` login also needs a one-time Keychain approval: run `herdr-agent-usage refresh --provider muse --keychain-approve` and click **Always Allow** |

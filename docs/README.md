@@ -16,6 +16,7 @@ changed since the recorded version.
 - [Codex and Grok context/cache sources](research/codex-grok-context-cache.md)
 - [Grok billing contract](research/codexbar-grok-usage.md)
 - [OpenCode Go usage](research/opencode-go-usage.md)
+- [OpenCode Go key counters versus console meters](research/opencode-go-console-meters.md)
 - [OMP integration](research/omp-integration.md), [quota attribution](research/omp-quota-sharing-open-source.md), [daily windows](research/omp-antigravity-daily-window.md)
 - [Quota reset capabilities](research/quota-reset-capability.md) and the
   [Grok/Agy reset versus cache-TTL update](research/provider-quota-reset-ttl.md)
