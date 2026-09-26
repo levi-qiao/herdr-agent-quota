@@ -168,7 +168,9 @@ fn parse_console_meter(
     if limit <= 0.0 {
         return None;
     }
-    let used = micro_cents(value.get("usedMicroCents")).unwrap_or(0.0);
+    // A missing or malformed amount drops the window instead of reading as
+    // 0% used, which would present as a full allowance.
+    let used = micro_cents(value.get("usedMicroCents"))?;
     let used_percent = (used / limit * 100.0).clamp(0.0, 100.0);
     let own_reset = value
         .get("resetsAt")
@@ -494,6 +496,40 @@ mod tests {
             0.0
         );
         assert!(window(&snapshot, WindowKind::Weekly).is_none());
+    }
+
+    #[test]
+    fn a_meter_without_a_usable_used_amount_drops_its_window() {
+        // A missing or malformed used amount must not silently read as 0% used,
+        // which would present as a full allowance.
+        for used in [json!(""), json!("nope"), Value::Null] {
+            let value = json!({"access": {"meters": {
+                "fiveHour": {"limitMicroCents": "1200000000", "usedMicroCents": used}
+            }}});
+            assert!(
+                parse_console_status(&value, NOW).is_err(),
+                "accepted {value}"
+            );
+        }
+        let absent = json!({"access": {"meters": {
+            "fiveHour": {"limitMicroCents": "1200000000"}
+        }}});
+        assert!(
+            parse_console_status(&absent, NOW).is_err(),
+            "accepted {absent}"
+        );
+
+        // Only the broken meter drops; a sibling meter still becomes a window.
+        let mixed = json!({"access": {"meters": {
+            "fiveHour": {"limitMicroCents": "1200000000", "usedMicroCents": "nope"},
+            "week": {"limitMicroCents": "3000000000", "usedMicroCents": "600000000"}
+        }}});
+        let snapshot = parse_console_status(&mixed, NOW).unwrap();
+        assert!(window(&snapshot, WindowKind::FiveHour).is_none());
+        assert_eq!(
+            window(&snapshot, WindowKind::Weekly).unwrap().used_percent,
+            20.0
+        );
     }
 
     #[test]
