@@ -175,6 +175,111 @@ pub fn go_key(paths: &OpenCodePaths) -> Option<String> {
     (!key.is_empty()).then_some(key)
 }
 
+/// The OpenCode Console login OpenCode keeps in its own database.
+///
+/// OpenCode 2 serves Go inference as the signed-in console account, so the
+/// subscription meters a pane actually spends live behind that login, not
+/// behind the per-key `/zen/go/v1/usage` counters. The access token is read on
+/// demand and never travels with a parsed map; the refresh token is not read.
+pub struct ConsoleCredential {
+    pub access: String,
+    pub org_id: String,
+    pub server: String,
+    /// Stable identity for cache scoping. Tokens rotate; the account and
+    /// workspace do not.
+    pub account_id: String,
+}
+
+/// Reads the console login when the OpenCode store has one.
+///
+/// A store without the table, without a device login, or with a malformed
+/// value yields `None`, which keeps the key-based collector as the only
+/// source. Nothing here logs.
+pub fn console_credential(paths: &OpenCodePaths) -> Option<ConsoleCredential> {
+    let connection = open_readonly(&paths.db).ok()?;
+    if !table_exists(&connection, "credential").ok()? {
+        return None;
+    }
+    let mut statement = connection
+        .prepare(
+            "SELECT value FROM credential WHERE integration_id = ?1 ORDER BY time_updated DESC",
+        )
+        .ok()?;
+    let mut rows = statement.query(["opencode"]).ok()?;
+    while let Some(row) = rows.next().ok()? {
+        let value = row.get::<_, String>(0).ok()?;
+        if let Some(credential) = parse_console_credential(&value) {
+            return Some(credential);
+        }
+    }
+    None
+}
+
+fn parse_console_credential(value: &str) -> Option<ConsoleCredential> {
+    let value: Value = serde_json::from_str(value).ok()?;
+    if value.get("methodID").and_then(Value::as_str) != Some("device") {
+        return None;
+    }
+    let access = value
+        .get("access")
+        .and_then(Value::as_str)?
+        .trim()
+        .to_string();
+    if access.is_empty() {
+        return None;
+    }
+    let metadata = value.get("metadata")?;
+    let org_id = metadata
+        .get("orgID")
+        .and_then(Value::as_str)?
+        .trim()
+        .to_string();
+    if org_id.is_empty() {
+        return None;
+    }
+    let server = metadata
+        .get("server")
+        .and_then(Value::as_str)
+        .unwrap_or("https://opencode.ai/console")
+        .trim_end_matches('/')
+        .to_string();
+    let account = metadata
+        .get("accountID")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let account_id = format!("console:{account}:{org_id}");
+    Some(ConsoleCredential {
+        access,
+        org_id,
+        server,
+        account_id,
+    })
+}
+
+/// The identity behind an OpenCode Go reading.
+///
+/// A signed-in console owns the subscription meters OpenCode 2 panes spend;
+/// without one (OpenCode 1, or an install that never signed in) the Go API key
+/// is the serving credential.
+pub fn go_account_id(paths: &OpenCodePaths) -> Option<String> {
+    if let Some(credential) = console_credential(paths) {
+        return Some(credential.account_id);
+    }
+    go_key(paths).map(|key| crate::providers::credential_id(&key))
+}
+
+/// Whether the OpenCode store holds a console login.
+///
+/// Install-wide, so it is evidence for the account meters even before a pane
+/// has named its backend.
+pub fn console_login_present() -> bool {
+    OpenCodePaths::from_env()
+        .as_ref()
+        .is_some_and(|paths| console_credential(paths).is_some())
+}
+
 pub fn read_auth(paths: &OpenCodePaths) -> Result<AuthMap, AuthReadError> {
     read_auth_file(&paths.auth)
 }
@@ -539,10 +644,132 @@ pub(crate) fn write_v2_fixture_db(
     Ok(())
 }
 
+/// OpenCode 2's credential table. Each row is `(id, integration id, value)`.
+#[cfg(test)]
+pub(crate) fn write_credential_fixture_db(
+    path: &Path,
+    rows: &[(&str, &str, &str)],
+) -> rusqlite::Result<()> {
+    let connection = Connection::open(path)?;
+    connection.execute_batch(
+        "CREATE TABLE credential (
+            id TEXT PRIMARY KEY,
+            integration_id TEXT,
+            label TEXT NOT NULL,
+            value TEXT NOT NULL,
+            connector_id TEXT,
+            method_id TEXT,
+            active INTEGER,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL
+        );",
+    )?;
+    for (index, (id, integration_id, value)) in rows.iter().enumerate() {
+        connection.execute(
+            "INSERT INTO credential (id, integration_id, label, value, time_created, time_updated)
+             VALUES (?1, ?2, 'Default', ?3, ?4, ?4)",
+            rusqlite::params![*id, *integration_id, *value, index as i64 + 1],
+        )?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    fn paths_in(directory: &Path) -> OpenCodePaths {
+        OpenCodePaths {
+            auth: directory.join("auth.json"),
+            db: directory.join("opencode.db"),
+            models: directory.join("models.json"),
+        }
+    }
+
+    #[test]
+    fn console_login_is_read_from_the_cli_store_without_its_refresh_token() {
+        let directory = tempdir().unwrap();
+        let db = directory.path().join("opencode.db");
+        write_credential_fixture_db(
+            &db,
+            &[(
+                "cred_1",
+                "opencode",
+                r#"{"type":"oauth","methodID":"device","refresh":"rt_secret","access":"st_access","expires":999,"metadata":{"server":"https://opencode.ai/console","accountID":"acc_1","email":"a@b.c","orgID":"wrk_1","orgName":"Default"}}"#,
+            )],
+        )
+        .unwrap();
+        let credential = console_credential(&paths_in(directory.path())).expect("console login");
+        assert_eq!(credential.access, "st_access");
+        assert_eq!(credential.org_id, "wrk_1");
+        assert_eq!(credential.server, "https://opencode.ai/console");
+        assert_eq!(credential.account_id, "console:acc_1:wrk_1");
+    }
+
+    #[test]
+    fn a_store_without_a_device_login_has_no_console_credential() {
+        let directory = tempdir().unwrap();
+        let db = directory.path().join("opencode.db");
+        write_fixture_db(&db, &[]).unwrap();
+        assert!(console_credential(&paths_in(directory.path())).is_none());
+
+        let directory = tempdir().unwrap();
+        let db = directory.path().join("opencode.db");
+        write_credential_fixture_db(
+            &db,
+            &[
+                (
+                    "cred_key",
+                    "opencode-go",
+                    r#"{"type":"key","key":"sk-secret"}"#,
+                ),
+                (
+                    "cred_oauth",
+                    "opencode",
+                    r#"{"type":"oauth","methodID":"device","access":"","metadata":{"orgID":"wrk_1"}}"#,
+                ),
+            ],
+        )
+        .unwrap();
+        assert!(console_credential(&paths_in(directory.path())).is_none());
+    }
+
+    #[test]
+    fn go_account_id_prefers_the_console_login_over_the_key() {
+        let directory = tempdir().unwrap();
+        fs::write(
+            directory.path().join("auth.json"),
+            r#"{"opencode-go":{"type":"api","key":"sk-fixture"}}"#,
+        )
+        .unwrap();
+        let db = directory.path().join("opencode.db");
+        write_credential_fixture_db(
+            &db,
+            &[(
+                "cred_1",
+                "opencode",
+                r#"{"type":"oauth","methodID":"device","access":"st_access","metadata":{"accountID":"acc_1","orgID":"wrk_1"}}"#,
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            go_account_id(&paths_in(directory.path())).as_deref(),
+            Some("console:acc_1:wrk_1")
+        );
+
+        let directory = tempdir().unwrap();
+        fs::write(
+            directory.path().join("auth.json"),
+            r#"{"opencode-go":{"type":"api","key":"sk-fixture"}}"#,
+        )
+        .unwrap();
+        write_fixture_db(&directory.path().join("opencode.db"), &[]).unwrap();
+        assert_eq!(
+            go_account_id(&paths_in(directory.path())).as_deref(),
+            Some(crate::providers::credential_id("sk-fixture").as_str())
+        );
+    }
 
     #[test]
     fn exact_go_session_reads_provider_from_bounded_message_lookup() {

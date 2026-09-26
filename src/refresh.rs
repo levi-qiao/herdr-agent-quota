@@ -717,6 +717,43 @@ fn handle_named_pane(
     publish_status_icons(&panes, &tokens, CacheStore::now_millis(), row)
 }
 
+/// True when an OpenCode pane has no session evidence yet, so its backend
+/// cannot be named.
+fn needs_console_fallback(pane: &AgentPane, identity: Option<&crate::herdr::PaneIdentity>) -> bool {
+    pane.harness == Harness::OpenCode
+        && identity.is_none()
+        && pane
+            .session
+            .as_ref()
+            .and_then(|session| session.id())
+            .is_none()
+}
+
+/// The account meters for an OpenCode pane whose session has not appeared yet.
+///
+/// The console login is install-wide, so this is not a guess about which
+/// backend the pane will use; the first resolved session replaces or clears it.
+fn console_fallback_quota(
+    cache: &CacheStore,
+    now: u64,
+    row: RowStyle,
+    force: bool,
+) -> Result<Option<PaneQuotaUpdate>> {
+    let target = BillingTarget::opencode_go();
+    refresh_scoped_target(cache, &target, force);
+    let snapshot = cache.load(target.billing)?;
+    let usable = load_usable_snapshot(cache, target.billing)?;
+    Ok(tokens_for_loaded_snapshot(
+        target.billing,
+        snapshot.as_ref(),
+        usable.as_ref(),
+        now,
+        None,
+        row,
+    )
+    .map(|values| PaneQuotaUpdate::Replace(Box::new(values))))
+}
+
 /// The layout the user chose and the meter size their sidebar affords,
 /// resolved once per refresh: the layout from the state-dir cache the publish
 /// hooks can see, the width from Herdr's own config.
@@ -818,6 +855,16 @@ fn resolved_pane_tokens(
             Some(PaneQuotaUpdate::Clear)
         }
         Resolution::NoSubscription => None,
+        // An OpenCode pane that has not started a session cannot name its
+        // backend yet. With a console login on disk the account meters are
+        // unambiguous, so they stand in until the first session resolves; a
+        // session on another backend then clears them through the arms above.
+        Resolution::Indeterminate
+            if needs_console_fallback(pane, identity.as_ref())
+                && crate::opencode::console_login_present() =>
+        {
+            console_fallback_quota(cache, now, row, force)?
+        }
         Resolution::Indeterminate if plugin_quota_present(&pane.tokens) || identity.is_some() => {
             Some(PaneQuotaUpdate::Clear)
         }
@@ -991,22 +1038,34 @@ fn refresh_scoped_target(cache: &CacheStore, target: &BillingTarget, force: bool
     let Some(paths) = OpenCodePaths::from_env() else {
         return;
     };
-    let Some(key) = crate::opencode::go_key(&paths) else {
-        return;
+    // The console login is the serving principal for OpenCode 2 panes; the Go
+    // API key is the fallback for stores without one. The account marker has to
+    // name whichever credential will be used, or a saved snapshot is rejected
+    // as another login's.
+    let credential = crate::opencode::console_credential(&paths);
+    let account_id = match &credential {
+        Some(credential) => credential.account_id.clone(),
+        None => match crate::opencode::go_key(&paths) {
+            Some(key) => crate::providers::credential_id(&key),
+            None => return,
+        },
     };
     // Marked before the request so a failing endpoint cannot be retried on
     // every event; the debounce window applies to attempts, not successes.
     if cache
-        .mark_refresh_account(
-            target.billing,
-            now,
-            Some(&crate::providers::credential_id(&key)),
-        )
+        .mark_refresh_account(target.billing, now, Some(&account_id))
         .is_err()
     {
         return;
     }
-    if let Ok(snapshot) = opencode_go::fetch(&key) {
+    let fetched = match &credential {
+        Some(credential) => opencode_go::fetch_console(credential),
+        None => match crate::opencode::go_key(&paths) {
+            Some(key) => opencode_go::fetch(&key),
+            None => return,
+        },
+    };
+    if let Ok(snapshot) = fetched {
         let _ = cache.save(&snapshot);
     }
 }
@@ -1251,9 +1310,7 @@ fn current_account_gate(provider: Provider) -> (Option<String>, Option<u64>) {
         Provider::Muse => (muse::current_account_id(), muse::auth_mtime_unix()),
         Provider::Cursor => (cursor::current_account_id(), cursor::auth_mtime_unix()),
         Provider::OpenCodeGo => (
-            OpenCodePaths::from_env()
-                .and_then(|paths| crate::opencode::go_key(&paths))
-                .map(|key| crate::providers::credential_id(&key)),
+            OpenCodePaths::from_env().and_then(|paths| crate::opencode::go_account_id(&paths)),
             None,
         ),
         Provider::Claude | Provider::Agy | Provider::Omp => (None, None),
@@ -1819,6 +1876,96 @@ mod tests {
 
     fn window(kind: WindowKind, used: f64, reset: u64) -> UsageWindow {
         UsageWindow::new(kind, used, Some(ResetAt::from_unix_seconds(reset))).unwrap()
+    }
+
+    /// A fresh OpenCode pane has no session, so its backend cannot be named.
+    /// With a console login on disk the account meters stand in until the
+    /// first turn; a session on another backend clears them afterwards.
+    #[test]
+    fn an_unattributed_opencode_pane_shows_the_console_meters() {
+        let directory = tempdir().unwrap();
+        let data = directory.path().join("data");
+        std::fs::create_dir_all(data.join("opencode")).unwrap();
+        crate::opencode::write_credential_fixture_db(
+            &data.join("opencode").join("opencode.db"),
+            &[(
+                "cred_1",
+                "opencode",
+                r#"{"type":"oauth","methodID":"device","access":"st_access","metadata":{"accountID":"acc_1","orgID":"wrk_1"}}"#,
+            )],
+        )
+        .unwrap();
+        let cache = CacheStore::new(directory.path().join("state"));
+        let mut snapshot = ProviderSnapshot::new(
+            Provider::OpenCodeGo,
+            vec![
+                UsageWindow::new(WindowKind::FiveHour, 10.0, None).unwrap(),
+                UsageWindow::new(WindowKind::Weekly, 60.0, None).unwrap(),
+            ],
+            1,
+        );
+        snapshot.account_id = Some("console:acc_1:wrk_1".to_string());
+        cache.save(&snapshot).unwrap();
+        // A just-attempted refresh keeps this test off the network.
+        cache
+            .mark_refresh_account(
+                Provider::OpenCodeGo,
+                CacheStore::now_unix(),
+                Some("console:acc_1:wrk_1"),
+            )
+            .unwrap();
+
+        let mut pane = test_pane("w1:p9", Harness::OpenCode);
+        assert!(needs_console_fallback(&pane, None));
+        let resolved = route::ResolvedPane {
+            resolution: Resolution::Indeterminate,
+            identity: None,
+            context: None,
+            omp: None,
+        };
+        let mut published = None;
+        crate::prefs::testing::with_env(&[("XDG_DATA_HOME", Some(data.as_os_str()))], || {
+            published = resolved_pane_tokens(
+                &cache,
+                &mut pane,
+                resolved,
+                CacheStore::now_unix(),
+                RowStyle::default(),
+                false,
+            )
+            .unwrap();
+        });
+        let tokens = published.expect("console fallback publishes tokens");
+        let PaneQuotaUpdate::Replace(values) = tokens.quota else {
+            panic!("expected replaced quota, got {:?}", tokens.quota);
+        };
+        assert_eq!(values.quota_headroom, Some(40));
+        assert!(
+            values.quota_5h.contains("90%"),
+            "5h row: {}",
+            values.quota_5h
+        );
+        assert!(
+            values.quota_week.contains("40%"),
+            "7d row: {}",
+            values.quota_week
+        );
+    }
+
+    #[test]
+    fn a_session_pane_never_takes_the_console_fallback() {
+        let with_session = test_pane_with_session("w1:p9", Harness::OpenCode, "ses_1");
+        assert!(!needs_console_fallback(&with_session, None));
+        let named = test_pane("w1:p9", Harness::OpenCode);
+        let identity = crate::herdr::PaneIdentity {
+            provider: "opencode-go".to_string(),
+            model: "deepseek-v4.1-flash".to_string(),
+        };
+        assert!(!needs_console_fallback(&named, Some(&identity)));
+        assert!(!needs_console_fallback(
+            &test_pane("w1:p9", Harness::Claude),
+            None
+        ));
     }
 
     fn low(pairs: &[(&str, u8)]) -> BTreeMap<String, u8> {
